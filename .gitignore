@@ -1,0 +1,29 @@
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pinned
+Package.resolved
+
+# XcodeGen
+*.xcodeproj
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+*.swp
+*~
+
+# Secrets
+*.mobileprovision
+*.p12

@@ -78,6 +78,7 @@ class Crypto {
 
         var buffer = [UInt8](repeating: 0, count: dataBytes.count + ivLength)
         var numBytesProcessed: size_t = 0
+        let bufferCapacity = buffer.count
 
         let iv: [UInt8]?
         if mode.lowercased() == "cbc" {
@@ -98,7 +99,7 @@ class Crypto {
                                 keyPtr.baseAddress, keyLength,
                                 ivPtr.baseAddress,
                                 dataPtr.baseAddress, dataBytes.count,
-                                bufferPtr.baseAddress, buffer.count,
+                                bufferPtr.baseAddress, bufferCapacity,
                                 &numBytesProcessed
                             )
                         }
@@ -110,7 +111,7 @@ class Crypto {
                             keyPtr.baseAddress, keyLength,
                             nil,
                             dataPtr.baseAddress, dataBytes.count,
-                            bufferPtr.baseAddress, buffer.count,
+                            bufferPtr.baseAddress, bufferCapacity,
                             &numBytesProcessed
                         )
                     }

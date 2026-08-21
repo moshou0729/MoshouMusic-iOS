@@ -6,7 +6,8 @@ class SettingsViewController: UIViewController {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
 
-    private let sections: [SettingSection] = [
+    /// 计算属性：每次读取实时取配置，保证开关/副标题状态与 ConfigStore 同步
+    private var sections: [SettingSection] {
         SettingSection(title: "音源管理", items: [
             SettingItem(icon: "music.note", iconColor: Theme.primary, title: "音源设置", subtitle: "管理音源脚本", type: .navigate),
             SettingItem(icon: "square.and.arrow.down", iconColor: Theme.tertiary, title: "导入脚本", subtitle: "从文件导入自定义源", type: .navigate),
@@ -31,6 +32,11 @@ class SettingsViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        tableView.reloadData()
     }
 
     private func setupUI() {
@@ -129,13 +135,24 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case "深色模式":
             ConfigStore.shared.isDarkMode = isOn
             Theme.applyAppearance()
-            // 重新加载视图
-            view.window?.rootViewController?.dismiss(animated: false, completion: {
-                UIApplication.shared.windows.first?.rootViewController = MainTabBarController()
-            })
+            rebuildWindow()
         default:
             break
         }
+    }
+
+    /// 深浅模式切换后重建整个界面树
+    private func rebuildWindow() {
+        guard let window = view.window else { return }
+        window.overrideUserInterfaceStyle = ConfigStore.shared.isDarkMode ? .dark : .light
+        let newRoot = MainTabBarController()
+        UIView.transition(
+            with: window,
+            duration: 0.25,
+            options: .transitionCrossDissolve,
+            animations: { window.rootViewController = newRoot },
+            completion: nil
+        )
     }
 
     private func handleNavigate(indexPath: IndexPath) {
@@ -174,6 +191,10 @@ class SettingCell: UITableViewCell {
     private let subtitleLabel = UILabel()
     private let toggleSwitch = UISwitch()
     private let arrowView = UIImageView()
+
+    /// 有副标题时激活（标题+副标题布局）；无副标题时激活 titleBottomConstraint
+    private var subtitleBottomConstraint: NSLayoutConstraint!
+    private var titleBottomConstraint: NSLayoutConstraint!
 
     var onToggle: ((Bool) -> Void)?
 
@@ -218,24 +239,25 @@ class SettingCell: UITableViewCell {
         }
 
         NSLayoutConstraint.activate([
+            // 图标：居中 + 固定尺寸（不与文字链抢行高，消除约束冲突）
             iconView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             iconView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 32),
             iconView.heightAnchor.constraint(equalToConstant: 32),
-            iconView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
-            iconView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
 
             iconImage.centerXAnchor.constraint(equalTo: iconView.centerXAnchor),
             iconImage.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
             iconImage.widthAnchor.constraint(equalToConstant: 18),
             iconImage.heightAnchor.constraint(equalToConstant: 18),
 
+            // 标题：有尾部约束，避免长文字钻到开关/箭头下面
             titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
+            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -72),
 
             subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
-            subtitleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -14),
+            subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -72),
 
             toggleSwitch.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             toggleSwitch.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
@@ -245,14 +267,30 @@ class SettingCell: UITableViewCell {
             arrowView.widthAnchor.constraint(equalToConstant: 12),
             arrowView.heightAnchor.constraint(equalToConstant: 16),
         ])
+
+        // 两套行底约束：有副标题时挂副标题底部，无副标题时挂标题底部
+        subtitleBottomConstraint = subtitleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12)
+        titleBottomConstraint = titleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12)
     }
 
     func configure(with item: SettingItem) {
+        contentView.backgroundColor = Theme.cardBg
+        backgroundColor = .clear
+
         iconView.backgroundColor = item.iconColor
         iconImage.image = UIImage(systemName: item.icon)
         titleLabel.text = item.title
         subtitleLabel.text = item.subtitle
-        subtitleLabel.isHidden = item.subtitle == nil
+
+        if item.subtitle == nil {
+            subtitleLabel.isHidden = true
+            subtitleBottomConstraint.isActive = false
+            titleBottomConstraint.isActive = true
+        } else {
+            subtitleLabel.isHidden = false
+            titleBottomConstraint.isActive = false
+            subtitleBottomConstraint.isActive = true
+        }
 
         switch item.type {
         case .toggle(let isOn):

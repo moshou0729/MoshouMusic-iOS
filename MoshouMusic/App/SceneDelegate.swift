@@ -16,8 +16,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
 
-        // 应用主题
+        // 应用主题（App 内深浅模式独立于系统设置，强制覆盖窗口外观，
+        // 防止系统深色模式下系统控件变黑导致黑底黑字）
         Theme.applyAppearance()
+        window.overrideUserInterfaceStyle = ConfigStore.shared.isDarkMode ? .dark : .light
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {

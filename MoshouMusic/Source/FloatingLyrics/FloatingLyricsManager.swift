@@ -17,6 +17,7 @@ class FloatingLyricsManager: NSObject {
     }
 
     private var windowFrame: CGRect = CGRect(x: 20, y: 200, width: 340, height: 56)
+    private var lastPressLocation: CGPoint?
 
     var isShowing: Bool {
         return floatingWindow?.isHidden == false
@@ -143,13 +144,20 @@ class FloatingLyricsManager: NSObject {
     }
 
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        if gesture.state == .changed {
-            let translation = gesture.translation(in: nil)
-            opacity = max(0.3, min(1.0, opacity + translation.y / 500))
+        let location = gesture.location(in: nil)
+        switch gesture.state {
+        case .began:
+            lastPressLocation = location
+        case .changed:
+            guard let last = lastPressLocation else { break }
+            let dy = location.y - last.y
+            lastPressLocation = location
+            opacity = max(0.3, min(1.0, opacity + dy / 500))
             if !isLocked {
                 lyricsView?.backgroundColor = UIColor.black.withAlphaComponent(opacity)
             }
-            gesture.setTranslation(.zero, in: nil)
+        default:
+            lastPressLocation = nil
         }
     }
 

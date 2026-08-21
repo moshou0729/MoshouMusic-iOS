@@ -29,7 +29,7 @@ class SearchViewController: UIViewController {
     private func setupUI() {
         view.backgroundColor = Theme.bg
         title = "搜索"
-        navigation.largeTitleDisplayMode = .always
+        navigationItem.largeTitleDisplayMode = .always
 
         // 搜索栏
         searchBar.placeholder = "搜索歌曲、歌手、专辑"

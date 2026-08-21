@@ -178,11 +178,11 @@ class SongCell: UITableViewCell {
 
     override func setHighlighted(_ highlighted: Bool, animated: Bool) {
         super.setHighlighted(highlighted, animated: animated)
-        UIView.animate(withDuration: 0.15) {
-            self.containerView.backgroundColor = highlighted
-                ? Theme.primaryContainer
-                : self.song.map { Theme.cardBg } ?? Theme.cardBg
-        }
+            UIView.animate(withDuration: 0.15) {
+                self.containerView.backgroundColor = highlighted
+                    ? Theme.primaryContainer
+                    : Theme.cardBg
+            }
     }
 
     // MARK: - Actions

@@ -314,7 +314,7 @@ class ScriptEngine {
         ]
 
         let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNullOrUndefined {
+            if error.isNull || error.isUndefined {
                 if let dict = data.toDictionary() as? [String: Any] {
                     if let list = dict["list"] as? [[String: Any]] {
                         completion(.success(list))
@@ -355,7 +355,7 @@ class ScriptEngine {
         ]
 
         let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNullOrUndefined {
+            if error.isNull || error.isUndefined {
                 if let dict = data.toDictionary() as? [String: Any],
                    let url = dict["url"] as? String, !url.isEmpty {
                     completion(.success(url))
@@ -393,7 +393,7 @@ class ScriptEngine {
         ]
 
         let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNullOrUndefined {
+            if error.isNull || error.isUndefined {
                 if let dict = data.toDictionary() as? [String: Any] {
                     let lyric = dict["lyric"] as? String ?? ""
                     let tlyric = dict["tlyric"] as? String ?? ""
@@ -432,7 +432,7 @@ class ScriptEngine {
         ]
 
         let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNullOrUndefined {
+            if error.isNull || error.isUndefined {
                 if let dict = data.toDictionary() as? [String: Any],
                    let url = dict["url"] as? String {
                     completion(.success(url))

@@ -8,6 +8,7 @@ class SettingsViewController: UIViewController {
 
     /// 计算属性：每次读取实时取配置，保证开关/副标题状态与 ConfigStore 同步
     private var sections: [SettingSection] {
+        return [
         SettingSection(title: "音源管理", items: [
             SettingItem(icon: "music.note", iconColor: Theme.primary, title: "音源设置", subtitle: "管理音源脚本", type: .navigate),
             SettingItem(icon: "square.and.arrow.down", iconColor: Theme.tertiary, title: "导入脚本", subtitle: "从文件导入自定义源", type: .navigate),
@@ -27,7 +28,8 @@ class SettingsViewController: UIViewController {
             SettingItem(icon: "trash", iconColor: Theme.error, title: "清除缓存", subtitle: nil, type: .navigate),
             SettingItem(icon: "info.circle", iconColor: Theme.tertiary, title: "关于墨守music", subtitle: "v1.0.0", type: .navigate),
         ]),
-    ]
+        ]
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()

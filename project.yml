@@ -22,11 +22,9 @@ targets:
     sources:
       - path: MoshouMusic
         excludes:
-          - "Resources/default_scripts/*.js"
-    resources:
+          - "Resources/default_scripts"
       - path: MoshouMusic/Resources/default_scripts
         type: folder
-      - path: MoshouMusic/Resources/Assets.xcassets
     info:
       path: MoshouMusic/App/Info.plist
       properties:

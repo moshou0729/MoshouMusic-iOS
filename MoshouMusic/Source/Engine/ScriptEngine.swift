@@ -255,7 +255,9 @@ class ScriptEngine {
         let scriptNames = ["kw", "tx", "mg", "wy", "kg"]
 
         for name in scriptNames {
-            if let path = Bundle.main.path(forResource: name, ofType: "js"),
+            let path = Bundle.main.path(forResource: name, ofType: "js", inDirectory: "default_scripts")
+                ?? Bundle.main.path(forResource: name, ofType: "js")
+            if let path = path,
                let script = try? String(contentsOfFile: path, encoding: .utf8) {
                 context.evaluateScript(script)
                 Logger.info("加载内置脚本: \(name).js")

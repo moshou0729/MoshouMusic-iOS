@@ -349,9 +349,24 @@ class PlayerManager: NSObject {
     // MARK: - 封面
 
     private func fetchArtwork() {
-        guard let song = currentSong, let imgUrl = song.imgUrl else { return }
+        guard let song = currentSong else { return }
 
-        NetworkManager.shared.loadImage(url: imgUrl) { [weak self] data in
+        if let imgUrl = song.imgUrl, !imgUrl.isEmpty {
+            loadArtwork(from: imgUrl)
+        } else {
+            // 搜索结果无封面时，通过音源脚本获取
+            ScriptEngine.shared.getPic(source: song.source, songId: song.songmid) { [weak self] result in
+                if case .success(let url) = result, !url.isEmpty {
+                    DispatchQueue.main.async {
+                        self?.loadArtwork(from: url)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadArtwork(from urlString: String) {
+        NetworkManager.shared.loadImage(url: urlString) { [weak self] data in
             guard let data = data, let image = UIImage(data: data) else { return }
 
             var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]

@@ -45,6 +45,8 @@ targets:
         NSMicrophoneUsageDescription: 墨守music需要音频权限以播放音乐
         NSPhotoLibraryUsageDescription: 墨守music需要相册权限以保存封面
         NSAppleMusicUsageDescription: 墨守music需要音乐权限以播放音乐
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.moshou.music

@@ -27,3 +27,5 @@ Package.resolved
 # Secrets
 *.mobileprovision
 *.p12
+# Windows helper
+push.bat

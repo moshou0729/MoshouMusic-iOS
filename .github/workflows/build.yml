@@ -19,10 +19,18 @@ jobs:
           xcodebuild -version
           ls /Applications/ | grep -i xcode || true
 
-      - name: Install XcodeGen (prebuilt binary, no brew)
+      - name: Select newest Xcode
+        run: |
+          ls /Applications/ | grep -E "^Xcode(_[0-9.]+)?\.app"
+          NEWEST=$(ls /Applications/ | grep -E "^Xcode(_[0-9.]+)?\.app" | sort -V | tail -1)
+          echo "Selecting: $NEWEST"
+          sudo xcode-select -s "/Applications/$NEWEST/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install XcodeGen (pinned 2.42.0, prebuilt binary, no brew)
         run: |
           set -x
-          curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip
+          curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.42.0/xcodegen.zip
           unzip -q /tmp/xcodegen.zip -d /tmp
           ls -la /tmp/xcodegen/bin/
           echo "/tmp/xcodegen/bin" >> $GITHUB_PATH

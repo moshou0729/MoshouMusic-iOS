@@ -55,3 +55,14 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: NO
         SWIFT_OBJC_BRIDGING_HEADER: ""
+schemes:
+  MoshouMusic:
+    build:
+      targets:
+        MoshouMusic: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    archive:
+      config: Release

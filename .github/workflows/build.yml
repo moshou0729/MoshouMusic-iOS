@@ -13,19 +13,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Show environment
+        run: |
+          sw_vers || true
+          xcodebuild -version
+          ls /Applications/ | grep -i xcode || true
+
+      - name: Install XcodeGen (prebuilt binary, no brew)
+        run: |
+          set -x
+          curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip
+          unzip -q /tmp/xcodegen.zip -d /tmp
+          ls -la /tmp/xcodegen/bin/
+          echo "/tmp/xcodegen/bin" >> $GITHUB_PATH
 
       - name: Generate Xcode Project
-        run: xcodegen generate
-
-      - name: Select Xcode
         run: |
-          ls /Applications/ | grep Xcode
-          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodegen --version
+          xcodegen generate
+          ls -la MoshouMusic.xcodeproj/
+          echo "--- schemes ---"
+          xcodebuild -list -project MoshouMusic.xcodeproj
 
       - name: Build project
         run: |
+          set -o pipefail
           xcodebuild \
             -project MoshouMusic.xcodeproj \
             -scheme MoshouMusic \
@@ -35,14 +47,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
-            -derivedDataPath build
+            -derivedDataPath build 2>&1 | tee build.log | tail -200
 
       - name: Create IPA
         run: |
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "APP_PATH=$APP_PATH"
           mkdir -p Payload
-          cp -r build/Build/Products/Release-iphoneos/MoshouMusic.app Payload/
-          zip -r MoshouMusic.ipa Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry MoshouMusic.ipa Payload
+          ls -la MoshouMusic.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
@@ -51,10 +65,13 @@ jobs:
           path: MoshouMusic.ipa
           retention-days: 30
 
-      - name: Upload build logs on failure
+      - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
-          path: build/Logs
+          path: |
+            build.log
+            build/Logs/**/*.xcactivitylog
           retention-days: 7
+          if-no-files-found: ignore

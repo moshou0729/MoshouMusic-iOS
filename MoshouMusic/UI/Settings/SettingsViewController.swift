@@ -186,7 +186,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
     // MARK: - 导入脚本 (文档选择器)
 
     private func presentDocumentPicker() {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.javascript, .plainText])
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType(filenameExtension: "js") ?? .plainText, .plainText])
         picker.delegate = self
         picker.allowsMultipleSelection = false
         present(picker, animated: true)
@@ -448,7 +448,7 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
     }
 
     private func presentImportPicker() {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.javascript, .plainText])
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType(filenameExtension: "js") ?? .plainText, .plainText])
         picker.delegate = self
         picker.allowsMultipleSelection = false
         present(picker, animated: true)

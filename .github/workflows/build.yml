@@ -58,6 +58,7 @@ jobs:
             -derivedDataPath build 2>&1 | tee build.log | tail -200
 
       - name: Create IPA
+        id: create-ipa
         run: |
           APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
           echo "APP_PATH=$APP_PATH"
@@ -67,16 +68,21 @@ jobs:
             echo "::error::default_scripts folder missing from .app bundle!"
             exit 1
           fi
+          # 从 project.yml 读取版本号（CFBundleShortVersionString）
+          VERSION=$(grep -oE 'CFBundleShortVersionString: *"[^"]+"' project.yml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          [ -z "$VERSION" ] && VERSION="dev"
+          echo "VERSION=$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
-          zip -qry MoshouMusic.ipa Payload
-          ls -la MoshouMusic.ipa
+          zip -qry "MoshouMusic-v${VERSION}.ipa" Payload
+          ls -la "MoshouMusic-v${VERSION}.ipa"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MoshouMusic-ipa
-          path: MoshouMusic.ipa
+          name: MoshouMusic-${{ steps.create-ipa.outputs.version }}
+          path: MoshouMusic-v*.ipa
           retention-days: 30
 
       - name: Upload build log on failure

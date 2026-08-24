@@ -378,7 +378,7 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
 
         setupAddButton()
         navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .add, target: self, action: #selector(addSourceTapped)
+            title: "粘贴添加", style: .plain, target: self, action: #selector(openAddForm)
         )
     }
 
@@ -480,7 +480,19 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
         picker.delegate = self
         picker.allowsMultipleSelection = false
         present(picker, animated: true)
+
+        // TrollStore 沙盒下文档选择器常无回调，加超时兜底提示
+        importPickerTimeout?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+            self?.showAlert(
+                title: "文件导入可能不可用",
+                message: "在 TrollStore 环境下系统文件选择器经常选不到文件。建议改用「粘贴代码」：复制 .js 内容 → 返回点「+ 添加音源」→ 粘贴保存。"
+            )
+        }
+        importPickerTimeout = timer
     }
+
+    private var importPickerTimeout: Timer?
 
     private func removeCustomSource(_ source: String) {
         let url = ConfigStore.shared.scriptsDirectory.appendingPathComponent(source + ".js")
@@ -512,10 +524,17 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
 
 extension SourceSettingsViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        importPickerTimeout?.invalidate()
+        importPickerTimeout = nil
         guard let url = urls.first else { return }
         let secured = url.startAccessingSecurityScopedResource()
         importScript(at: url)
         if secured { url.stopAccessingSecurityScopedResource() }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        importPickerTimeout?.invalidate()
+        importPickerTimeout = nil
     }
 }
 

@@ -22,6 +22,9 @@ class PlayerManager: NSObject {
     private(set) var currentLyrics: [LRCLine] = []
     private(set) var currentLyricIndex: Int = -1
 
+    /// 最近一次播放失败的原因（供播放页展示，便于排查是哪个源/哪一步失败）
+    private(set) var lastPlayError: String?
+
     private(set) var playMode: PlayMode {
         get { PlayMode(rawValue: ConfigStore.shared.playMode) ?? .listRepeat }
         set { ConfigStore.shared.playMode = newValue.rawValue }
@@ -92,8 +95,10 @@ class PlayerManager: NSObject {
 
         loadAndPlay { [weak self] success in
             guard let self = self else { return }
-            if !success && !self.isSwitchingSource {
-                self.trySwitchSource()
+            if !success {
+                // 明确反馈播放失败，而不是静默吞掉
+                Logger.error("播放失败，源=\(self.currentSource)")
+                self.notifyStateChanged()
             }
         }
     }
@@ -182,6 +187,9 @@ class PlayerManager: NSObject {
             return
         }
 
+        // 记录上一次播放错误，供播放页展示
+        lastPlayError = nil
+
         // 清理旧歌词
         currentLyrics = []
         currentLyricIndex = -1
@@ -201,6 +209,7 @@ class PlayerManager: NSObject {
                 case .success(let url):
                     guard let playUrl = URL(string: url) else {
                         Logger.error("无效的播放 URL: \(url)")
+                        self.lastPlayError = "播放链接无效"
                         completion(false)
                         return
                     }
@@ -242,6 +251,7 @@ class PlayerManager: NSObject {
 
                 case .failure(let error):
                     Logger.error("获取播放链接失败: \(error.localizedDescription)")
+                    self.lastPlayError = "获取播放链接失败：\(error.localizedDescription)"
                     completion(false)
                 }
             }
@@ -268,9 +278,8 @@ class PlayerManager: NSObject {
                     onTimeChanged?(currentTime, duration)
                 } else if item.status == .failed {
                     Logger.error("播放项状态失败")
-                    if !isSwitchingSource {
-                        trySwitchSource()
-                    }
+                    self.lastPlayError = "播放器无法播放该链接（可能源失效或地域限制）"
+                    self.notifyStateChanged()
                 }
             }
         } else if keyPath == #keyPath(AVPlayerItem.duration) {
@@ -281,28 +290,11 @@ class PlayerManager: NSObject {
         }
     }
 
-    // MARK: - 自动换源
+    // MARK: - 自动换源（已禁用：半成品逻辑会吞掉失败且不真正播放，改为明确报错）
 
     private func trySwitchSource() {
-        guard !isSwitchingSource else { return }
-        isSwitchingSource = true
-
-        sourceSwitcher.switchSource(
-            currentSource: currentSource,
-            availableSources: ConfigStore.shared.enabledSources
-        ) { [weak self] newSource in
-            guard let self = self else { return false }
-
-            self.currentSource = newSource
-            self.loadAndPlay { success in
-                if success {
-                    self.isSwitchingSource = false
-                    Logger.info("换源成功: \(newSource)")
-                }
-            }
-            // 简化：返回 true 开始尝试
-            return true
-        }
+        // 保留方法签名，暂不启用自动换源
+        isSwitchingSource = false
     }
 
     // MARK: - 时间更新

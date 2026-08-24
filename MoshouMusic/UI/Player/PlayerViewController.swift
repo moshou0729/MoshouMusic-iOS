@@ -20,6 +20,7 @@ class PlayerViewController: UIViewController {
     private let nextButton = UIButton(type: .system)
     private let closeButton = UIButton(type: .system)
     private let sourceLabel = UILabel()
+    private let errorLabel = UILabel()
 
     private var currentArtworkImage: UIImage?
 
@@ -52,6 +53,14 @@ class PlayerViewController: UIViewController {
         sourceLabel.textColor = .white
         sourceLabel.alpha = 0.6
         view.addSubview(sourceLabel)
+
+        // 错误提示条（播放失败时显示具体原因，便于排查是哪个源/哪一步失败）
+        errorLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        errorLabel.textColor = UIColor(hex: 0xFF8A80)
+        errorLabel.textAlignment = .center
+        errorLabel.numberOfLines = 0
+        errorLabel.isHidden = true
+        view.addSubview(errorLabel)
 
         // 封面
         artworkImageView.contentMode = .scaleAspectFill
@@ -128,7 +137,7 @@ class PlayerViewController: UIViewController {
     }
 
     private func setupConstraints() {
-        let allViews: [UIView] = [backgroundView, closeButton, sourceLabel, artworkImageView,
+        let allViews: [UIView] = [backgroundView, closeButton, sourceLabel, errorLabel, artworkImageView,
                                    titleLabel, artistLabel, lyricsScrollView, lyricsLabel,
                                    progressSlider, currentTimeLabel, durationLabel,
                                    playModeButton, previousButton, playButton, nextButton]
@@ -153,6 +162,11 @@ class PlayerViewController: UIViewController {
             // 源标签
             sourceLabel.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
             sourceLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            // 错误提示条
+            errorLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 8),
+            errorLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            errorLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
 
             // 封面
             artworkImageView.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 20),
@@ -280,6 +294,14 @@ class PlayerViewController: UIViewController {
 
         // 播放模式
         playModeButton.setImage(UIImage(systemName: state.playMode.iconName), for: .normal)
+
+        // 错误提示
+        if let err = PlayerManager.shared.lastPlayError, !state.isPlaying {
+            errorLabel.text = "⚠️ \(err)"
+            errorLabel.isHidden = false
+        } else {
+            errorLabel.isHidden = true
+        }
     }
 
     private func updateLyrics(index: Int, lines: [LRCLine]) {

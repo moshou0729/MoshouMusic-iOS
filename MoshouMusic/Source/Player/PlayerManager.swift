@@ -32,6 +32,8 @@ class PlayerManager: NSObject {
     private var player: AVPlayer!
     private var timeObserverToken: Any?
     private var playerItemContext: Int = 0
+    /// 当前正在观察的播放项，切歌前必须先移除其 KVO 观察者，否则旧项释放时会闪退
+    private var observedItem: AVPlayerItem?
 
     private var playQueue: [Song] = []
     private var queueIndex: Int = 0
@@ -168,6 +170,12 @@ class PlayerManager: NSObject {
 
     // MARK: - 加载并播放
 
+    /// 移除某播放项的 KVO 观察者（防止其释放后仍被观察而闪退）
+    private func removeObservers(from item: AVPlayerItem) {
+        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), context: &playerItemContext)
+        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.duration), context: &playerItemContext)
+    }
+
     private func loadAndPlay(completion: @escaping (Bool) -> Void) {
         guard let song = currentSong else {
             completion(false)
@@ -199,6 +207,12 @@ class PlayerManager: NSObject {
 
                     Logger.info("开始播放: \(song.name) - \(song.singer) [\(self.currentSource)]")
 
+                    // 先移除上一个播放项的观察者，避免其释放后被观察而崩溃
+                    if let old = self.observedItem {
+                        self.removeObservers(from: old)
+                        self.observedItem = nil
+                    }
+
                     let item = AVPlayerItem(url: playUrl)
 
                     // 监听状态
@@ -217,6 +231,7 @@ class PlayerManager: NSObject {
                         context: &self.playerItemContext
                     )
 
+                    self.observedItem = item
                     self.player.replaceCurrentItem(with: item)
                     self.player.play()
                     self.isPlaying = true
@@ -504,6 +519,9 @@ class PlayerManager: NSObject {
     deinit {
         if let token = timeObserverToken {
             player.removeTimeObserver(token)
+        }
+        if let item = observedItem {
+            removeObservers(from: item)
         }
         NotificationCenter.default.removeObserver(self)
     }

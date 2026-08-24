@@ -97,14 +97,22 @@
             if (err) { callback(err, null); return }
             try {
                 const result = JSON.parse(resp.body)
-                const item = result.data && result.data.items && result.data.items[0]
-                const vkey = item && item.vkey
+                const data = result.data || {}
+                // 兼容两种返回结构: data.items[0].vkey 或 data[songmid].vkey
+                let vkey = null
+                if (data.items && data.items[0]) {
+                    vkey = data.items[0].vkey
+                } else if (data[songmid]) {
+                    vkey = data[songmid].vkey
+                }
                 if (vkey) {
-                    const playUrl = 'https://dl.stream.qqmusic.qq.com/' + filename +
+                    const host = 'https://dl.stream.qqmusic.qq.com/'
+                    const playUrl = host + filename +
                         '?vkey=' + vkey + '&guid=' + guid + '&fromtag=66'
                     callback(null, { url: playUrl })
                 } else {
-                    callback({ message: '获取播放链接失败(可能需鉴权): ' + (item ? item.subcode : ('HTTP ' + resp.statusCode)) }, null)
+                    const subcode = (data.items && data.items[0] && data.items[0].subcode) || result.subcode || ('HTTP ' + resp.statusCode)
+                    callback({ message: '获取播放链接失败(可能需鉴权/版权): ' + subcode }, null)
                 }
             } catch (e) {
                 callback({ message: '播放接口返回非 JSON: HTTP ' + resp.statusCode }, null)

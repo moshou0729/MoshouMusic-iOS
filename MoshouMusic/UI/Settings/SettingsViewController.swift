@@ -172,7 +172,9 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case "歌词透明度":
             navigationController?.pushViewController(OpacityViewController(), animated: true)
         case "导入脚本":
-            presentDocumentPicker()
+            // 统一入口：直接进「音源设置」，在那里的「+ / 添加音源」完成导入，
+            // 避免用户误用系统文档选择器而在 TrollStore 沙盒里选不到文件
+            navigationController?.pushViewController(SourceSettingsViewController(), animated: true)
         case "关于墨守music":
             navigationController?.pushViewController(AboutViewController(), animated: true)
         case "清除缓存":
@@ -371,12 +373,32 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -76),
         ])
 
+        setupAddButton()
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .add, target: self, action: #selector(addSourceTapped)
         )
+    }
+
+    /// 底部醒目的「添加音源」主按钮（默认走最可靠的「手动粘贴代码」路径）
+    private func setupAddButton() {
+        let addBtn = UIButton(type: .system)
+        addBtn.setTitle("+ 添加音源", for: .normal)
+        addBtn.titleLabel?.font = Theme.titleMedium
+        addBtn.setTitleColor(.white, for: .normal)
+        addBtn.backgroundColor = Theme.error
+        addBtn.layer.cornerRadius = Theme.cornerLarge
+        addBtn.translatesAutoresizingMaskIntoConstraints = false
+        addBtn.addTarget(self, action: #selector(openAddForm), for: .touchUpInside)
+        view.addSubview(addBtn)
+        NSLayoutConstraint.activate([
+            addBtn.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            addBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            addBtn.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            addBtn.heightAnchor.constraint(equalToConstant: 48),
+        ])
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -434,17 +456,23 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
 
     // MARK: - 添加音源
 
+    // 右上「+」：选择导入方式（文件 / 粘贴）
     @objc private func addSourceTapped() {
-        let alert = UIAlertController(title: "添加音源", message: nil, preferredStyle: .actionSheet)
+        let alert = UIAlertController(title: "添加音源", message: "从文件导入在 TrollStore 沙盒下可能选不到文件，推荐「手动粘贴代码」", preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "手动粘贴代码 (推荐)", style: .default) { [weak self] _ in
+            self?.openAddForm()
+        })
         alert.addAction(UIAlertAction(title: "从文件导入 (.js)", style: .default) { [weak self] _ in
             self?.presentImportPicker()
         })
-        alert.addAction(UIAlertAction(title: "手动粘贴代码", style: .default) { [weak self] _ in
-            let vc = AddSourceViewController()
-            self?.navigationController?.pushViewController(vc, animated: true)
-        })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         present(alert, animated: true)
+    }
+
+    // 底部主按钮：直接进入粘贴代码表单（最可靠路径）
+    @objc private func openAddForm() {
+        let vc = AddSourceViewController()
+        navigationController?.pushViewController(vc, animated: true)
     }
 
     private func presentImportPicker() {

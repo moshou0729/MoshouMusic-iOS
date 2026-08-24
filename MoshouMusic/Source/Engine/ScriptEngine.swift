@@ -256,22 +256,30 @@ class ScriptEngine {
             timeout: timeout,
             isBinary: isBinary
         ) { result in
-            switch result {
-            case .success(let response):
-                let responseDict: [String: Any] = [
-                    "statusCode": response.statusCode,
-                    "headers": response.headers,
-                    "body": response.body,
-                    "raw": response.rawData?.base64EncodedString() ?? ""
-                ]
-                callbackRef.call(withArguments: [NSNull(), responseDict])
+            // JSContext 非线程安全，必须回到创建它的主线程再执行 JS 回调
+            let invoke: () -> Void = {
+                switch result {
+                case .success(let response):
+                    let responseDict: [String: Any] = [
+                        "statusCode": response.statusCode,
+                        "headers": response.headers,
+                        "body": response.body,
+                        "raw": response.rawData?.base64EncodedString() ?? ""
+                    ]
+                    callbackRef.call(withArguments: [NSNull(), responseDict])
 
-            case .failure(let error):
-                let errorDict: [String: Any] = [
-                    "message": error.localizedDescription,
-                    "code": (error as NSError).code
-                ]
-                callbackRef.call(withArguments: [errorDict, NSNull()])
+                case .failure(let error):
+                    let errorDict: [String: Any] = [
+                        "message": error.localizedDescription,
+                        "code": (error as NSError).code
+                    ]
+                    callbackRef.call(withArguments: [errorDict, NSNull()])
+                }
+            }
+            if Thread.isMainThread {
+                invoke()
+            } else {
+                DispatchQueue.main.async(execute: invoke)
             }
         }
     }

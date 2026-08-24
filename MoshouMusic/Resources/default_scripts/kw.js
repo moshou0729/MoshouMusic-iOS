@@ -21,6 +21,7 @@
             case 'musicUrl':   handleMusicUrl(info, callback); break
             case 'lyric':      handleLyric(info, callback); break
             case 'pic':        handlePic(info, callback); break
+            case 'musicBoard': handleBoard(info, callback); break
             default: callback({ message: '未知操作: ' + action }, null)
         }
     })
@@ -129,6 +130,31 @@
             }
             if (err) { callback(err, null); return }
             callback(null, { url: url })
+        })
+    }
+
+    // ==================== 推荐 (热门关键词搜索兜底) ====================
+    const HOT = ['孤勇者', '晴天', '起风了', '海阔天空', '稻香', '光年之外', '演员', '夜曲']
+
+    function handleBoard(info, callback) {
+        const picks = [HOT[0], HOT[2], HOT[4]]
+        let merged = []
+        let done = 0
+        picks.forEach(function(kw) {
+            handleSearch({ keyword: kw, page: 1 }, function(err, data) {
+                done++
+                if (!err && data && data.list) {
+                    merged = merged.concat(data.list)
+                }
+                if (done === picks.length) {
+                    const seen = {}
+                    const out = []
+                    merged.forEach(function(s) {
+                        if (!seen[s.songmid]) { seen[s.songmid] = 1; out.push(s) }
+                    })
+                    callback(null, { list: out.slice(0, 30), total: out.length })
+                }
+            })
         })
     }
 

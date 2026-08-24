@@ -72,6 +72,14 @@ class FloatingLyricsManager: NSObject {
         }
     }
 
+    /// 实时更新悬浮歌词透明度
+    func updateOpacity(_ value: Float) {
+        opacity = CGFloat(value)
+        if !isLocked, let view = lyricsView {
+            view.backgroundColor = UIColor.black.withAlphaComponent(opacity)
+        }
+    }
+
     // MARK: - 手势
 
     private func setupGesture() {

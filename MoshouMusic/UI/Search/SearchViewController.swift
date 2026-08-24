@@ -1,7 +1,7 @@
 import UIKit
 
 /// 搜索页 — Material Design 3 风格
-/// 药丸搜索栏 + 彩色 Chips 音源切换 + 搜索结果列表
+/// 药丸搜索栏 + 彩色 Chips 音源切换 (可持久化, 支持本机自定义音源) + 搜索结果列表
 class SearchViewController: UIViewController {
 
     private let searchBar = UISearchBar()
@@ -11,17 +11,20 @@ class SearchViewController: UIViewController {
     private let emptyLabel = UILabel()
 
     private var searchResults: [Song] = []
-    private var currentSource: String = "kw"
     private var currentKeyword: String = ""
     private var searchTask: DispatchWorkItem?
-
-    private let sources = ["kw", "tx", "mg", "wy", "kg"]
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 返回时重建 Chips（可能新增了自定义音源 / 切换了默认源）
+        reloadChips()
     }
 
     // MARK: - UI
@@ -38,6 +41,11 @@ class SearchViewController: UIViewController {
         searchBar.searchTextField.backgroundColor = Theme.surfaceVariant
         searchBar.searchTextField.layer.cornerRadius = Theme.cornerFull
         searchBar.searchTextField.clipsToBounds = true
+        searchBar.searchTextField.textColor = Theme.text
+        searchBar.searchTextField.tintColor = Theme.primary
+        if let placeholder = searchBar.searchTextField.value(forKey: "placeholderLabel") as? UILabel {
+            placeholder.textColor = Theme.subtext
+        }
         searchBar.tintColor = Theme.primary
         navigationItem.titleView = searchBar
 
@@ -51,7 +59,7 @@ class SearchViewController: UIViewController {
         sourceChipsContainer.alignment = .center
         sourceChipsScrollView.addSubview(sourceChipsContainer)
 
-        setupSourceChips()
+        reloadChips()
 
         // 表格
         tableView.dataSource = self
@@ -80,7 +88,6 @@ class SearchViewController: UIViewController {
         sourceChipsContainer.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            // Chips
             sourceChipsScrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             sourceChipsScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             sourceChipsScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -92,13 +99,11 @@ class SearchViewController: UIViewController {
             sourceChipsContainer.bottomAnchor.constraint(equalTo: sourceChipsScrollView.bottomAnchor),
             sourceChipsContainer.heightAnchor.constraint(equalTo: sourceChipsScrollView.heightAnchor),
 
-            // 表格
             tableView.topAnchor.constraint(equalTo: sourceChipsScrollView.bottomAnchor, constant: 4),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            // 空状态
             emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
@@ -106,23 +111,35 @@ class SearchViewController: UIViewController {
 
     // MARK: - 音源 Chips
 
-    private func setupSourceChips() {
-        for source in sources {
+    private func reloadChips() {
+        let ids = ConfigStore.shared.selectableSourceIds
+        let selected = ConfigStore.shared.currentSource
+        sourceChipsContainer.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for source in ids {
             let chip = createSourceChip(source: source)
             sourceChipsContainer.addArrangedSubview(chip)
+        }
+        // 确保选中态正确
+        for (i, source) in ids.enumerated() {
+            if let chip = sourceChipsContainer.arrangedSubviews[i] as? UIButton {
+                updateChipAppearance(chip, source: source, isSelected: source == selected)
+            }
         }
     }
 
     private func createSourceChip(source: String) -> UIButton {
         let chip = UIButton(type: .system)
-        chip.setTitle(Theme.sourceName(source), for: .normal)
+        chip.setTitle(ConfigStore.shared.displayName(for: source), for: .normal)
         chip.titleLabel?.font = Theme.labelLarge
         chip.layer.cornerRadius = Theme.cornerFull
         chip.contentEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
-        chip.tag = sources.firstIndex(of: source) ?? 0
+        if let index = ConfigStore.shared.selectableSourceIds.firstIndex(of: source) {
+            chip.tag = index
+        }
         chip.addTarget(self, action: #selector(sourceChipTapped(_:)), for: .touchUpInside)
 
-        updateChipAppearance(chip, source: source, isSelected: source == currentSource)
+        let selected = ConfigStore.shared.currentSource == source
+        updateChipAppearance(chip, source: source, isSelected: selected)
 
         return chip
     }
@@ -139,14 +156,15 @@ class SearchViewController: UIViewController {
 
     @objc private func sourceChipTapped(_ sender: UIButton) {
         let index = sender.tag
-        guard index < sources.count else { return }
+        let ids = ConfigStore.shared.selectableSourceIds
+        guard index < ids.count else { return }
 
-        currentSource = sources[index]
+        let source = ids[index]
+        ConfigStore.shared.currentSource = source
 
-        // 更新所有 Chip 外观
-        for (i, source) in sources.enumerated() {
+        for (i, s) in ids.enumerated() {
             if let chip = sourceChipsContainer.arrangedSubviews[i] as? UIButton {
-                updateChipAppearance(chip, source: source, isSelected: i == index)
+                updateChipAppearance(chip, source: s, isSelected: i == index)
             }
         }
 
@@ -161,20 +179,20 @@ class SearchViewController: UIViewController {
     private func performSearch() {
         guard !currentKeyword.isEmpty else { return }
 
-        // 显示加载状态
         emptyLabel.text = "搜索中..."
 
+        let source = ConfigStore.shared.currentSource
         ScriptEngine.shared.search(
             keyword: currentKeyword,
             page: 1,
-            source: currentSource
+            source: source
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
 
                 switch result {
                 case .success(let list):
-                    self.searchResults = list.compactMap { Song(from: $0, source: self.currentSource) }
+                    self.searchResults = list.compactMap { Song(from: $0, source: source) }
                     self.tableView.reloadData()
                     self.emptyLabel.text = self.searchResults.isEmpty ? "没有找到相关音乐" : ""
                     self.emptyLabel.isHidden = !self.searchResults.isEmpty
@@ -195,7 +213,6 @@ class SearchViewController: UIViewController {
 
 extension SearchViewController: UISearchBarDelegate {
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
-        // 防抖
         searchTask?.cancel()
         let task = DispatchWorkItem { [weak self] in
             self?.currentKeyword = searchText.trimmingCharacters(in: .whitespaces)
@@ -255,12 +272,10 @@ extension SearchViewController {
     private func showMoreOptions(for song: Song) {
         let alert = UIAlertController(title: song.name, message: song.singer, preferredStyle: .actionSheet)
 
-        // 添加到歌单
         alert.addAction(UIAlertAction(title: "添加到歌单", style: .default) { _ in
             self.showPlaylistPicker(for: song)
         })
 
-        // 下一首播放
         alert.addAction(UIAlertAction(title: "下一首播放", style: .default) { _ in
             PlayerManager.shared.addToQueue(song)
         })

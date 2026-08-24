@@ -19,6 +19,8 @@ class ConfigStore {
         static let floatingOpacity = "floatingOpacity"
         static let isDarkMode = "isDarkMode"
         static let cacheSize = "cacheSize"
+        static let currentSource = "currentSource"
+        static let customSources = "customSources"
     }
 
     // MARK: - 路径
@@ -78,6 +80,49 @@ class ConfigStore {
             sources.removeAll { $0 == source }
         }
         enabledSources = sources
+    }
+
+    // MARK: - 当前选中源
+
+    /// 当前搜索/播放使用的音源
+    var currentSource: String {
+        get { defaults.string(forKey: Keys.currentSource) ?? "kw" }
+        set { defaults.set(newValue, forKey: Keys.currentSource) }
+    }
+
+    // MARK: - 自定义音源 (本机手动添加)
+
+    /// 自定义音源登记: [音源ID: 显示名]
+    var customSources: [String: String] {
+        get { defaults.dictionary(forKey: Keys.customSources) as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: Keys.customSources) }
+    }
+
+    func addCustomSource(id: String, name: String) {
+        var c = customSources
+        c[id] = name
+        customSources = c
+    }
+
+    func removeCustomSource(id: String) {
+        var c = customSources
+        c.removeValue(forKey: id)
+        customSources = c
+    }
+
+    /// 全部可选音源 id（内置在前，自定义在后，去重）
+    var selectableSourceIds: [String] {
+        var ids = allSources
+        for id in customSources.keys where !ids.contains(id) {
+            ids.append(id)
+        }
+        return ids
+    }
+
+    /// 显示名（内置走 ScriptManager，自定义走登记名）
+    func displayName(for source: String) -> String {
+        if let name = customSources[source] { return name }
+        return ScriptManager.shared.sourceDisplayName(source)
     }
 
     // MARK: - 播放设置

@@ -69,6 +69,8 @@ extension RankingViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        // TODO: 进入对应源排行榜详情
+        let source = sources[indexPath.row]
+        let boardVC = BoardViewController(source: source)
+        navigationController?.pushViewController(boardVC, animated: true)
     }
 }

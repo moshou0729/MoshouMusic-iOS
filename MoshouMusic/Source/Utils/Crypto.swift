@@ -70,6 +70,21 @@ class Crypto {
         return decrypted.base64EncodedString()
     }
 
+    /// AES-CBC 加密（显式 IV）— 供脚本引擎 weapi 等使用
+    /// - Parameters:
+    ///   - data: 原始数据 (Base64 编码)
+    ///   - key: 密钥 (UTF8)
+    ///   - iv: 初始化向量 (UTF8)
+    /// - Returns: Base64 编码的密文
+    static func aesCbc(_ data: String, key: String, iv: String) -> String {
+        guard let inputData = Data(base64Encoded: data),
+              let keyData = key.data(using: .utf8),
+              let ivData = iv.data(using: .utf8) else { return "" }
+
+        let encrypted = aesOperation(inputData, keyData: keyData, ivData: Array(ivData.prefix(kCCBlockSizeAES128)), operation: CCOperation(kCCEncrypt))
+        return encrypted.base64EncodedString()
+    }
+
     private static func aesOperation(_ data: Data, keyData: Data, mode: String, operation: CCOperation) -> Data {
         let keyLength = kCCKeySizeAES128
         let keyBytes = Array(keyData.prefix(keyLength))
@@ -110,6 +125,44 @@ class Crypto {
                             CCOptions(kCCOptionPKCS7Padding | kCCOptionECBMode),
                             keyPtr.baseAddress, keyLength,
                             nil,
+                            dataPtr.baseAddress, dataBytes.count,
+                            bufferPtr.baseAddress, bufferCapacity,
+                            &numBytesProcessed
+                        )
+                    }
+                }
+            }
+        }
+
+        guard status == kCCSuccess else {
+            Logger.error("AES operation failed: \(status)")
+            return Data()
+        }
+
+        return Data(bytes: buffer, count: numBytesProcessed)
+    }
+
+    /// AES 运算（显式 IV）— CBC 模式使用传入的 iv，ECB 忽略
+    private static func aesOperation(_ data: Data, keyData: Data, ivData: [UInt8], operation: CCOperation) -> Data {
+        let keyLength = kCCKeySizeAES128
+        let keyBytes = Array(keyData.prefix(keyLength))
+        let ivLength = kCCBlockSizeAES128
+        let dataBytes = Array(data)
+
+        var buffer = [UInt8](repeating: 0, count: dataBytes.count + ivLength)
+        var numBytesProcessed: size_t = 0
+        let bufferCapacity = buffer.count
+
+        let status = keyBytes.withUnsafeBufferPointer { keyPtr in
+            dataBytes.withUnsafeBufferPointer { dataPtr in
+                buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                    return ivData.withUnsafeBufferPointer { ivPtr in
+                        CCCrypt(
+                            operation,
+                            CCAlgorithm(kCCAlgorithmAES),
+                            CCOptions(kCCOptionPKCS7Padding),
+                            keyPtr.baseAddress, keyLength,
+                            ivPtr.baseAddress,
                             dataPtr.baseAddress, dataBytes.count,
                             bufferPtr.baseAddress, bufferCapacity,
                             &numBytesProcessed

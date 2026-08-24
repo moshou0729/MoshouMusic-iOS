@@ -88,6 +88,27 @@ class ScriptManager {
         }
     }
 
+    // MARK: - 保存自定义脚本 (手动粘贴代码)
+
+    /// 保存用户手动粘贴的音源脚本，并热加载
+    func saveCustomScript(id: String, name: String, code: String) -> Bool {
+        let scriptsDir = ConfigStore.shared.scriptsDirectory
+        do {
+            try FileManager.default.createDirectory(at: scriptsDir, withIntermediateDirectories: true)
+            let dest = scriptsDir.appendingPathComponent(id + ".js")
+            try code.write(to: dest, atomically: true, encoding: .utf8)
+
+            ScriptEngine.shared.loadCustomScript(code, name: id + ".js")
+            ConfigStore.shared.addCustomSource(id: id, name: name)
+            scanScripts()
+            Logger.info("保存并加载自定义音源: \(id)")
+            return true
+        } catch {
+            Logger.error("保存自定义脚本失败: \(error)")
+            return false
+        }
+    }
+
     // MARK: - 切换源开关
 
     func toggleSource(_ source: String, enabled: Bool) {

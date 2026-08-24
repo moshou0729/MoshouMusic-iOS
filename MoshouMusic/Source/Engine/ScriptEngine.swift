@@ -17,11 +17,15 @@ class ScriptEngine {
     // MARK: - Properties
 
     private var context: JSContext!
-    private var eventHandlers: [String: JSValue] = [:]
 
-    /// 脚本支持的平台
+    /// 按音源注册的请求处理器 (source -> handler)，实现多音源并发可用
+    private var requestHandlersBySource: [String: JSValue] = [:]
+    /// 最近一次 inited 声明的音源，用于与紧随其后的 lx.on('request') 配对
+    private var lastInitedSources: [String] = []
+
+    /// 脚本支持的平台（累积）
     private(set) var supportedSources: [String] = []
-    /// 脚本支持的音质
+    /// 脚本支持的音质（累积）
     private(set) var supportedQualities: [String] = []
 
     /// 是否已初始化
@@ -114,6 +118,12 @@ class ScriptEngine {
         }
         crypto.setObject(aesDecryptBlock, forKeyedSubscript: "aesDecrypt" as NSString)
 
+        let aesCbcBlock: @convention(block) (String, String, String) -> String = {
+            data, key, iv in
+            return Crypto.aesCbc(data, key: key, iv: iv)
+        }
+        crypto.setObject(aesCbcBlock, forKeyedSubscript: "aesCbc" as NSString)
+
         let rsaEncryptBlock: @convention(block) (String, String) -> String = {
             data, publicKey in
             return Crypto.rsaEncrypt(data, publicKey: publicKey)
@@ -181,7 +191,19 @@ class ScriptEngine {
     // MARK: - 事件处理
 
     private func registerHandler(_ eventName: String, callback: JSValue) {
-        eventHandlers[eventName] = callback
+        if eventName == "request" {
+            // 与最近的 inited 声明配对：脚本先 send(inited) 再 on('request')
+            if !lastInitedSources.isEmpty {
+                for s in lastInitedSources {
+                    requestHandlersBySource[s] = callback
+                    Logger.info("注册音源请求处理器: \(s)")
+                }
+                lastInitedSources.removeAll()
+            } else {
+                Logger.warn("收到 request 处理器但无对应 inited 声明，已忽略")
+            }
+            return
+        }
         Logger.info("注册事件处理器: \(eventName)")
     }
 
@@ -190,10 +212,15 @@ class ScriptEngine {
         case "inited":
             if let dict = data.toDictionary() as? [String: Any] {
                 if let sources = dict["sources"] as? [String] {
-                    supportedSources = sources
+                    for s in sources where !supportedSources.contains(s) {
+                        supportedSources.append(s)
+                    }
+                    lastInitedSources = sources
                 }
                 if let qualities = dict["qualities"] as? [String] {
-                    supportedQualities = qualities
+                    for q in qualities where !supportedQualities.contains(q) {
+                        supportedQualities.append(q)
+                    }
                 }
             }
             isInitialized = true
@@ -301,7 +328,7 @@ class ScriptEngine {
         source: String,
         completion: @escaping (Result<[[String: Any]], Error>) -> Void
     ) {
-        guard let handler = eventHandlers["request"] else {
+        guard let handler = requestHandlersBySource[source] else {
             completion(.failure(ScriptError.noHandler))
             return
         }
@@ -333,6 +360,42 @@ class ScriptEngine {
         handler.call(withArguments: [request, callbackValue])
     }
 
+    // MARK: - 上层接口: 排行榜 / 推荐
+
+    /// 获取某音源的排行榜 / 推荐列表
+    func musicBoard(
+        source: String,
+        completion: @escaping (Result<[[String: Any]], Error>) -> Void
+    ) {
+        guard let handler = requestHandlersBySource[source] else {
+            completion(.failure(ScriptError.noHandler))
+            return
+        }
+
+        let request: [String: Any] = [
+            "source": source,
+            "action": "musicBoard",
+            "info": [:]
+        ]
+
+        let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
+            if error.isNull || error.isUndefined {
+                if let dict = data.toDictionary() as? [String: Any] {
+                    if let list = dict["list"] as? [[String: Any]] {
+                        completion(.success(list))
+                        return
+                    }
+                }
+                completion(.failure(ScriptError.invalidResponse))
+            } else {
+                completion(.failure(ScriptError.scriptError(error.toString())))
+            }
+        }
+
+        let callbackValue = JSValue(object: callback, in: context)!
+        handler.call(withArguments: [request, callbackValue])
+    }
+
     // MARK: - 上层接口: 获取播放链接
 
     /// 获取音乐播放 URL
@@ -342,7 +405,7 @@ class ScriptEngine {
         quality: String = "320k",
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        guard let handler = eventHandlers["request"] else {
+        guard let handler = requestHandlersBySource[source] else {
             completion(.failure(ScriptError.noHandler))
             return
         }
@@ -381,7 +444,7 @@ class ScriptEngine {
         songId: String,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        guard let handler = eventHandlers["request"] else {
+        guard let handler = requestHandlersBySource[source] else {
             completion(.failure(ScriptError.noHandler))
             return
         }
@@ -420,7 +483,7 @@ class ScriptEngine {
         songId: String,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        guard let handler = eventHandlers["request"] else {
+        guard let handler = requestHandlersBySource[source] else {
             completion(.failure(ScriptError.noHandler))
             return
         }

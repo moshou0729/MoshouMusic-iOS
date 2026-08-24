@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 
 /// 设置页 — Material Design 3 风格
 /// 音源管理 / 播放设置 / 悬浮歌词 / 外观 / 关于
@@ -164,6 +165,14 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         switch item.title {
         case "音源设置":
             navigationController?.pushViewController(SourceSettingsViewController(), animated: true)
+        case "默认音质":
+            navigationController?.pushViewController(QualityPickerViewController(), animated: true)
+        case "播放模式":
+            navigationController?.pushViewController(PlayModePickerViewController(), animated: true)
+        case "歌词透明度":
+            navigationController?.pushViewController(OpacityViewController(), animated: true)
+        case "导入脚本":
+            presentDocumentPicker()
         case "关于墨守music":
             navigationController?.pushViewController(AboutViewController(), animated: true)
         case "清除缓存":
@@ -171,6 +180,28 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             showAlert(title: "已清除缓存", message: "缓存已清理完成")
         default:
             showAlert(title: "功能开发中", message: "\(item.title) 即将上线")
+        }
+    }
+
+    // MARK: - 导入脚本 (文档选择器)
+
+    private func presentDocumentPicker() {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.javascript, .plainText])
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    private func importScript(at url: URL) {
+        guard url.pathExtension.lowercased() == "js" else {
+            showAlert(title: "格式不支持", message: "请选择 .js 音源脚本")
+            return
+        }
+        let ok = ScriptManager.shared.importScript(url: url)
+        if ok {
+            showAlert(title: "导入成功", message: "脚本已加入音源，可在「音源设置」中启用")
+        } else {
+            showAlert(title: "导入失败", message: "请检查脚本格式后重试")
         }
     }
 
@@ -310,11 +341,22 @@ class SettingCell: UITableViewCell {
     }
 }
 
+// MARK: - 文档导入
+
+extension SettingsViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        // 先获取安全访问权限再读取
+        let secured = url.startAccessingSecurityScopedResource()
+        importScript(at: url)
+        if secured { url.stopAccessingSecurityScopedResource() }
+    }
+}
+
 // MARK: - 子页面
 
 class SourceSettingsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private let sources = ["kw", "tx", "mg", "wy", "kg"]
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -331,6 +373,22 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .add, target: self, action: #selector(addSourceTapped)
+        )
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        tableView.reloadData()
+    }
+
+    private var sources: [String] { ConfigStore.shared.selectableSourceIds }
+
+    // 区分内置 / 自定义音源
+    private func isCustom(_ source: String) -> Bool {
+        return ConfigStore.shared.customSources[source] != nil
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { sources.count }
@@ -338,7 +396,7 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "SourceCell", for: indexPath)
         let source = sources[indexPath.row]
-        cell.textLabel?.text = Theme.sourceName(source)
+        cell.textLabel?.text = ConfigStore.shared.displayName(for: source)
         cell.textLabel?.textColor = Theme.text
         cell.imageView?.image = UIImage(systemName: "music.note")?
             .withTintColor(Theme.sourceColor(source), renderingMode: .alwaysOriginal)
@@ -354,10 +412,82 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
         return cell
     }
 
+    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        return isCustom(sources[indexPath.row])
+    }
+
+    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+        guard editingStyle == .delete else { return }
+        let source = sources[indexPath.row]
+        removeCustomSource(source)
+    }
+
+    func tableView(_ tableView: UITableView, titleForDeleteConfirmationButtonForRowAt indexPath: IndexPath) -> String? {
+        return "删除"
+    }
+
     @objc private func sourceToggled(_ sender: UISwitch) {
         let source = sources[sender.tag]
         ConfigStore.shared.setSource(source, enabled: sender.isOn)
         ScriptManager.shared.scanScripts()
+    }
+
+    // MARK: - 添加音源
+
+    @objc private func addSourceTapped() {
+        let alert = UIAlertController(title: "添加音源", message: nil, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "从文件导入 (.js)", style: .default) { [weak self] _ in
+            self?.presentImportPicker()
+        })
+        alert.addAction(UIAlertAction(title: "手动粘贴代码", style: .default) { [weak self] _ in
+            let vc = AddSourceViewController()
+            self?.navigationController?.pushViewController(vc, animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func presentImportPicker() {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.javascript, .plainText])
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    private func removeCustomSource(_ source: String) {
+        let url = ConfigStore.shared.scriptsDirectory.appendingPathComponent(source + ".js")
+        try? FileManager.default.removeItem(at: url)
+        ConfigStore.shared.removeCustomSource(id: source)
+        ScriptManager.shared.scanScripts()
+        tableView.reloadData()
+    }
+
+    // MARK: - 文档导入
+
+    private func importScript(at url: URL) {
+        guard url.pathExtension.lowercased() == "js" else {
+            showAlert(title: "格式不支持", message: "请选择 .js 音源脚本")
+            return
+        }
+        let ok = ScriptManager.shared.importScript(url: url)
+        showAlert(title: ok ? "导入成功" : "导入失败",
+                  message: ok ? "脚本已加入音源" : "请检查脚本格式后重试")
+        tableView.reloadData()
+    }
+
+    private func showAlert(title: String, message: String?) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
+    }
+}
+
+extension SourceSettingsViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        let secured = url.startAccessingSecurityScopedResource()
+        importScript(at: url)
+        if secured { url.stopAccessingSecurityScopedResource() }
     }
 }
 

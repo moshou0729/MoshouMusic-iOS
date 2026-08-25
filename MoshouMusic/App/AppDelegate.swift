@@ -135,6 +135,33 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 }
 
+/// 采集当前线程调用栈（用于崩溃日志）。在信号处理器中调用，
+/// 仅使用 async-signal-safe 的 backtrace / backtrace_symbols。
+func moshouBacktrace() -> String {
+    var buffer = [UnsafeMutableRawPointer?](repeating: nil, count: 80)
+    let count = backtrace(&buffer, Int32(buffer.count))
+    guard count > 0 else { return "(无调用栈)" }
+    var out = ""
+    if let symbols = backtrace_symbols(&buffer, count) {
+        for i in 0..<Int(count) {
+            let sym: UnsafeMutablePointer<CChar>? = symbols[i]
+            if let s = sym, let str = String(validatingUTF8: s) {
+                out += "\(i)\t\(str)\n"
+            } else {
+                out += "\(i)\t<unknown>\n"
+            }
+        }
+        free(symbols)
+    } else {
+        for i in 0..<Int(count) {
+            if let p = buffer[i] {
+                out += "\(i)\t\(p)\n"
+            }
+        }
+    }
+    return out
+}
+
 @_cdecl("moshouHandleException")
 func moshouHandleException(_ exception: NSException) {
     let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
@@ -164,7 +191,8 @@ func moshouSignalHandler(sig: Int32) {
     let path = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
         ?? NSTemporaryDirectory()
     let full = (path as NSString).appendingPathComponent("crash.log")
-    let msg = "\n=== SIGNAL \(sig) \(Date()) ===\n"
+    let bt = moshouBacktrace()
+    let msg = "\n=== SIGNAL \(sig) \(Date()) ===\nBACKTRACE:\n\(bt)\n"
     if let fh = FileHandle(forWritingAtPath: full) {
         fh.seekToEndOfFile()
         fh.write(msg.data(using: .utf8) ?? Data())

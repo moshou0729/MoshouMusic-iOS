@@ -1,6 +1,13 @@
 import UIKit
 import UniformTypeIdentifiers
 
+/// 读取 App 真实版本号（来自 Info.plist，由 CI 在每次构建时自动 +1 patch）
+enum AppInfo {
+    static var shortVersion: String {
+        return (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
+    }
+}
+
 /// 设置页 — Material Design 3 风格
 /// 音源管理 / 播放设置 / 悬浮歌词 / 外观 / 关于
 class SettingsViewController: UIViewController {
@@ -27,7 +34,7 @@ class SettingsViewController: UIViewController {
         ]),
         SettingSection(title: "其他", items: [
             SettingItem(icon: "trash", iconColor: Theme.error, title: "清除缓存", subtitle: nil, type: .navigate),
-            SettingItem(icon: "info.circle", iconColor: Theme.tertiary, title: "关于墨守music", subtitle: "v1.0.0", type: .navigate),
+            SettingItem(icon: "info.circle", iconColor: Theme.tertiary, title: "关于墨守music", subtitle: "v\(AppInfo.shortVersion)", type: .navigate),
         ]),
         ]
     }
@@ -545,7 +552,7 @@ class AboutViewController: UIViewController {
         view.backgroundColor = Theme.bg
 
         let label = UILabel()
-        label.text = "墨守music v1.0.0\n墨韵守音 · 巨魔音乐\n\n参考 LXMusic Mobile 架构\n独立开发，兼容社区脚本"
+        label.text = "墨守music v\(AppInfo.shortVersion)\n墨韵守音 · 巨魔音乐\n\n参考 LXMusic Mobile 架构\n独立开发，兼容社区脚本"
         label.font = Theme.bodyLarge
         label.textColor = Theme.text
         label.textAlignment = .center

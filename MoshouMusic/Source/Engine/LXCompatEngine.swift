@@ -117,7 +117,10 @@ final class LXCompatEngine {
         }
 
         let vm = JSVirtualMachine()
-        let ctx = JSContext(virtualMachine: vm)!
+        guard let ctx = JSContext(virtualMachine: vm) else {
+            Logger.error("LX[\(id)] 无法创建 JSContext（内存不足？），跳过")
+            return
+        }
         ctx.exceptionHandler = { [weak self] _, ex in
             Logger.error("LX[\(id)] JS异常: \(ex?.description ?? "")")
         }

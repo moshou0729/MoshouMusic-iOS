@@ -205,4 +205,13 @@ extension UIColor {
             alpha: a1 * (1 - ratio) + a2 * ratio
         )
     }
+
+    /// 根据背景色亮度返回对比文字色（亮背景用深色字，暗背景用白色字）
+    static func contrastingTextColor(for color: UIColor) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        // sRGB 相对亮度
+        let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return lum < 0.6 ? .white : UIColor(hex: 0x1A1B25)
+    }
 }

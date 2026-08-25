@@ -23,7 +23,7 @@ class FloatingLyricsView: UIView {
         currentLyricLabel.textColor = .white
         currentLyricLabel.textAlignment = .center
         currentLyricLabel.numberOfLines = 1
-        currentLyricLabel.text = "墨守music"
+        currentLyricLabel.text = "悬浮歌词"
         addSubview(currentLyricLabel)
 
         // 下一行 (预览)

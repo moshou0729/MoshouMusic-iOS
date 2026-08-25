@@ -33,6 +33,15 @@ class PlayerViewController: UIViewController {
         updateUI()
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 封面可能已在进入本页前加载完（artworkLoaded 通知错过），进入时补显
+        if let artwork = PlayerManager.shared.currentArtwork {
+            currentArtworkImage = artwork
+            artworkImageView.image = artwork
+        }
+    }
+
     // MARK: - UI
 
     private func setupUI() {

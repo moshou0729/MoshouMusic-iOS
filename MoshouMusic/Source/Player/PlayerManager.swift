@@ -21,6 +21,8 @@ class PlayerManager: NSObject {
     private(set) var currentSource: String = "kw"
     private(set) var currentLyrics: [LRCLine] = []
     private(set) var currentLyricIndex: Int = -1
+    /// 当前封面（供播放页/迷你条在出场后补显，避免错过 artworkLoaded 通知）
+    private(set) var currentArtwork: UIImage?
 
     /// 最近一次播放失败的原因（供播放页展示，便于排查是哪个源/哪一步失败）
     private(set) var lastPlayError: String?
@@ -505,6 +507,11 @@ class PlayerManager: NSObject {
         }
 
         onTimeChanged?(currentTime, duration)
+        NotificationCenter.default.post(
+            name: .playerTimeChanged,
+            object: nil,
+            userInfo: ["current": currentTime, "duration": duration]
+        )
         updateLyrics()
     }
 
@@ -577,6 +584,7 @@ class PlayerManager: NSObject {
     private func loadArtwork(from urlString: String) {
         NetworkManager.shared.loadImage(url: urlString) { [weak self] data in
             guard let data = data, let image = UIImage(data: data) else { return }
+            self?.currentArtwork = image
 
             var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(
@@ -686,6 +694,8 @@ class PlayerManager: NSObject {
             totalLyrics: currentLyrics.count
         )
         onStateChanged?(state)
+        // 广播给所有观察者（迷你播放条、锁屏组件等），避免被播放页的闭包覆盖
+        NotificationCenter.default.post(name: .playerStateChanged, object: state)
     }
 
     // MARK: - 队列管理
@@ -742,4 +752,5 @@ extension Notification.Name {
     static let lyricsLineChanged = Notification.Name("LyricsLineChanged")
     static let artworkLoaded = Notification.Name("ArtworkLoaded")
     static let playerStateChanged = Notification.Name("PlayerStateChanged")
+    static let playerTimeChanged = Notification.Name("PlayerTimeChanged")
 }

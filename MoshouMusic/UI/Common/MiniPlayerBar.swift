@@ -139,23 +139,40 @@ class MiniPlayerBar: UIView {
     // MARK: - 绑定播放器
 
     private func bindPlayer() {
-        PlayerManager.shared.onStateChanged = { [weak self] state in
-            DispatchQueue.main.async {
-                self?.updateUI(state: state)
-            }
-        }
-
-        PlayerManager.shared.onTimeChanged = { [weak self] current, duration in
-            DispatchQueue.main.async {
-                guard duration > 0 else { return }
-                self?.progressView.setProgress(Float(current / duration), animated: true)
-            }
-        }
-
+        // 通过通知订阅，避免与播放页的 onStateChanged/onTimeChanged 闭包互相覆盖
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(stateChanged(_:)),
+            name: .playerStateChanged, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(timeChanged(_:)),
+            name: .playerTimeChanged, object: nil
+        )
         NotificationCenter.default.addObserver(
             self, selector: #selector(artworkLoaded(_:)),
             name: .artworkLoaded, object: nil
         )
+
+        // 初始补显：若当前已在播放，立即同步一次（防止迷你条一直停在占位文案）
+        if let song = PlayerManager.shared.currentSong {
+            titleLabel.text = song.name
+            artistLabel.text = "\(song.singer) · \(Theme.sourceName(PlayerManager.shared.currentSource))"
+        }
+        if let artwork = PlayerManager.shared.currentArtwork {
+            artworkImageView.image = artwork
+        }
+    }
+
+    @objc private func stateChanged(_ notification: Notification) {
+        guard let state = notification.object as? PlayerState else { return }
+        updateUI(state: state)
+    }
+
+    @objc private func timeChanged(_ notification: Notification) {
+        guard let current = notification.userInfo?["current"] as? Double,
+              let duration = notification.userInfo?["duration"] as? Double,
+              duration > 0 else { return }
+        progressView.setProgress(Float(current / duration), animated: true)
     }
 
     private func updateUI(state: PlayerState) {

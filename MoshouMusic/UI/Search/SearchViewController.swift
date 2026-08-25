@@ -132,7 +132,7 @@ class SearchViewController: UIViewController {
     }
 
     private func createSourceChip(source: String) -> UIButton {
-        let chip = UIButton(type: .system)
+        let chip = UIButton(type: .custom)
         chip.setTitle(ConfigStore.shared.displayName(for: source), for: .normal)
         chip.titleLabel?.font = Theme.labelLarge
         chip.layer.cornerRadius = Theme.cornerFull
@@ -150,8 +150,10 @@ class SearchViewController: UIViewController {
 
     private func updateChipAppearance(_ chip: UIButton, source: String, isSelected: Bool) {
         if isSelected {
-            chip.backgroundColor = Theme.sourceColor(source)
-            chip.setTitleColor(.white, for: .normal)
+            // 选中：用音源标志色做背景，文字按背景亮度自动取黑/白，保证对比可读
+            let bg = Theme.sourceColor(source)
+            chip.backgroundColor = bg
+            chip.setTitleColor(Theme.contrastingTextColor(for: bg), for: .normal)
         } else {
             chip.backgroundColor = Theme.sourceColorLight(source)
             chip.setTitleColor(Theme.sourceColor(source), for: .normal)
@@ -197,6 +199,16 @@ class SearchViewController: UIViewController {
                 switch result {
                 case .success(let list):
                     self.searchResults = list.compactMap { Song(from: $0, source: source) }
+                    // 原唱优先、其次按音质排序（启发式，依赖来源是否标注原唱/音质）
+                    self.searchResults.sort {
+                        if $0.isOriginalGuess != $1.isOriginalGuess {
+                            return $0.isOriginalGuess
+                        }
+                        if $0.qualityRank != $1.qualityRank {
+                            return $0.qualityRank > $1.qualityRank
+                        }
+                        return false
+                    }
                     self.tableView.reloadData()
                     self.emptyLabel.text = self.searchResults.isEmpty ? "没有找到相关音乐" : ""
                     self.emptyLabel.isHidden = !self.searchResults.isEmpty

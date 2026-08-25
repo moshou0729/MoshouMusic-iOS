@@ -14,6 +14,22 @@ struct Song: Codable, Equatable {
     let interval: Int       // 时长(秒)
     let meta: [String: String]? // 额外元数据
 
+    /// 启发式判断是否「原唱」（依赖来源数据标注，可能不准：靠歌名含 原唱/原版/原曲/Original 判定）
+    var isOriginalGuess: Bool {
+        let lower = name.lowercased()
+        return lower.contains("原唱") || lower.contains("原版") ||
+               lower.contains("原曲") || lower.contains("original")
+    }
+
+    /// 音质排序权重（越高越优先）：无损/FLAC > SQ/320 > 128 > 未知
+    var qualityRank: Int {
+        let q = (quality ?? "").lowercased()
+        if q.contains("flac") || q.contains("无损") { return 3 }
+        if q.contains("sq") || q.contains("320") { return 2 }
+        if q.contains("128") { return 1 }
+        return 0
+    }
+
     // 生成唯一 ID
     static func makeId(source: String, songmid: String) -> String {
         return "\(source)_\(songmid)"

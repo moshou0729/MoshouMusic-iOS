@@ -42,12 +42,23 @@ class FloatingLyricsManager: NSObject {
         window.backgroundColor = .clear
         window.isOpaque = false
 
+        // 关联当前激活的 windowScene，否则 iOS 13+ 上第二窗口可能不显示
+        if let scene = UIApplication.shared.connectedScenes
+            .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
+            window.windowScene = scene
+        }
+
         let viewController = UIViewController()
         let view = FloatingLyricsView(frame: window.bounds)
         view.backgroundColor = UIColor.black.withAlphaComponent(opacity)
         view.layer.cornerRadius = 16
         view.layer.masksToBounds = true
         viewController.view = view
+
+        // 初始显示当前歌曲名，避免一直停在占位文案让人误以为没显示
+        if let song = PlayerManager.shared.currentSong {
+            view.updateLyrics(text: song.name, translation: song.singer)
+        }
 
         window.rootViewController = viewController
         window.isHidden = false

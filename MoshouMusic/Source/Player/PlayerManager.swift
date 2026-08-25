@@ -34,13 +34,10 @@ class PlayerManager: NSObject {
 
     private var player: AVPlayer!
     private var timeObserverToken: Any?
-    /// KVO 上下文：必须是稳定且唯一的指针。
-    /// 用 static let 持有一次分配的 UnsafeMutableRawPointer，避免用 `&实例属性` 传参——
-    /// 后者会被 Swift 当作 modify 访问，而 AVFoundation 在 addObserver 时会同步触发 KVO，
-    /// 造成 observeValue 内再次 `&` 访问同一存储 → 独占访问冲突 → swift_endAccess 崩溃。
-    private static let playerItemContext: UnsafeMutableRawPointer = {
-        UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
-    }()
+    /// KVO 不再使用 context 指针：旧实现用 static let 指针做上下文比较，
+    /// 在 observeValue 内读取它会触发 Swift 独占访问运行时（swift_endAccess → abort）崩溃。
+    /// 改为 addObserver 传 context: nil，observeValue 内仅按「object 身份 + keyPath」判定，
+    /// 并把处理统一派发到主线程，避免后台线程 KVO 与切歌时的 observedItem 写操作竞争。
     /// 当前正在观察的播放项，切歌前必须先移除其 KVO 观察者，否则旧项释放时会闪退
     private var observedItem: AVPlayerItem?
 
@@ -261,8 +258,8 @@ class PlayerManager: NSObject {
 
     /// 移除某播放项的 KVO 观察者（防止其释放后仍被观察而闪退）
     private func removeObservers(from item: AVPlayerItem) {
-        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), context: Self.playerItemContext)
-        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.duration), context: Self.playerItemContext)
+        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), context: nil)
+        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.duration), context: nil)
     }
 
     private func loadAndPlay(completion: @escaping (Bool) -> Void) {
@@ -355,25 +352,27 @@ class PlayerManager: NSObject {
         // 先移除上一个播放项的观察者，避免其释放后被观察而崩溃
         if let old = observedItem {
             removeObservers(from: old)
-            observedItem = nil
         }
 
         let item = AVPlayerItem(url: url)
+
+        // 在 addObserver 之前先把 observedItem 指向新项：
+        // 这样 .initial 同步 KVO 也能正确命中「当前项」判定。
+        observedItem = item
 
         item.addObserver(
             self,
             forKeyPath: #keyPath(AVPlayerItem.status),
             options: [.new, .initial],
-            context: Self.playerItemContext
+            context: nil
         )
         item.addObserver(
             self,
             forKeyPath: #keyPath(AVPlayerItem.duration),
             options: [.new],
-            context: Self.playerItemContext
+            context: nil
         )
 
-        observedItem = item
         player.replaceCurrentItem(with: item)
         player.play()
         isPlaying = true
@@ -444,42 +443,51 @@ class PlayerManager: NSObject {
         change: [NSKeyValueChangeKey: Any]?,
         context: UnsafeMutableRawPointer?
     ) {
-        guard context == Self.playerItemContext else {
+        guard let item = object as? AVPlayerItem else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
             return
         }
 
-        // 只观察当前挂载的 item，忽略已被替换掉的旧 item 的迟到通知
-        guard let item = object as? AVPlayerItem, item === observedItem else { return }
+        // KVO 可能由 AVFoundation 在后台线程回调，而切歌时会改写 observedItem（主线程）。
+        // 统一把「身份判定 + 处理」派发到主线程，杜绝跨线程读写 observedItem 造成的独占访问崩溃。
+        let handle: () -> Void = { [weak self] in
+            guard let self = self, item === self.observedItem else { return }
 
-        if keyPath == #keyPath(AVPlayerItem.status) {
-            switch item.status {
-            case .readyToPlay:
-                duration = PlayerManager.sane(item.duration.seconds)
-                onTimeChanged?(currentTime, duration)
-            case .failed:
-                let reason = item.error?.localizedDescription ?? "链接无法播放"
-                Logger.error("播放项状态失败: \(reason)")
-                // 关键：失败时把时间轴清零，否则残留 NaN 会在下一次
-                // updateNowPlayingInfo / 进度条计算时引发崩溃
-                duration = 0
-                currentTime = 0
-                isPlaying = false
-                onTimeChanged?(0, 0)
+            if keyPath == #keyPath(AVPlayerItem.status) {
+                switch item.status {
+                case .readyToPlay:
+                    self.duration = PlayerManager.sane(item.duration.seconds)
+                    self.onTimeChanged?(self.currentTime, self.duration)
+                case .failed:
+                    let reason = item.error?.localizedDescription ?? "链接无法播放"
+                    Logger.error("播放项状态失败: \(reason)")
+                    // 关键：失败时把时间轴清零，否则残留 NaN 会在下一次
+                    // updateNowPlayingInfo / 进度条计算时引发崩溃
+                    self.duration = 0
+                    self.currentTime = 0
+                    self.isPlaying = false
+                    self.onTimeChanged?(0, 0)
 
-                if let song = currentSong {
-                    // 链接拿到了但播不动（防盗链/地域限制/试听片段失效）→ 同样尝试换源
-                    handlePlayFailure(song: song, reason: "链接无法播放") { _ in }
-                } else {
-                    lastPlayError = "播放器无法播放该链接（可能源失效或地域限制）"
-                    notifyStateChanged()
+                    if let song = self.currentSong {
+                        // 链接拿到了但播不动（防盗链/地域限制/试听片段失效）→ 同样尝试换源
+                        self.handlePlayFailure(song: song, reason: "链接无法播放") { _ in }
+                    } else {
+                        self.lastPlayError = "播放器无法播放该链接（可能源失效或地域限制）"
+                        self.notifyStateChanged()
+                    }
+                default:
+                    break
                 }
-            default:
-                break
+            } else if keyPath == #keyPath(AVPlayerItem.duration) {
+                self.duration = PlayerManager.sane(item.duration.seconds)
+                self.onTimeChanged?(self.currentTime, self.duration)
             }
-        } else if keyPath == #keyPath(AVPlayerItem.duration) {
-            duration = PlayerManager.sane(item.duration.seconds)
-            onTimeChanged?(currentTime, duration)
+        }
+
+        if Thread.isMainThread {
+            handle()
+        } else {
+            DispatchQueue.main.async { handle() }
         }
     }
 

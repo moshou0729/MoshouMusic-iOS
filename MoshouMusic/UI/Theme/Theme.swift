@@ -72,6 +72,18 @@ struct Theme {
         }
     }
 
+    /// 深色饱和变体 — 用于「选中」chip 背景，确保白字有足够对比
+    static func sourceColorDark(_ source: String) -> UIColor {
+        switch source {
+        case "kw": return UIColor(hex: 0x4B3FAA)  // 深紫
+        case "tx": return UIColor(hex: 0xC83A3A)  // 深珊瑚红
+        case "wy": return UIColor(hex: 0x00807A)  // 深青
+        case "kg": return UIColor(hex: 0x8C6500)  // 深琥珀
+        case "mg": return UIColor(hex: 0x1E7A35)  // 深绿
+        default: return primaryDark
+        }
+    }
+
     static func sourceName(_ source: String) -> String {
         switch source {
         case "kw": return "酷我"
@@ -87,9 +99,9 @@ struct Theme {
     static func contrastingTextColor(for color: UIColor) -> UIColor {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         color.getRed(&r, green: &g, blue: &b, alpha: &a)
-        // sRGB 相对亮度
+        // sRGB 相对亮度 — 提高阈值，让黄/珊瑚等中等亮度也走深色字
         let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        return lum < 0.6 ? .white : UIColor(hex: 0x1A1B25)
+        return lum < 0.55 ? .white : UIColor(hex: 0x1A1B25)
     }
 
     // MARK: - 圆角

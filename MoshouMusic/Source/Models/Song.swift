@@ -14,11 +14,39 @@ struct Song: Codable, Equatable {
     let interval: Int       // 时长(秒)
     let meta: [String: String]? // 额外元数据
 
-    /// 启发式判断是否「原唱」（依赖来源数据标注，可能不准：靠歌名含 原唱/原版/原曲/Original 判定）
-    var isOriginalGuess: Bool {
+    /// 「原唱」综合评分 — 同时考虑正向信号（原唱/原版/原曲/Original）和负向信号
+    /// （翻唱/cover/live/伴奏/remix），让真正"原版"的曲目排到最前
+    ///
+    /// 注意：音源脚本通常不在数据中标 isOriginal，只能依赖歌名启发式判断。
+    /// 仅有「原唱/原版/原曲/Original」全靠关键词，且经常不准。
+    /// 增加负向信号后能更稳定把「live / 翻唱 / 伴奏版」压到后面。
+    var originalScore: Int {
         let lower = name.lowercased()
-        return lower.contains("原唱") || lower.contains("原版") ||
-               lower.contains("原曲") || lower.contains("original")
+        var score = 0
+
+        // 正向：与原唱相关
+        if lower.contains("原唱") || lower.contains("原版") || lower.contains("原曲") ||
+           lower.contains("original") || lower.contains("original mix") {
+            score += 10
+        }
+        // 负向：明显不是原唱
+        if lower.contains("翻唱") || lower.contains("翻自") || lower.contains("翻奏") ||
+           lower.contains("cover") || lower.contains("covered by") {
+            score -= 10
+        }
+        if lower.contains("live") || lower.contains("现场") || lower.contains("concert") ||
+           lower.contains("演唱会") {
+            score -= 5
+        }
+        if lower.contains("伴奏") || lower.contains("instrumental") || lower.contains("纯音乐") ||
+           lower.contains("backing track") || lower.contains("卡拉ok") || lower.contains("k歌") {
+            score -= 8
+        }
+        if lower.contains("remix") { score -= 3 }
+        if lower.contains("remaster") || lower.contains("修复") { score -= 1 }  // 老唱片修复版一般较原版
+        if lower.contains("dj版") || lower.contains("dj版") || lower.contains("车载") { score -= 4 }
+
+        return score
     }
 
     /// 音质排序权重（越高越优先）：无损/FLAC > SQ/320 > 128 > 未知

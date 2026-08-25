@@ -134,9 +134,11 @@ class SearchViewController: UIViewController {
     private func createSourceChip(source: String) -> UIButton {
         let chip = UIButton(type: .custom)
         chip.setTitle(ConfigStore.shared.displayName(for: source), for: .normal)
-        chip.titleLabel?.font = Theme.labelLarge
+        chip.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
         chip.layer.cornerRadius = Theme.cornerFull
         chip.contentEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+        // 抑制系统 tint 渗透（.custom 仍可能从父 view 继承 tint）
+        chip.tintColor = .clear
         if let index = ConfigStore.shared.selectableSourceIds.firstIndex(of: source) {
             chip.tag = index
         }
@@ -150,14 +152,24 @@ class SearchViewController: UIViewController {
 
     private func updateChipAppearance(_ chip: UIButton, source: String, isSelected: Bool) {
         if isSelected {
-            // 选中：用音源标志色做背景，文字按背景亮度自动取黑/白，保证对比可读
-            let bg = Theme.sourceColor(source)
+            // 选中：深色饱和背景 + 白色字（强制所有状态都白，避免被高亮/tint覆盖）
+            let bg = Theme.sourceColorDark(source)
             chip.backgroundColor = bg
-            chip.setTitleColor(Theme.contrastingTextColor(for: bg), for: .normal)
+            chip.setTitleColor(.white, for: .normal)
+            chip.setTitleColor(.white, for: .highlighted)
+            chip.setTitleColor(.white, for: .selected)
+            chip.setTitleColor(.white.withAlphaComponent(0.7), for: .disabled)
         } else {
+            // 未选中：浅色容器 + 鲜艳字
             chip.backgroundColor = Theme.sourceColorLight(source)
-            chip.setTitleColor(Theme.sourceColor(source), for: .normal)
+            let fg = Theme.sourceColor(source)
+            chip.setTitleColor(fg, for: .normal)
+            chip.setTitleColor(fg, for: .highlighted)
+            chip.setTitleColor(fg, for: .selected)
+            chip.setTitleColor(fg.withAlphaComponent(0.5), for: .disabled)
         }
+        // 抑制 state-driven 颜色回弹
+        chip.tintColor = .clear
     }
 
     @objc private func sourceChipTapped(_ sender: UIButton) {
@@ -199,10 +211,10 @@ class SearchViewController: UIViewController {
                 switch result {
                 case .success(let list):
                     self.searchResults = list.compactMap { Song(from: $0, source: source) }
-                    // 原唱优先、其次按音质排序（启发式，依赖来源是否标注原唱/音质）
+                    // 原唱综合评分高的优先（同时排除翻唱/live/伴奏版）；同等评分再看音质
                     self.searchResults.sort {
-                        if $0.isOriginalGuess != $1.isOriginalGuess {
-                            return $0.isOriginalGuess
+                        if $0.originalScore != $1.originalScore {
+                            return $0.originalScore > $1.originalScore
                         }
                         if $0.qualityRank != $1.qualityRank {
                             return $0.qualityRank > $1.qualityRank

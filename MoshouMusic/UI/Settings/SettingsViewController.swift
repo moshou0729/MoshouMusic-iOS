@@ -396,13 +396,37 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
         return ConfigStore.shared.customSources[source] != nil
     }
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { sources.count }
+    func numberOfSections(in tableView: UITableView) -> Int { 2 }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return section == 0 ? 1 : sources.count
+    }
+
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return section == 0 ? "社区音源 (洛雪 / LXMusic)" : "内置 & 自定义音源"
+    }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        if indexPath.section == 0 {
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SourceCell", for: indexPath)
+            cell.textLabel?.text = "洛雪社区音源管理"
+            cell.textLabel?.textColor = Theme.text
+            cell.detailTextLabel?.text = "导入/管理洛雪(lx-music)脚本，作为播放链接补充"
+            cell.detailTextLabel?.textColor = Theme.subtext
+            cell.imageView?.image = UIImage(systemName: "music.note.list")?
+                .withTintColor(Theme.tertiary, renderingMode: .alwaysOriginal)
+            cell.accessoryType = .disclosureIndicator
+            cell.accessoryView = nil
+            cell.selectionStyle = .default
+            cell.backgroundColor = Theme.cardBg
+            return cell
+        }
+
         let cell = tableView.dequeueReusableCell(withIdentifier: "SourceCell", for: indexPath)
         let source = sources[indexPath.row]
         cell.textLabel?.text = ConfigStore.shared.displayName(for: source)
         cell.textLabel?.textColor = Theme.text
+        cell.detailTextLabel?.text = nil
         cell.imageView?.image = UIImage(systemName: "music.note")?
             .withTintColor(Theme.sourceColor(source), renderingMode: .alwaysOriginal)
 
@@ -412,17 +436,25 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
         toggle.tag = indexPath.row
         toggle.addTarget(self, action: #selector(sourceToggled(_:)), for: .valueChanged)
         cell.accessoryView = toggle
+        cell.accessoryType = .none
         cell.selectionStyle = .none
         cell.backgroundColor = Theme.cardBg
         return cell
     }
 
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        if indexPath.section == 0 {
+            tableView.deselectRow(at: indexPath, animated: true)
+            navigationController?.pushViewController(LXMusicViewController(), animated: true)
+        }
+    }
+
     func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        return isCustom(sources[indexPath.row])
+        return indexPath.section == 1 && isCustom(sources[indexPath.row])
     }
 
     func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
-        guard editingStyle == .delete else { return }
+        guard editingStyle == .delete, indexPath.section == 1 else { return }
         let source = sources[indexPath.row]
         removeCustomSource(source)
     }

@@ -302,11 +302,41 @@ class PlayerManager: NSObject {
 
                 case .failure(let error):
                     Logger.error("获取播放链接失败[\(self.currentSource)]: \(error.localizedDescription)")
-                    self.handlePlayFailure(
-                        song: song,
-                        reason: error.localizedDescription,
-                        completion: completion
-                    )
+                    // 兜底：同平台的内置源失效时，尝试 LX 兼容层（洛雪社区脚本）的同源端点
+                    self.tryLXCompatFallback(song: song, builtinError: error.localizedDescription, completion: completion)
+                }
+            }
+        }
+    }
+
+    /// LX 兼容层兜底：内置源取不到播放链接时，用同平台的洛雪社区脚本再试一次
+    private func tryLXCompatFallback(song: Song, builtinError: String, completion: @escaping (Bool) -> Void) {
+        guard LXCompatEngine.shared.isPlatformAvailable(song.source) else {
+            handlePlayFailure(song: song, reason: builtinError, completion: completion)
+            return
+        }
+        Logger.info("尝试 LX 兼容层兜底: \(song.source)")
+        let quality = ConfigStore.shared.defaultQuality
+        let extra = song.meta ?? [:]
+        LXCompatEngine.shared.getMusicUrl(
+            platform: song.source,
+            songId: song.songmid,
+            quality: quality,
+            extra: extra
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let url):
+                    guard let playUrl = URL(string: url) else {
+                        self.handlePlayFailure(song: song, reason: builtinError, completion: completion)
+                        return
+                    }
+                    Logger.info("LX 兼容层兜底成功: \(song.source)")
+                    self.startPlayback(url: playUrl, song: song)
+                    completion(true)
+                case .failure:
+                    self.handlePlayFailure(song: song, reason: builtinError, completion: completion)
                 }
             }
         }

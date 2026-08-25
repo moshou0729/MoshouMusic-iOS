@@ -23,7 +23,10 @@ targets:
       - path: MoshouMusic
         excludes:
           - "Resources/default_scripts"
+          - "Resources/lx_compat"
       - path: MoshouMusic/Resources/default_scripts
+        type: folder
+      - path: MoshouMusic/Resources/lx_compat
         type: folder
     info:
       path: MoshouMusic/App/Info.plist

@@ -17,6 +17,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ = PlayerManager.shared
         _ = ConfigStore.shared
 
+        // LX 兼容层（洛雪社区音源）预加载——延后到首帧之后，避免拖慢启动
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            LXCompatEngine.shared.ensureLoaded()
+        }
+
         Logger.info("墨守music 启动成功")
 
         return true

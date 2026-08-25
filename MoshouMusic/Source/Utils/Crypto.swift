@@ -32,6 +32,17 @@ class Crypto {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    // MARK: - SHA1
+
+    static func sha1(_ string: String) -> String {
+        let data = string.data(using: .utf8) ?? Data()
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
+        _ = data.withUnsafeBytes { body in
+            CC_SHA1(body.baseAddress, CC_LONG(data.count), &digest)
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     // MARK: - SHA256
 
     static func sha256(_ string: String) -> String {

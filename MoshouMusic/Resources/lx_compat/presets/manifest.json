@@ -1,0 +1,11 @@
+{
+  "presets": [
+    { "id": "hyw",       "displayName": "HYW公益测试",        "file": "hyw.es5.js",       "raw": "hyw.js" },
+    { "id": "kxh",       "displayName": "K×H测试",            "file": "kxh.es5.js",       "raw": "kxh.js" },
+    { "id": "yuningxi",  "displayName": "玉宁熙-Pro",          "file": "yuningxi.es5.js",  "raw": "yuningxi.js" },
+    { "id": "yuxi",      "displayName": "屿溪-终章",           "file": "yuxi.es5.js",      "raw": "yuxi.js" },
+    { "id": "xinghai",   "displayName": "星海音乐源",          "file": "xinghai.es5.js",   "raw": "xinghai.js" },
+    { "id": "dujia",     "displayName": "独家音源-v5",         "file": "dujia.es5.js",     "raw": "dujia.js" },
+    { "id": "changqing", "displayName": "长青SVIP(二改修复)",   "file": "changqing.es5.js", "raw": "changqing.js" }
+  ]
+}

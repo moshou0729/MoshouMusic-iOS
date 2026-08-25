@@ -25,6 +25,16 @@ class SearchViewController: UIViewController {
         super.viewWillAppear(animated)
         // 返回时重建 Chips（可能新增了自定义音源 / 切换了默认源）
         reloadChips()
+        // 搜索栏放入导航栏后文字色可能被系统外观重置，重新应用
+        searchBar.searchTextField.textColor = Theme.text
+        searchBar.searchTextField.tintColor = Theme.primary
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // 再次兜底，确保在导航栏内布局完成后文字色仍正确
+        searchBar.searchTextField.textColor = Theme.text
+        searchBar.searchTextField.tintColor = Theme.primary
     }
 
     // MARK: - UI

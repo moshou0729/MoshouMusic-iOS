@@ -143,8 +143,11 @@ struct Theme {
         UITabBar.appearance().tintColor = primary
 
         // 搜索栏
-        UITextField.appearance(whenContainedInInstancesOf: [UISearchBar.self]).backgroundColor =
-            isDark ? darkSurfaceVariant : surfaceVariant
+        let searchTFAppearance = UITextField.appearance(whenContainedInInstancesOf: [UISearchBar.self])
+        searchTFAppearance.backgroundColor = isDark ? darkSurfaceVariant : surfaceVariant
+        // 关键: 用 appearance 代理统一设置文字色, 否则搜索栏放入导航栏后文字色被系统外观重置导致看不见
+        searchTFAppearance.textColor = isDark ? darkOnSurface : onSurface
+        searchTFAppearance.tintColor = primary
     }
 
     // MARK: - 获取当前模式颜色

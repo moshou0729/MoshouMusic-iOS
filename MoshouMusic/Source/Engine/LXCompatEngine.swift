@@ -463,7 +463,7 @@ final class LXCompatEngine {
             Logger.warn("LX: Babel 不可用，尝试原样加载（若脚本含 async/await 将在 iOS14 失败）")
             return nil
         }
-        let opts = ["plugins": ["transform-async-to-generator"], "sourceType": "script"]
+        let opts: [String: Any] = ["plugins": ["transform-async-to-generator"], "sourceType": "script"]
         guard let optsVal = JSValue(object: opts, in: ctx),
               let res = babel.invokeMethod("transform", withArguments: [code, optsVal]),
               let es5 = res.objectForKeyedSubscript("code")?.toString(), !es5.isEmpty else {
@@ -471,7 +471,7 @@ final class LXCompatEngine {
         }
         // 仍存在 for await...of 时升级到 regenerator 方案
         if es5.contains("for await") {
-            let opts2 = ["plugins": ["transform-async-to-generator",
+            let opts2: [String: Any] = ["plugins": ["transform-async-to-generator",
                                     "transform-async-generator-functions",
                                     "transform-regenerator"], "sourceType": "script"]
             if let opts2Val = JSValue(object: opts2, in: ctx),

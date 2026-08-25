@@ -361,6 +361,46 @@ final class LXCompatEngine {
         }
     }
 
+    // MARK: - 搜索（洛雪社区脚本的 musicSearch 派发）
+
+    /// 在指定平台用社区脚本搜索歌曲，返回原始列表（与 ScriptEngine 格式一致，可直接喂给 Song(from:source:)）
+    func search(
+        keyword: String,
+        platform: String,
+        page: Int = 1,
+        completion: @escaping (Result<[[String: Any]], Error>) -> Void
+    ) {
+        ensureLoaded()
+        guard let id = platformIndex[platform], let inst = instances[id] else {
+            completion(.failure(LXError.noProvider(platform)))
+            return
+        }
+        let info: [String: Any] = ["keyword": keyword, "page": page]
+        dispatch(in: inst, action: "musicSearch", platform: platform, info: info, timeout: 20) { result in
+            switch result {
+            case .success(let data):
+                completion(.success(Self.extractList(from: data)))
+            case .failure(let e):
+                completion(.failure(e))
+            }
+        }
+    }
+
+    // MARK: - 结果提取
+
+    private static func extractList(from data: JSValue) -> [[String: Any]] {
+        if let d = data.toDictionary() as? [String: Any] {
+            if let list = d["list"] as? [[String: Any]] { return list }
+            if let inner = d["data"] as? [String: Any],
+               let list = inner["list"] as? [[String: Any]] { return list }
+            // JS 数组经 toDictionary 有时会退化为 [Any]
+            if let raw = d["list"] as? [Any] {
+                return raw.compactMap { $0 as? [String: Any] }
+            }
+        }
+        return []
+    }
+
     // MARK: - 结果提取
 
     private static func extractUrl(from data: JSValue) -> String? {

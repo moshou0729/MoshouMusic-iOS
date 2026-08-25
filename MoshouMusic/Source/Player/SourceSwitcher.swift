@@ -74,18 +74,40 @@ final class SourceSwitcher {
         // 关键词带上歌手，提高匹配准确度
         let keyword = singer.isEmpty || singer == "未知歌手" ? name : "\(name) \(singer)"
 
+        // 1) 先试内置源（ScriptEngine）
+        attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { [weak self] hit in
+            if let hit = hit {
+                completion(hit)
+                return
+            }
+            // 2) 内置失败 → 再试用户导入的 7 个 LX 社区音源（不同后端，常能绕过版权/地域限制）
+            self?.attemptLX(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { lxHit in
+                if let lxHit = lxHit {
+                    completion(lxHit)
+                } else {
+                    advance()
+                }
+            }
+        }
+    }
+
+    /// 用内置音源（ScriptEngine）搜索 + 取链接
+    private func attemptBuiltin(
+        source: String, keyword: String, name: String, singer: String, quality: String,
+        completion: @escaping (Hit?) -> Void
+    ) {
         ScriptEngine.shared.search(keyword: keyword, page: 1, source: source) { result in
             DispatchQueue.main.async {
                 guard case .success(let rawList) = result, !rawList.isEmpty else {
-                    Logger.warn("自动换源：\(source) 搜索无结果")
-                    advance()
+                    Logger.warn("自动换源(内置)：\(source) 搜索无结果")
+                    completion(nil)
                     return
                 }
 
                 let songs = rawList.compactMap { Song(from: $0, source: source) }
                 guard let matched = Self.bestMatch(in: songs, name: name, singer: singer) else {
-                    Logger.warn("自动换源：\(source) 未匹配到同名歌曲")
-                    advance()
+                    Logger.warn("自动换源(内置)：\(source) 未匹配到同名歌曲")
+                    completion(nil)
                     return
                 }
 
@@ -98,11 +120,56 @@ final class SourceSwitcher {
                     DispatchQueue.main.async {
                         switch urlResult {
                         case .success(let url):
-                            Logger.info("自动换源成功：\(source) → \(matched.name) - \(matched.singer)")
+                            Logger.info("自动换源成功(内置)：\(source) → \(matched.name) - \(matched.singer)")
                             completion(Hit(source: source, song: matched, url: url))
                         case .failure(let e):
-                            Logger.warn("自动换源：\(source) 取链接失败 \(e.localizedDescription)")
-                            advance()
+                            Logger.warn("自动换源(内置)：\(source) 取链接失败 \(e.localizedDescription)")
+                            completion(nil)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 用 LX 社区音源（LXCompatEngine，即用户导入的 7 个自定义源）搜索 + 取链接
+    private func attemptLX(
+        source: String, keyword: String, name: String, singer: String, quality: String,
+        completion: @escaping (Hit?) -> Void
+    ) {
+        guard LXCompatEngine.shared.isPlatformAvailable(source) else {
+            completion(nil)
+            return
+        }
+        LXCompatEngine.shared.search(keyword: keyword, platform: source, page: 1) { result in
+            DispatchQueue.main.async {
+                guard case .success(let rawList) = result, !rawList.isEmpty else {
+                    Logger.warn("自动换源(LX)：\(source) 搜索无结果")
+                    completion(nil)
+                    return
+                }
+
+                let songs = rawList.compactMap { Song(from: $0, source: source) }
+                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer) else {
+                    Logger.warn("自动换源(LX)：\(source) 未匹配到同名歌曲")
+                    completion(nil)
+                    return
+                }
+
+                LXCompatEngine.shared.getMusicUrl(
+                    platform: source,
+                    songId: matched.songmid,
+                    quality: quality,
+                    extra: matched.meta ?? [:]
+                ) { urlResult in
+                    DispatchQueue.main.async {
+                        switch urlResult {
+                        case .success(let url):
+                            Logger.info("自动换源成功(LX)：\(source) → \(matched.name) - \(matched.singer)")
+                            completion(Hit(source: source, song: matched, url: url))
+                        case .failure(let e):
+                            Logger.warn("自动换源(LX)：\(source) 取链接失败 \(e.localizedDescription)")
+                            completion(nil)
                         }
                     }
                 }

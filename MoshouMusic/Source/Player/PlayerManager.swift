@@ -384,12 +384,26 @@ class PlayerManager: NSObject {
         notifyStateChanged()
     }
 
+    /// 把音源返回的原始报错转成更易读的中文
+    /// （如酷我版权独占提示「仅在酷我音乐手机端…/去应用市场…」，避免把一长串运营文案直接甩给用户）
+    private func friendlyReason(_ raw: String) -> String {
+        if raw.contains("手机端") || (raw.contains("酷我") && raw.contains("仅")) ||
+           raw.contains("应用市场") || raw.contains("超低价") {
+            return "该歌曲为酷我版权独占，本机音源暂无法播放（可去酷我官方 App 收听）"
+        }
+        if raw.contains("仅") && (raw.contains("客户端") || raw.contains("App")) {
+            return "该歌曲需对应音乐客户端才能播放，已为你尝试其他音源"
+        }
+        return raw
+    }
+
     /// 播放失败统一处理：按设置决定是否自动换源
     private func handlePlayFailure(
         song: Song,
         reason: String,
         completion: @escaping (Bool) -> Void
     ) {
+        let reason = friendlyReason(reason)
         let sourceName = ConfigStore.shared.displayName(for: currentSource)
 
         guard ConfigStore.shared.autoSwitchSource, !isSwitchingSource else {

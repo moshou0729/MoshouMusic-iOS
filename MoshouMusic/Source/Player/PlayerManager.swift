@@ -34,7 +34,13 @@ class PlayerManager: NSObject {
 
     private var player: AVPlayer!
     private var timeObserverToken: Any?
-    private var playerItemContext: Int = 0
+    /// KVO 上下文：必须是稳定且唯一的指针。
+    /// 用 static let 持有一次分配的 UnsafeMutableRawPointer，避免用 `&实例属性` 传参——
+    /// 后者会被 Swift 当作 modify 访问，而 AVFoundation 在 addObserver 时会同步触发 KVO，
+    /// 造成 observeValue 内再次 `&` 访问同一存储 → 独占访问冲突 → swift_endAccess 崩溃。
+    private static let playerItemContext: UnsafeMutableRawPointer = {
+        UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
+    }()
     /// 当前正在观察的播放项，切歌前必须先移除其 KVO 观察者，否则旧项释放时会闪退
     private var observedItem: AVPlayerItem?
 
@@ -255,8 +261,8 @@ class PlayerManager: NSObject {
 
     /// 移除某播放项的 KVO 观察者（防止其释放后仍被观察而闪退）
     private func removeObservers(from item: AVPlayerItem) {
-        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), context: &playerItemContext)
-        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.duration), context: &playerItemContext)
+        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), context: Self.playerItemContext)
+        item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.duration), context: Self.playerItemContext)
     }
 
     private func loadAndPlay(completion: @escaping (Bool) -> Void) {
@@ -358,13 +364,13 @@ class PlayerManager: NSObject {
             self,
             forKeyPath: #keyPath(AVPlayerItem.status),
             options: [.new, .initial],
-            context: &playerItemContext
+            context: Self.playerItemContext
         )
         item.addObserver(
             self,
             forKeyPath: #keyPath(AVPlayerItem.duration),
             options: [.new],
-            context: &playerItemContext
+            context: Self.playerItemContext
         )
 
         observedItem = item
@@ -438,7 +444,7 @@ class PlayerManager: NSObject {
         change: [NSKeyValueChangeKey: Any]?,
         context: UnsafeMutableRawPointer?
     ) {
-        guard context == &playerItemContext else {
+        guard context == Self.playerItemContext else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
             return
         }

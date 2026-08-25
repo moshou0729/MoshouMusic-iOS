@@ -4,7 +4,7 @@ import UIKit
 /// 药丸搜索栏 + 彩色 Chips 音源切换 (可持久化, 支持本机自定义音源) + 搜索结果列表
 class SearchViewController: UIViewController {
 
-    private let searchBar = UISearchBar()
+    private let searchField = MDSearchField()
     private let sourceChipsScrollView = UIScrollView()
     private let sourceChipsContainer = UIStackView()
     private let tableView = UITableView()
@@ -25,16 +25,11 @@ class SearchViewController: UIViewController {
         super.viewWillAppear(animated)
         // 返回时重建 Chips（可能新增了自定义音源 / 切换了默认源）
         reloadChips()
-        // 搜索栏放入导航栏后文字色可能被系统外观重置，重新应用
-        searchBar.searchTextField.textColor = Theme.text
-        searchBar.searchTextField.tintColor = Theme.primary
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        // 再次兜底，确保在导航栏内布局完成后文字色仍正确
-        searchBar.searchTextField.textColor = Theme.text
-        searchBar.searchTextField.tintColor = Theme.primary
+        // 主题可能在设置页被切换，重新上色
+        view.backgroundColor = Theme.bg
+        searchField.applyTheme()
+        emptyLabel.textColor = Theme.subtext
+        tableView.reloadData()
     }
 
     // MARK: - UI
@@ -44,20 +39,15 @@ class SearchViewController: UIViewController {
         title = "搜索"
         navigationItem.largeTitleDisplayMode = .always
 
-        // 搜索栏
-        searchBar.placeholder = "搜索歌曲、歌手、专辑"
-        searchBar.delegate = self
-        searchBar.searchBarStyle = .minimal
-        searchBar.searchTextField.backgroundColor = Theme.surfaceVariant
-        searchBar.searchTextField.layer.cornerRadius = Theme.cornerFull
-        searchBar.searchTextField.clipsToBounds = true
-        searchBar.searchTextField.textColor = Theme.text
-        searchBar.searchTextField.tintColor = Theme.primary
-        if let placeholder = searchBar.searchTextField.value(forKey: "placeholderLabel") as? UILabel {
-            placeholder.textColor = Theme.subtext
+        // 搜索框 — 放在内容视图内的普通子视图，不进导航栏 titleView
+        searchField.placeholder = "搜索歌曲、歌手、专辑"
+        searchField.onTextChanged = { [weak self] text in
+            self?.handleTextChanged(text)
         }
-        searchBar.tintColor = Theme.primary
-        navigationItem.titleView = searchBar
+        searchField.onSearchTapped = { [weak self] text in
+            self?.handleSearchTapped(text)
+        }
+        view.addSubview(searchField)
 
         // 音源 Chips
         sourceChipsScrollView.showsHorizontalScrollIndicator = false
@@ -92,13 +82,17 @@ class SearchViewController: UIViewController {
     }
 
     private func setupConstraints() {
-        [sourceChipsScrollView, tableView, emptyLabel].forEach {
+        [searchField, sourceChipsScrollView, tableView, emptyLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
         }
         sourceChipsContainer.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            sourceChipsScrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            searchField.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            sourceChipsScrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
             sourceChipsScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             sourceChipsScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             sourceChipsScrollView.heightAnchor.constraint(equalToConstant: 44),
@@ -219,34 +213,41 @@ class SearchViewController: UIViewController {
     }
 }
 
-// MARK: - UISearchBarDelegate
+// MARK: - 搜索框回调
 
-extension SearchViewController: UISearchBarDelegate {
-    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+extension SearchViewController {
+
+    /// 输入变化 — 0.5s 防抖后自动搜索
+    fileprivate func handleTextChanged(_ text: String) {
         searchTask?.cancel()
+        let keyword = text.trimmingCharacters(in: .whitespaces)
+
+        if keyword.isEmpty {
+            currentKeyword = ""
+            searchResults = []
+            tableView.reloadData()
+            emptyLabel.text = "搜索你喜欢的音乐"
+            emptyLabel.isHidden = false
+            return
+        }
+
         let task = DispatchWorkItem { [weak self] in
-            self?.currentKeyword = searchText.trimmingCharacters(in: .whitespaces)
-            if self?.currentKeyword.isEmpty == false {
-                ConfigStore.shared.addSearchHistory(self!.currentKeyword)
-                self?.performSearch()
-            } else {
-                self?.searchResults = []
-                self?.tableView.reloadData()
-                self?.emptyLabel.text = "搜索你喜欢的音乐"
-                self?.emptyLabel.isHidden = false
-            }
+            guard let self = self else { return }
+            self.currentKeyword = keyword
+            ConfigStore.shared.addSearchHistory(keyword)
+            self.performSearch()
         }
         searchTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: task)
     }
 
-    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
-        searchBar.resignFirstResponder()
-        currentKeyword = searchBar.text ?? ""
-        if !currentKeyword.isEmpty {
-            ConfigStore.shared.addSearchHistory(currentKeyword)
-            performSearch()
-        }
+    /// 点击键盘搜索键 — 立即搜索
+    fileprivate func handleSearchTapped(_ text: String) {
+        searchTask?.cancel()
+        currentKeyword = text.trimmingCharacters(in: .whitespaces)
+        guard !currentKeyword.isEmpty else { return }
+        ConfigStore.shared.addSearchHistory(currentKeyword)
+        performSearch()
     }
 }
 

@@ -133,29 +133,69 @@
         })
     }
 
-    // ==================== 推荐 (热门关键词搜索兜底) ====================
-    const HOT = ['孤勇者', '晴天', '起风了', '海阔天空', '稻香', '光年之外', '演员', '夜曲']
+    // ==================== 排行榜 ====================
+    // 用酷我官方榜单接口 kbangserver（已验证返回 musiclist）
+    // id: 93=飙升榜 / 16=热歌榜 / 158=新歌榜
+    // 注意: 之前这里是「并发 3 个搜索再合并」，一旦某个请求不回调，
+    //       计数器永远凑不齐，榜单就一直空白；且并发回调操作共享变量不安全。
+    //       现已改成单请求 + 串行兜底。
+    const BOARD_IDS = { '93': '飙升榜', '16': '热歌榜', '158': '新歌榜' }
 
     function handleBoard(info, callback) {
-        const picks = [HOT[0], HOT[2], HOT[4]]
-        let merged = []
-        let done = 0
-        picks.forEach(function(kw) {
-            handleSearch({ keyword: kw, page: 1 }, function(err, data) {
-                done++
-                if (!err && data && data.list) {
-                    merged = merged.concat(data.list)
+        const bangId = (info && info.bangId) ? String(info.bangId) : '93'
+        const id = BOARD_IDS[bangId] ? bangId : '93'
+
+        const url = 'http://kbangserver.kuwo.cn/ksong.s?from=pc&fmt=json' +
+            '&pn=0&rn=50&type=bang&data=content&id=' + id +
+            '&show_copyright_off=0&pcmp4=1'
+
+        lx.request(url, { method: 'GET', headers: HEADERS, timeout: 15 }, function(err, resp) {
+            if (err) { fallbackBoard(callback); return }
+
+            const result = parseBody(resp.body)
+            if (!result || !result.musiclist || !result.musiclist.length) {
+                fallbackBoard(callback)
+                return
+            }
+
+            const list = result.musiclist.map(function(item) {
+                return {
+                    songmid: String(item.id || item.rid || ''),
+                    name: cleanText(item.name) || '未知歌曲',
+                    singer: cleanText(item.artist) || '未知歌手',
+                    albumName: cleanText(item.album),
+                    albumId: String(item.albumid || ''),
+                    img: item.pic || '',
+                    interval: parseInt(item.duration || '0', 10) || 0,
+                    quality: '320k'
                 }
-                if (done === picks.length) {
-                    const seen = {}
-                    const out = []
-                    merged.forEach(function(s) {
-                        if (!seen[s.songmid]) { seen[s.songmid] = 1; out.push(s) }
-                    })
-                    callback(null, { list: out.slice(0, 30), total: out.length })
+            }).filter(function(item) { return item.songmid && item.name })
+
+            if (!list.length) { fallbackBoard(callback); return }
+            callback(null, { list: list, total: list.length })
+        })
+    }
+
+    // 榜单接口失效时，退回单次热门关键词搜索（串行，不做并发合并）
+    const HOT = ['热门歌曲', '孤勇者', '晴天', '起风了']
+
+    function fallbackBoard(callback) {
+        let idx = 0
+        function tryNext() {
+            if (idx >= HOT.length) {
+                callback({ message: '榜单与兜底搜索均无结果' }, null)
+                return
+            }
+            const kw = HOT[idx++]
+            handleSearch({ keyword: kw, page: 1 }, function(err, data) {
+                if (!err && data && data.list && data.list.length) {
+                    callback(null, { list: data.list.slice(0, 30), total: data.list.length })
+                } else {
+                    tryNext()
                 }
             })
-        })
+        }
+        tryNext()
     }
 
     // ==================== 歌词 ====================

@@ -21,6 +21,7 @@ class ConfigStore {
         static let cacheSize = "cacheSize"
         static let currentSource = "currentSource"
         static let customSources = "customSources"
+        static let autoSwitchSource = "autoSwitchSource"
     }
 
     // MARK: - 路径
@@ -88,6 +89,18 @@ class ConfigStore {
     var currentSource: String {
         get { defaults.string(forKey: Keys.currentSource) ?? "kw" }
         set { defaults.set(newValue, forKey: Keys.currentSource) }
+    }
+
+    // MARK: - 自动换源
+
+    /// 当前音源拿不到播放链接时，自动去其他音源找同一首歌
+    /// 默认开启 —— 各平台风控频繁，单源失败是常态
+    var autoSwitchSource: Bool {
+        get {
+            if defaults.object(forKey: Keys.autoSwitchSource) == nil { return true }
+            return defaults.bool(forKey: Keys.autoSwitchSource)
+        }
+        set { defaults.set(newValue, forKey: Keys.autoSwitchSource) }
     }
 
     // MARK: - 自定义音源 (本机手动添加)

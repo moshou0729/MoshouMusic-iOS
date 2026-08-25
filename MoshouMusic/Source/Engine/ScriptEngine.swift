@@ -244,6 +244,8 @@ class ScriptEngine {
         let body = optionsDict["body"] as? String
         let timeout = (optionsDict["timeout"] as? Double) ?? 30
         let isBinary = (optionsDict["isBinary"] as? Bool) ?? false
+        // 脚本可传 followRedirect: false 来读取 302 的 Location（咪咕播放接口需要）
+        let followRedirect = (optionsDict["followRedirect"] as? Bool) ?? true
 
         // 调用前保存 callback 防止被 GC
         let callbackRef = callback
@@ -254,7 +256,8 @@ class ScriptEngine {
             headers: headers,
             body: body,
             timeout: timeout,
-            isBinary: isBinary
+            isBinary: isBinary,
+            followRedirect: followRedirect
         ) { result in
             // JSContext 非线程安全，必须回到创建它的主线程再执行 JS 回调
             let invoke: () -> Void = {
@@ -327,6 +330,94 @@ class ScriptEngine {
         Logger.info("加载自定义脚本: \(name)")
     }
 
+    // MARK: - 统一调度 (所有上层接口的唯一入口)
+
+    /// 已注册处理器的音源
+    var availableSources: [String] {
+        return Array(requestHandlersBySource.keys)
+    }
+
+    func hasHandler(for source: String) -> Bool {
+        return requestHandlersBySource[source] != nil
+    }
+
+    /// 调用脚本处理器
+    ///
+    /// 三条硬约束（此前多次崩溃/卡死的根源）：
+    /// 1. JSContext 非线程安全 → 必须在主线程调用 handler
+    /// 2. 脚本可能永不回调（并发计数凑不齐、异常被吞）→ 必须有超时兜底
+    /// 3. 回调可能被脚本调用多次 → 必须去重，只认第一次
+    private func invoke(
+        source: String,
+        action: String,
+        info: [String: Any],
+        timeout: Double = 25,
+        completion: @escaping (Result<[String: Any], Error>) -> Void
+    ) {
+        // 约束 1：强制主线程
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.invoke(source: source, action: action, info: info,
+                             timeout: timeout, completion: completion)
+            }
+            return
+        }
+
+        guard let handler = requestHandlersBySource[source] else {
+            completion(.failure(ScriptError.noHandler))
+            return
+        }
+
+        // 约束 3：回调去重（主线程串行，无需加锁）
+        let box = CallbackBox()
+        let finish: (Result<[String: Any], Error>) -> Void = { result in
+            guard !box.finished else { return }
+            box.finished = true
+            completion(result)
+        }
+
+        // 约束 2：超时兜底
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+            if !box.finished {
+                Logger.warn("脚本调用超时: \(source)/\(action)")
+            }
+            finish(.failure(ScriptError.timeout))
+        }
+
+        let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
+            if error.isNull || error.isUndefined {
+                finish(.success(data.toDictionary() as? [String: Any] ?? [:]))
+            } else {
+                var msg = "未知错误"
+                if let dict = error.toDictionary(), let m = dict["message"] as? String, !m.isEmpty {
+                    msg = m
+                } else if let s = error.toString(), !s.isEmpty, s != "undefined" {
+                    msg = s
+                }
+                finish(.failure(ScriptError.scriptError(msg)))
+            }
+        }
+
+        guard let callbackValue = JSValue(object: callback, in: context) else {
+            finish(.failure(ScriptError.invalidResponse))
+            return
+        }
+
+        let request: [String: Any] = ["source": source, "action": action, "info": info]
+        handler.call(withArguments: [request, callbackValue])
+    }
+
+    /// 从脚本返回值里宽松取出 list
+    private static func extractList(_ dict: [String: Any]) -> [[String: Any]]? {
+        if let list = dict["list"] as? [[String: Any]] { return list }
+        // JS 数组经 toDictionary 有时会退化为 [Any]
+        if let raw = dict["list"] as? [Any] {
+            let mapped = raw.compactMap { $0 as? [String: Any] }
+            return mapped.isEmpty ? nil : mapped
+        }
+        return nil
+    }
+
     // MARK: - 上层接口: 搜索
 
     /// 搜索音乐
@@ -336,36 +427,23 @@ class ScriptEngine {
         source: String,
         completion: @escaping (Result<[[String: Any]], Error>) -> Void
     ) {
-        guard let handler = requestHandlersBySource[source] else {
-            completion(.failure(ScriptError.noHandler))
-            return
-        }
-
-        let request: [String: Any] = [
-            "source": source,
-            "action": "musicSearch",
-            "info": [
-                "page": page,
-                "keyword": keyword
-            ]
-        ]
-
-        let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNull || error.isUndefined {
-                if let dict = data.toDictionary() as? [String: Any] {
-                    if let list = dict["list"] as? [[String: Any]] {
-                        completion(.success(list))
-                        return
-                    }
+        invoke(
+            source: source,
+            action: "musicSearch",
+            info: ["page": page, "keyword": keyword],
+            timeout: 20
+        ) { result in
+            switch result {
+            case .success(let dict):
+                if let list = ScriptEngine.extractList(dict) {
+                    completion(.success(list))
+                } else {
+                    completion(.success([])) // 无结果不算错误
                 }
-                completion(.failure(ScriptError.invalidResponse))
-            } else {
-                completion(.failure(ScriptError.scriptError(error.toString())))
+            case .failure(let e):
+                completion(.failure(e))
             }
         }
-
-        let callbackValue = JSValue(object: callback, in: context)!
-        handler.call(withArguments: [request, callbackValue])
     }
 
     // MARK: - 上层接口: 排行榜 / 推荐
@@ -373,75 +451,59 @@ class ScriptEngine {
     /// 获取某音源的排行榜 / 推荐列表
     func musicBoard(
         source: String,
+        boardId: String = "",
         completion: @escaping (Result<[[String: Any]], Error>) -> Void
     ) {
-        guard let handler = requestHandlersBySource[source] else {
-            completion(.failure(ScriptError.noHandler))
-            return
-        }
-
-        let request: [String: Any] = [
-            "source": source,
-            "action": "musicBoard",
-            "info": [:]
-        ]
-
-        let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNull || error.isUndefined {
-                if let dict = data.toDictionary() as? [String: Any] {
-                    if let list = dict["list"] as? [[String: Any]] {
-                        completion(.success(list))
-                        return
-                    }
+        invoke(
+            source: source,
+            action: "musicBoard",
+            info: ["bangId": boardId],
+            timeout: 30
+        ) { result in
+            switch result {
+            case .success(let dict):
+                if let list = ScriptEngine.extractList(dict) {
+                    completion(.success(list))
+                } else {
+                    completion(.success([]))
                 }
-                completion(.failure(ScriptError.invalidResponse))
-            } else {
-                completion(.failure(ScriptError.scriptError(error.toString())))
+            case .failure(let e):
+                completion(.failure(e))
             }
         }
-
-        let callbackValue = JSValue(object: callback, in: context)!
-        handler.call(withArguments: [request, callbackValue])
     }
 
     // MARK: - 上层接口: 获取播放链接
 
     /// 获取音乐播放 URL
+    /// - Parameter extra: 平台特有字段（酷狗 hash / 咪咕 contentId+copyrightId 等），来自 Song.meta
     func getMusicUrl(
         source: String,
         songId: String,
         quality: String = "320k",
+        extra: [String: String] = [:],
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        guard let handler = requestHandlersBySource[source] else {
-            completion(.failure(ScriptError.noHandler))
-            return
-        }
-
-        let request: [String: Any] = [
-            "source": source,
-            "action": "musicUrl",
-            "info": [
-                "songmid": songId,
-                "quality": quality
-            ]
+        var info: [String: Any] = [
+            "songmid": songId,
+            "hash": songId,          // 酷狗习惯用 hash 命名
+            "quality": quality
         ]
+        for (k, v) in extra { info[k] = v }
 
-        let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNull || error.isUndefined {
-                if let dict = data.toDictionary() as? [String: Any],
-                   let url = dict["url"] as? String, !url.isEmpty {
+        invoke(source: source, action: "musicUrl", info: info, timeout: 25) { result in
+            switch result {
+            case .success(let dict):
+                if let url = dict["url"] as? String, !url.isEmpty,
+                   url.hasPrefix("http") {
                     completion(.success(url))
                 } else {
-                    completion(.failure(ScriptError.invalidResponse))
+                    completion(.failure(ScriptError.noPlayUrl))
                 }
-            } else {
-                completion(.failure(ScriptError.scriptError(error.toString())))
+            case .failure(let e):
+                completion(.failure(e))
             }
         }
-
-        let callbackValue = JSValue(object: callback, in: context)!
-        handler.call(withArguments: [request, callbackValue])
     }
 
     // MARK: - 上层接口: 获取歌词
@@ -450,37 +512,22 @@ class ScriptEngine {
     func getLyrics(
         source: String,
         songId: String,
+        extra: [String: String] = [:],
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        guard let handler = requestHandlersBySource[source] else {
-            completion(.failure(ScriptError.noHandler))
-            return
-        }
+        var info: [String: Any] = ["songmid": songId, "hash": songId]
+        for (k, v) in extra { info[k] = v }
 
-        let request: [String: Any] = [
-            "source": source,
-            "action": "lyric",
-            "info": [
-                "songmid": songId
-            ]
-        ]
-
-        let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNull || error.isUndefined {
-                if let dict = data.toDictionary() as? [String: Any] {
-                    let lyric = dict["lyric"] as? String ?? ""
-                    let tlyric = dict["tlyric"] as? String ?? ""
-                    completion(.success(lyric + (tlyric.isEmpty ? "" : "\n\(tlyric)")))
-                } else {
-                    completion(.failure(ScriptError.invalidResponse))
-                }
-            } else {
-                completion(.failure(ScriptError.scriptError(error.toString())))
+        invoke(source: source, action: "lyric", info: info, timeout: 20) { result in
+            switch result {
+            case .success(let dict):
+                let lyric = dict["lyric"] as? String ?? ""
+                let tlyric = dict["tlyric"] as? String ?? ""
+                completion(.success(lyric + (tlyric.isEmpty ? "" : "\n\(tlyric)")))
+            case .failure(let e):
+                completion(.failure(e))
             }
         }
-
-        let callbackValue = JSValue(object: callback, in: context)!
-        handler.call(withArguments: [request, callbackValue])
     }
 
     // MARK: - 上层接口: 获取封面
@@ -489,37 +536,27 @@ class ScriptEngine {
     func getPic(
         source: String,
         songId: String,
+        extra: [String: String] = [:],
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        guard let handler = requestHandlersBySource[source] else {
-            completion(.failure(ScriptError.noHandler))
-            return
-        }
+        var info: [String: Any] = ["songmid": songId, "hash": songId]
+        for (k, v) in extra { info[k] = v }
 
-        let request: [String: Any] = [
-            "source": source,
-            "action": "pic",
-            "info": [
-                "songmid": songId
-            ]
-        ]
-
-        let callback: @convention(block) (JSValue, JSValue) -> Void = { error, data in
-            if error.isNull || error.isUndefined {
-                if let dict = data.toDictionary() as? [String: Any],
-                   let url = dict["url"] as? String {
-                    completion(.success(url))
-                } else {
-                    completion(.failure(ScriptError.invalidResponse))
-                }
-            } else {
-                completion(.failure(ScriptError.scriptError(error.toString())))
+        invoke(source: source, action: "pic", info: info, timeout: 20) { result in
+            switch result {
+            case .success(let dict):
+                completion(.success(dict["url"] as? String ?? ""))
+            case .failure(let e):
+                completion(.failure(e))
             }
         }
-
-        let callbackValue = JSValue(object: callback, in: context)!
-        handler.call(withArguments: [request, callbackValue])
     }
+}
+
+// MARK: - 回调去重盒子
+
+private final class CallbackBox {
+    var finished = false
 }
 
 // MARK: - ScriptError
@@ -527,16 +564,22 @@ class ScriptEngine {
 enum ScriptError: Error, LocalizedError {
     case noHandler
     case invalidResponse
+    case noPlayUrl
+    case timeout
     case scriptError(String)
 
     var errorDescription: String? {
         switch self {
         case .noHandler:
-            return "没有注册请求处理器"
+            return "该音源脚本未加载"
         case .invalidResponse:
             return "脚本返回数据格式无效"
+        case .noPlayUrl:
+            return "该音源未返回可用播放链接"
+        case .timeout:
+            return "音源响应超时"
         case .scriptError(let msg):
-            return "脚本错误: \(msg)"
+            return msg
         }
     }
 }

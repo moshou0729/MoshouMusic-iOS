@@ -14,16 +14,25 @@ class SettingsViewController: UIViewController {
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
 
+    /// 已启用且脚本已加载的音源数量，用于「音源管理」副标题
+    private var sourceSummary: String {
+        let all = ConfigStore.shared.selectableSourceIds
+        let enabled = all.filter { ConfigStore.shared.isSourceEnabled($0) }
+        let ready = enabled.filter { ScriptEngine.shared.hasHandler(for: $0) }
+        return "已启用 \(enabled.count)/\(all.count) 个 · 可用 \(ready.count) 个"
+    }
+
     /// 计算属性：每次读取实时取配置，保证开关/副标题状态与 ConfigStore 同步
     private var sections: [SettingSection] {
         return [
+        // 原来「音源设置」和「导入脚本」两条都跳同一个页面，属于重复入口，已合并为一条
         SettingSection(title: "音源管理", items: [
-            SettingItem(icon: "music.note", iconColor: Theme.primary, title: "音源设置", subtitle: "管理音源脚本", type: .navigate),
-            SettingItem(icon: "square.and.arrow.down", iconColor: Theme.tertiary, title: "导入脚本", subtitle: "从文件导入自定义源", type: .navigate),
+            SettingItem(icon: "music.note", iconColor: Theme.primary, title: "音源管理", subtitle: sourceSummary, type: .navigate),
         ]),
         SettingSection(title: "播放设置", items: [
             SettingItem(icon: "music.note.list", iconColor: Theme.secondary, title: "默认音质", subtitle: ConfigStore.shared.defaultQuality, type: .navigate),
             SettingItem(icon: "repeat", iconColor: Theme.warning, title: "播放模式", subtitle: PlayMode(rawValue: ConfigStore.shared.playMode)?.displayName ?? "列表循环", type: .navigate),
+            SettingItem(icon: "arrow.triangle.2.circlepath", iconColor: Theme.secondary, title: "自动换源", subtitle: "当前音源播不出时自动换别的源", type: .toggle(ConfigStore.shared.autoSwitchSource)),
         ]),
         SettingSection(title: "悬浮歌词", items: [
             SettingItem(icon: "rectangle.expand.vertical", iconColor: Theme.primary, title: "悬浮歌词", subtitle: nil, type: .toggle(ConfigStore.shared.isFloatingLyricsOn)),
@@ -142,6 +151,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             } else {
                 FloatingLyricsManager.shared.hide()
             }
+        case "自动换源":
+            ConfigStore.shared.autoSwitchSource = isOn
         case "深色模式":
             ConfigStore.shared.isDarkMode = isOn
             Theme.applyAppearance()
@@ -170,7 +181,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         let item = section.items[indexPath.row]
 
         switch item.title {
-        case "音源设置":
+        case "音源管理":
+            // 音源开关 + 添加/删除自定义脚本，全部收在这一个页面里
             navigationController?.pushViewController(SourceSettingsViewController(), animated: true)
         case "默认音质":
             navigationController?.pushViewController(QualityPickerViewController(), animated: true)
@@ -178,10 +190,6 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             navigationController?.pushViewController(PlayModePickerViewController(), animated: true)
         case "歌词透明度":
             navigationController?.pushViewController(OpacityViewController(), animated: true)
-        case "导入脚本":
-            // 统一入口：直接进「音源设置」，在那里的「+ / 添加音源」完成导入，
-            // 避免用户误用系统文档选择器而在 TrollStore 沙盒里选不到文件
-            navigationController?.pushViewController(SourceSettingsViewController(), animated: true)
         case "关于墨守music":
             navigationController?.pushViewController(AboutViewController(), animated: true)
         case "清除缓存":
@@ -192,27 +200,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         }
     }
 
-    // MARK: - 导入脚本 (文档选择器)
-
-    private func presentDocumentPicker() {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType(filenameExtension: "js") ?? .plainText, .plainText])
-        picker.delegate = self
-        picker.allowsMultipleSelection = false
-        present(picker, animated: true)
-    }
-
-    private func importScript(at url: URL) {
-        guard url.pathExtension.lowercased() == "js" else {
-            showAlert(title: "格式不支持", message: "请选择 .js 音源脚本")
-            return
-        }
-        let ok = ScriptManager.shared.importScript(url: url)
-        if ok {
-            showAlert(title: "导入成功", message: "脚本已加入音源，可在「音源设置」中启用")
-        } else {
-            showAlert(title: "导入失败", message: "请检查脚本格式后重试")
-        }
-    }
+    // 脚本导入统一放在「音源管理」页，这里不再持有文档选择器
 
     private func showAlert(title: String, message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
@@ -347,18 +335,6 @@ class SettingCell: UITableViewCell {
 
     @objc private func toggleChanged() {
         onToggle?(toggleSwitch.isOn)
-    }
-}
-
-// MARK: - 文档导入
-
-extension SettingsViewController: UIDocumentPickerDelegate {
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let url = urls.first else { return }
-        // 先获取安全访问权限再读取
-        let secured = url.startAccessingSecurityScopedResource()
-        importScript(at: url)
-        if secured { url.stopAccessingSecurityScopedResource() }
     }
 }
 

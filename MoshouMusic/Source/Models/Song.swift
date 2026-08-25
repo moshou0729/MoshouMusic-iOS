@@ -27,32 +27,72 @@ struct Song: Codable, Equatable {
 
 /// 搜索结果项 (从脚本返回的原始字典转换为 Song)
 extension Song {
+
+    /// 宽松取字符串 — JS 返回的数字/布尔经 JSValue 转换后是 NSNumber，
+    /// 直接 `as? String` 会失败并导致整条记录被丢弃（曾表现为「某音源没有内容」）
+    private static func str(_ value: Any?) -> String? {
+        guard let value = value else { return nil }
+        if let s = value as? String { return s.isEmpty ? nil : s }
+        if let n = value as? NSNumber { return n.stringValue }
+        if value is NSNull { return nil }
+        let described = String(describing: value)
+        return described.isEmpty ? nil : described
+    }
+
+    private static func intVal(_ value: Any?) -> Int {
+        if let i = value as? Int { return i }
+        if let n = value as? NSNumber { return n.intValue }
+        if let s = value as? String {
+            // 兼容 "3:35" / "215" / "215.0"
+            if s.contains(":") {
+                let parts = s.split(separator: ":").compactMap { Int($0) }
+                if parts.count == 2 { return parts[0] * 60 + parts[1] }
+                if parts.count == 3 { return parts[0] * 3600 + parts[1] * 60 + parts[2] }
+            }
+            return Int(Double(s) ?? 0)
+        }
+        return 0
+    }
+
     init?(from dict: [String: Any], source: String) {
-        guard let songmid = dict["songmid"] as? String,
-              let name = dict["name"] as? String else {
+        // songmid 兼容多种命名，且允许数字类型
+        let midCandidates = ["songmid", "id", "hash", "songId", "rid", "copyrightId"]
+        var songmid: String?
+        for key in midCandidates {
+            if let v = Song.str(dict[key]) { songmid = v; break }
+        }
+
+        guard let mid = songmid, let name = Song.str(dict["name"]) ?? Song.str(dict["songName"]) else {
             return nil
         }
 
-        let singer = dict["singer"] as? String ?? "未知歌手"
-        let albumName = dict["albumName"] as? String
-        let albumId = dict["albumId"] as? String
-        let imgUrl = dict["img"] as? String
-        let quality = dict["quality"] as? String
-        let interval = (dict["interval"] as? Int) ?? 0
-        let meta = dict["meta"] as? [String: String]
+        let singer = Song.str(dict["singer"]) ?? Song.str(dict["artist"]) ?? "未知歌手"
+        let albumName = Song.str(dict["albumName"]) ?? Song.str(dict["album"])
+        let albumId = Song.str(dict["albumId"])
+        let imgUrl = Song.str(dict["img"]) ?? Song.str(dict["pic"]) ?? Song.str(dict["cover"])
+        let quality = Song.str(dict["quality"])
+        let interval = Song.intVal(dict["interval"] ?? dict["duration"])
+
+        // meta 宽松转换：承载平台特有字段（酷狗 hash、咪咕 contentId/copyrightId 等）
+        var meta: [String: String] = [:]
+        if let raw = dict["meta"] as? [String: Any] {
+            for (k, v) in raw {
+                if let s = Song.str(v) { meta[k] = s }
+            }
+        }
 
         self.init(
-            id: Song.makeId(source: source, songmid: songmid),
+            id: Song.makeId(source: source, songmid: mid),
             name: name,
             singer: singer,
             source: source,
-            songmid: songmid,
+            songmid: mid,
             albumName: albumName,
             albumId: albumId,
             imgUrl: imgUrl,
             quality: quality,
             interval: interval,
-            meta: meta
+            meta: meta.isEmpty ? nil : meta
         )
     }
 }

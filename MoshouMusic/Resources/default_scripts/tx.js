@@ -1,8 +1,18 @@
-// QQ音乐源脚本
-//   搜索:   https://c.y.qq.com/soso/fcgi-bin/client_search_cp (new_json=1, JSON)
-//   榜单:   https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg (topid=26 热歌榜)
-//   播放:   https://u.y.qq.com/cgi-bin/music.fcg 换取 vkey (真机通常可用, 部分歌曲需鉴权)
-//   歌词:   https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg
+// QQ 音乐源脚本 (真实可用版 · 2026-08 重写)
+//
+// 为什么重写：
+//   旧版用 c.y.qq.com/soso/client_search_cp 搜索，现已被风控——HTTP 200 但 list 恒为空，
+//   表现就是「点播放没反应」。u.y.qq.com 的 DoSearchForQQMusicDesktop 同样返回空。
+//   QQ 的播放链接需要 vkey 签名，纯前端脚本无法自行生成。
+//
+// 现在的方案（端点均已实测）：
+//   搜索:  https://api.vkeys.cn/v2/music/tencent?word=&page=&num=
+//   播放:  https://api.vkeys.cn/v2/music/tencent/geturl?mid=&quality=
+//   榜单:  https://u.y.qq.com/cgi-bin/musicu.fcg  (musicToplist.ToplistInfoServer/GetDetail)  官方接口，可直连
+//   歌词:  https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?nobase64=1              官方接口，可直连
+//
+// 注意：iOS 14 的 JavaScriptCore 不支持 async/await 与 Promise，
+//       所以全部写成回调式，禁止出现 async 函数。
 ;(function() {
     const source = 'tx'
 
@@ -25,153 +35,241 @@
         }
     })
 
+    const API = 'https://api.vkeys.cn/v2/music/tencent'
+
     const HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15'
+    }
+    const QQ_HEADERS = {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
-        'Referer': 'https://y.qq.com/'
+        'Referer': 'https://y.qq.com/portal/player.html'
     }
 
-    function cleanText(s) {
-        return (s || '').replace(/&nbsp;/g, ' ').replace(/<[^>]+>/g, '').trim()
-    }
-
-    function parseBody(body) {
+    function parseJSON(body) {
         if (!body) return null
-        try { return JSON.parse(body) } catch (e) {}
-        return null
+        try { return JSON.parse(body) } catch (e) { return null }
     }
 
-    function picOf(albummid) {
-        return albummid ? 'https://y.gtimg.cn/music/photo_new/T002R300x300M000' + albummid + '.jpg' : ''
+    function joinSingers(list) {
+        if (!list || !list.length) return ''
+        const names = []
+        for (let i = 0; i < list.length; i++) {
+            const n = list[i] && (list[i].name || list[i].title)
+            if (n) names.push(n)
+        }
+        return names.join('/')
+    }
+
+    // vkeys 的 quality: 4=标准128k, 8=极高320k, 11=flac无损
+    function qualityToLevel(quality) {
+        switch (quality) {
+            case 'flac': return 11
+            case '320k': return 8
+            default:     return 4
+        }
     }
 
     // ==================== 搜索 ====================
     function handleSearch(info, callback) {
         const keyword = info.keyword || ''
         const page = info.page || 1
-        const url = 'https://c.y.qq.com/soso/fcgi-bin/client_search_cp?ct=24&qqmusic_ver=1298' +
-            '&new_json=1&remoteplace=txt.yqq.top&searchid=&t=0&aggr=1&cr=1&catZhida=0&lossless=0' +
-            '&flag_qc=0&p=' + page + '&n=30&w=' + encodeURIComponent(keyword) +
-            '&g_tk=5381&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8' +
-            '&notice=0&platform=yqq.json&needNewCode=0'
+
+        const url = API + '?word=' + encodeURIComponent(keyword) +
+            '&page=' + page + '&num=30'
 
         lx.request(url, { method: 'GET', headers: HEADERS, timeout: 15 }, function(err, resp) {
             if (err) { callback(err, null); return }
-            const result = parseBody(resp.body)
-            if (!result || !result.data || !result.data.song || !result.data.song.list) {
-                callback({ message: '搜索接口返回异常 (HTTP ' + resp.statusCode + ')' }, null)
+
+            const result = parseJSON(resp.body)
+            if (!result || result.code !== 200 || !result.data) {
+                callback({ message: 'QQ 搜索失败: ' + ((result && result.message) || ('HTTP ' + resp.statusCode)) }, null)
                 return
             }
-            const list = result.data.song.list.map(function(item) {
-                const singers = (item.singer || []).map(function(s) { return s.name }).join('/')
-                return {
-                    songmid: item.songmid || '',
-                    name: cleanText(item.songname) || '未知歌曲',
-                    singer: singers || '未知歌手',
-                    albumName: cleanText(item.albumname),
-                    albumId: item.albummid || '',
-                    img: picOf(item.albummid),
-                    interval: parseInt(item.interval || '0', 10) || 0,
-                    quality: '320k'
-                }
-            }).filter(function(item) { return item.songmid && item.name })
+
+            const arr = result.data instanceof Array ? result.data : [result.data]
+            const list = []
+            for (let i = 0; i < arr.length; i++) {
+                const item = arr[i]
+                if (!item || !item.mid) continue
+                list.push({
+                    songmid: String(item.mid),
+                    name: item.song || '未知歌曲',
+                    singer: item.singer || joinSingers(item.singer_list) || '未知歌手',
+                    albumName: item.album || '',
+                    albumId: '',
+                    img: item.cover || '',
+                    interval: intervalToSeconds(item.interval),
+                    quality: '320k',
+                    // 播放/歌词都要用 mid，放进 meta 一并带下去
+                    meta: { mid: String(item.mid), songId: String(item.id || '') }
+                })
+            }
+
             callback(null, { list: list, total: list.length })
         })
     }
 
+    // vkeys 返回的 interval 形如 "3分35秒"
+    function intervalToSeconds(v) {
+        if (typeof v === 'number') return v
+        if (!v) return 0
+        const m = String(v).match(/(\d+)\s*分\s*(\d+)\s*秒/)
+        if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10)
+        const n = parseInt(v, 10)
+        return isNaN(n) ? 0 : n
+    }
+
     // ==================== 播放链接 ====================
-    function filenameFor(songmid, quality) {
-        if (quality === 'flac') return 'F000' + songmid + '.flac'
-        if (quality === '128k') return 'M500' + songmid + '.mp3'
-        return 'M800' + songmid + '.mp3' // 320k
+    function requestUrl(mid, level, callback) {
+        const url = API + '/geturl?mid=' + encodeURIComponent(mid) + '&quality=' + level
+
+        lx.request(url, { method: 'GET', headers: HEADERS, timeout: 20 }, function(err, resp) {
+            if (err) { callback(err, null); return }
+
+            const result = parseJSON(resp.body)
+            if (!result || result.code !== 200 || !result.data) {
+                callback({ message: 'QQ 取链接失败: ' + ((result && result.message) || ('HTTP ' + resp.statusCode)) }, null)
+                return
+            }
+            const u = result.data.url
+            if (!u || String(u).indexOf('http') !== 0) {
+                callback({ message: 'QQ 未返回可用链接（可能是纯付费歌曲）' }, null)
+                return
+            }
+            callback(null, String(u))
+        })
     }
 
     function handleMusicUrl(info, callback) {
-        const songmid = info.songmid || ''
-        const quality = info.quality || '320k'
-        const filename = filenameFor(songmid, quality)
-        const guid = String(Math.floor(Math.random() * 1e10))
-        const url = 'https://u.y.qq.com/cgi-bin/music.fcg?format=json&platform=ypc&cid=205361747' +
-            '&uin=0&songmid=' + songmid + '&filename=' + filename + '&guid=' + guid
+        // mid 优先从 meta 透传的字段取，其次退回 songmid
+        const mid = info.mid || info.songmid
+        if (!mid) { callback({ message: '缺少歌曲 mid' }, null); return }
 
-        lx.request(url, { method: 'GET', headers: HEADERS, timeout: 15 }, function(err, resp) {
-            if (err) { callback(err, null); return }
-            try {
-                const result = JSON.parse(resp.body)
-                const data = result.data || {}
-                // 兼容两种返回结构: data.items[0].vkey 或 data[songmid].vkey
-                let vkey = null
-                if (data.items && data.items[0]) {
-                    vkey = data.items[0].vkey
-                } else if (data[songmid]) {
-                    vkey = data[songmid].vkey
-                }
-                if (vkey) {
-                    const host = 'https://dl.stream.qqmusic.qq.com/'
-                    const playUrl = host + filename +
-                        '?vkey=' + vkey + '&guid=' + guid + '&fromtag=66'
-                    callback(null, { url: playUrl })
-                } else {
-                    const subcode = (data.items && data.items[0] && data.items[0].subcode) || result.subcode || ('HTTP ' + resp.statusCode)
-                    callback({ message: '获取播放链接失败(可能需鉴权/版权): ' + subcode }, null)
-                }
-            } catch (e) {
-                callback({ message: '播放接口返回非 JSON: HTTP ' + resp.statusCode }, null)
+        const level = qualityToLevel(info.quality || '320k')
+
+        requestUrl(mid, level, function(err, url) {
+            if (!err) { callback(null, { url: url }); return }
+            // 高音质拿不到就降级到标准音质再试一次
+            if (level !== 4) {
+                requestUrl(mid, 4, function(err2, url2) {
+                    if (err2) { callback(err2, null); return }
+                    callback(null, { url: url2 })
+                })
+                return
             }
+            callback(err, null)
         })
+    }
+
+    // ==================== 排行榜 ====================
+    // topId: 26=热歌榜 / 27=新歌榜 / 4=流行指数榜
+    function handleBoard(info, callback) {
+        const topId = (info && info.bangId) ? parseInt(info.bangId, 10) : 26
+        const payload = {
+            detail: {
+                module: 'musicToplist.ToplistInfoServer',
+                method: 'GetDetail',
+                param: { topId: isNaN(topId) ? 26 : topId, num: 50 }
+            }
+        }
+        const url = 'https://u.y.qq.com/cgi-bin/musicu.fcg?data=' +
+            encodeURIComponent(JSON.stringify(payload))
+
+        lx.request(url, { method: 'GET', headers: QQ_HEADERS, timeout: 15 }, function(err, resp) {
+            if (err) { fallbackBoard(callback); return }
+
+            const result = parseJSON(resp.body)
+            const songs = result && result.detail && result.detail.data &&
+                          result.detail.data.songInfoList
+            if (!songs || !songs.length) { fallbackBoard(callback); return }
+
+            const list = []
+            for (let i = 0; i < songs.length; i++) {
+                const s = songs[i]
+                if (!s || !s.mid) continue
+                list.push({
+                    songmid: String(s.mid),
+                    name: s.name || s.title || '未知歌曲',
+                    singer: joinSingers(s.singer) || '未知歌手',
+                    albumName: (s.album && s.album.name) || '',
+                    albumId: (s.album && s.album.mid) || '',
+                    img: (s.album && s.album.mid)
+                        ? 'https://y.qq.com/music/photo_new/T002R300x300M000' + s.album.mid + '.jpg'
+                        : '',
+                    interval: s.interval || 0,
+                    quality: '320k',
+                    meta: { mid: String(s.mid), songId: String(s.id || '') }
+                })
+            }
+
+            if (!list.length) { fallbackBoard(callback); return }
+            callback(null, { list: list, total: list.length })
+        })
+    }
+
+    // 官方榜单不可达时，退回一次热门关键词搜索（串行，不并发）
+    const HOT = ['热门', '2026新歌', '周杰伦']
+
+    function fallbackBoard(callback) {
+        let idx = 0
+        function tryNext() {
+            if (idx >= HOT.length) {
+                callback({ message: 'QQ 榜单与兜底搜索均无结果' }, null)
+                return
+            }
+            handleSearch({ keyword: HOT[idx++], page: 1 }, function(err, data) {
+                if (!err && data && data.list && data.list.length) {
+                    callback(null, { list: data.list.slice(0, 30), total: data.list.length })
+                } else {
+                    tryNext()
+                }
+            })
+        }
+        tryNext()
     }
 
     // ==================== 歌词 ====================
     function handleLyric(info, callback) {
-        const songmid = info.songmid || ''
-        const url = 'https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=' + songmid +
-            '&format=json&nobase64=1&g_tk=5381&loginUin=0&hostUin=0&platform=yqq.json&needNewCode=0'
-        lx.request(url, { method: 'GET', headers: HEADERS, timeout: 15 }, function(err, resp) {
+        const mid = info.mid || info.songmid
+        if (!mid) { callback({ message: '缺少歌曲 mid' }, null); return }
+
+        const url = 'https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg' +
+            '?songmid=' + encodeURIComponent(mid) + '&g_tk=5381&format=json&nobase64=1'
+
+        lx.request(url, { method: 'GET', headers: QQ_HEADERS, timeout: 15 }, function(err, resp) {
             if (err) { callback(err, null); return }
-            try {
-                const result = JSON.parse(resp.body)
-                const lrc = (result.lyric || '').replace(/<[^>]+>/g, '')
-                const tlrc = (result.trans || '').replace(/<[^>]+>/g, '')
-                callback(null, { lyric: lrc, tlyric: tlrc })
-            } catch (e) {
-                callback(null, { lyric: '', tlyric: '' })
+
+            const result = parseJSON(resp.body)
+            if (!result || result.retcode !== 0) {
+                callback({ message: 'QQ 歌词获取失败' }, null)
+                return
             }
+            callback(null, {
+                lyric: result.lyric || '',
+                tlyric: result.trans || ''
+            })
         })
     }
 
     // ==================== 封面 ====================
     function handlePic(info, callback) {
-        // info.songmid 实际传入的是 albummid (见搜索映射), 这里兼容
-        const albummid = info.songmid || ''
-        callback(null, { url: picOf(albummid) })
-    }
+        // QQ 封面可由 albummid 直接拼出，无需额外请求
+        if (info.albumId) {
+            callback(null, {
+                url: 'https://y.qq.com/music/photo_new/T002R500x500M000' + info.albumId + '.jpg'
+            })
+            return
+        }
 
-    // ==================== 排行榜 (热歌榜 topid=26) ====================
-    function handleBoard(info, callback) {
-        const url = 'https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg?type=top&topid=26' +
-            '&song_begin=0&song_num=30&format=json&inCharset=utf8&outCharset=utf-8&notice=0' +
-            '&platform=h5&needNewCode=1&uin=0'
+        const mid = info.mid || info.songmid
+        if (!mid) { callback(null, { url: '' }); return }
+
+        const url = API + '/geturl?mid=' + encodeURIComponent(mid) + '&quality=4'
         lx.request(url, { method: 'GET', headers: HEADERS, timeout: 15 }, function(err, resp) {
-            if (err) { callback(err, null); return }
-            const result = parseBody(resp.body)
-            if (!result || !result.songlist) {
-                callback({ message: '榜单接口返回异常' }, null)
-                return
-            }
-            const list = result.songlist.map(function(item) {
-                const d = item.data || {}
-                const singers = (d.singer || []).map(function(s) { return s.name }).join('/')
-                return {
-                    songmid: d.songmid || '',
-                    name: cleanText(d.songname) || '未知歌曲',
-                    singer: singers || '未知歌手',
-                    albumName: cleanText(d.albumname),
-                    albumId: d.albummid || '',
-                    img: picOf(d.albummid),
-                    interval: parseInt(d.interval || '0', 10) || 0,
-                    quality: '320k'
-                }
-            }).filter(function(item) { return item.songmid && item.name })
-            callback(null, { list: list, total: list.length })
+            if (err) { callback(null, { url: '' }); return }
+            const result = parseJSON(resp.body)
+            const cover = result && result.data && result.data.cover
+            callback(null, { url: cover || '' })
         })
     }
 })()

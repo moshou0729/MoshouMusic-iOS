@@ -8,13 +8,30 @@ struct NetworkResponse {
     let rawData: Data?
 }
 
+/// 阻止自动重定向的 delegate — 让脚本能读到 302 的 Location 头
+/// 咪咕等平台的播放接口正是靠 302 返回真实直链
+private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil) // 不跟随，把 302 原样交回
+    }
+}
+
 /// 网络请求管理器 — 供 ScriptEngine 的 lx.request 桥接使用
-/// 支持自定义 Headers、Body、超时，以及二进制响应
+/// 支持自定义 Headers、Body、超时、二进制响应，以及「不跟随重定向」
 class NetworkManager {
 
     static let shared = NetworkManager()
 
     private let session: URLSession
+    /// 不跟随重定向的会话（用于取 302 Location）
+    private let noRedirectSession: URLSession
+    private let noRedirectDelegate = NoRedirectDelegate()
     private let defaultTimeout: TimeInterval = 30
 
     private init() {
@@ -25,6 +42,16 @@ class NetworkManager {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15"
         ]
         session = URLSession(configuration: config)
+
+        let nrConfig = URLSessionConfiguration.default
+        nrConfig.timeoutIntervalForRequest = 30
+        nrConfig.timeoutIntervalForResource = 60
+        nrConfig.httpAdditionalHeaders = config.httpAdditionalHeaders
+        noRedirectSession = URLSession(
+            configuration: nrConfig,
+            delegate: noRedirectDelegate,
+            delegateQueue: nil
+        )
     }
 
     // MARK: - 请求
@@ -36,6 +63,7 @@ class NetworkManager {
         body: String? = nil,
         timeout: Double = 30,
         isBinary: Bool = false,
+        followRedirect: Bool = true,
         completion: @escaping (Result<NetworkResponse, Error>) -> Void
     ) {
         guard let requestUrl = URL(string: url) else {
@@ -63,7 +91,8 @@ class NetworkManager {
 
         Logger.debug("[NET] \(method) \(url)")
 
-        let task = session.dataTask(with: request) { data, response, error in
+        let activeSession = followRedirect ? session : noRedirectSession
+        let task = activeSession.dataTask(with: request) { data, response, error in
             if let error = error {
                 Logger.error("[NET] Error: \(error.localizedDescription)")
                 completion(.failure(error))
@@ -83,6 +112,8 @@ class NetworkManager {
             for (key, value) in httpResponse.allHeaderFields {
                 if let key = key as? String, let value = value as? String {
                     responseHeaders[key] = value
+                    // 同时存一份全小写 key，方便 JS 脚本大小写不敏感取值（如 location）
+                    responseHeaders[key.lowercased()] = value
                 }
             }
 

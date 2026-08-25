@@ -48,10 +48,15 @@ class PlayerViewController: UIViewController {
         closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
         view.addSubview(closeButton)
 
-        // 源标签
+        // 源标签（可点击 → 手动换源）
         sourceLabel.font = UIFont.systemFont(ofSize: 11, weight: .semibold)
         sourceLabel.textColor = .white
         sourceLabel.alpha = 0.6
+        sourceLabel.isUserInteractionEnabled = true
+        sourceLabel.textAlignment = .right
+        // 扩大点击热区，11pt 文字直接点很难命中
+        let sourceTap = UITapGestureRecognizer(target: self, action: #selector(sourceTapped))
+        sourceLabel.addGestureRecognizer(sourceTap)
         view.addSubview(sourceLabel)
 
         // 错误提示条（播放失败时显示具体原因，便于排查是哪个源/哪一步失败）
@@ -159,9 +164,11 @@ class PlayerViewController: UIViewController {
             closeButton.widthAnchor.constraint(equalToConstant: 36),
             closeButton.heightAnchor.constraint(equalToConstant: 36),
 
-            // 源标签
+            // 源标签（高度 36 保证热区够大）
             sourceLabel.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
             sourceLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            sourceLabel.heightAnchor.constraint(equalToConstant: 36),
+            sourceLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
 
             // 错误提示条
             errorLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 8),
@@ -245,10 +252,19 @@ class PlayerViewController: UIViewController {
 
         PlayerManager.shared.onTimeChanged = { [weak self] current, duration in
             DispatchQueue.main.async {
-                guard duration > 0 else { return }
-                self?.progressSlider.setValue(Float(current / duration), animated: false)
-                self?.currentTimeLabel.text = self?.formatTime(current)
-                self?.durationLabel.text = self?.formatTime(duration)
+                guard let self = self else { return }
+                // duration 可能是 NaN（流媒体未知时长）：isFinite 检查必须放在比较之前，
+                // 因为 NaN 参与的任何比较都返回 false，容易被误判成「有效」
+                guard duration.isFinite, current.isFinite, duration > 0 else {
+                    self.progressSlider.setValue(0, animated: false)
+                    self.currentTimeLabel.text = self.formatTime(current)
+                    self.durationLabel.text = "--:--"
+                    return
+                }
+                let ratio = Float(min(max(current / duration, 0), 1))
+                self.progressSlider.setValue(ratio, animated: false)
+                self.currentTimeLabel.text = self.formatTime(current)
+                self.durationLabel.text = self.formatTime(duration)
             }
         }
 
@@ -270,14 +286,19 @@ class PlayerViewController: UIViewController {
         guard let song = PlayerManager.shared.currentSong else { return }
         titleLabel.text = song.name
         artistLabel.text = song.singer
-        sourceLabel.text = Theme.sourceName(PlayerManager.shared.currentSource)
+        setSourceLabel(PlayerManager.shared.currentSource)
+    }
+
+    /// "酷我 ⇄" —— 带箭头暗示可点换源
+    private func setSourceLabel(_ source: String) {
+        sourceLabel.text = Theme.sourceName(source) + "  ⇄"
     }
 
     private func updateUI(state: PlayerState) {
         if let song = state.currentSong {
             titleLabel.text = song.name
             artistLabel.text = song.singer
-            sourceLabel.text = Theme.sourceName(state.currentSource)
+            setSourceLabel(state.currentSource)
 
             // 背景颜色随音源变化
             UIView.animate(withDuration: 0.3) {
@@ -372,13 +393,72 @@ class PlayerViewController: UIViewController {
     }
 
     @objc private func sliderChanged() {
-        let time = Double(progressSlider.value) * PlayerManager.shared.duration
+        let duration = PlayerManager.shared.duration
+        // 总时长未知（NaN / 0）时拖动无意义，直接忽略；
+        // 否则 NaN 会一路传到 AVPlayer.seek 并让 App 立刻闪退
+        guard duration.isFinite, duration > 0 else {
+            progressSlider.setValue(0, animated: false)
+            return
+        }
+        let time = Double(progressSlider.value) * duration
         PlayerManager.shared.seek(to: time)
+    }
+
+    // MARK: - 手动换源
+
+    /// 点顶部音源标签 → 选一个别的音源播同一首歌
+    @objc private func sourceTapped() {
+        guard PlayerManager.shared.currentSong != nil else { return }
+
+        let current = PlayerManager.shared.currentSource
+        // 候选：已启用 + 脚本已加载 + 不是当前源
+        let candidates = ConfigStore.shared.selectableSourceIds.filter {
+            $0 != current
+                && ConfigStore.shared.isSourceEnabled($0)
+                && ScriptEngine.shared.hasHandler(for: $0)
+        }
+
+        let sheet = UIAlertController(
+            title: "切换音源",
+            message: candidates.isEmpty
+                ? "没有其他可用音源，请到「设置 → 音源管理」开启"
+                : "当前：\(Theme.sourceName(current))\n会在所选音源里搜同名歌曲并接着播",
+            preferredStyle: .actionSheet
+        )
+
+        for s in candidates {
+            sheet.addAction(UIAlertAction(title: Theme.sourceName(s), style: .default) { [weak self] _ in
+                self?.performSwitch(to: s)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        // iPad / 部分场景需要 popover 锚点，否则会崩
+        sheet.popoverPresentationController?.sourceView = sourceLabel
+        sheet.popoverPresentationController?.sourceRect = sourceLabel.bounds
+        present(sheet, animated: true)
+    }
+
+    private func performSwitch(to source: String) {
+        let name = Theme.sourceName(source)
+        errorLabel.text = "正在切到 \(name)…"
+        errorLabel.isHidden = false
+
+        PlayerManager.shared.switchTo(source: source) { [weak self] ok in
+            guard let self = self else { return }
+            if ok {
+                self.errorLabel.isHidden = true
+                self.setSourceLabel(source)
+            } else {
+                self.errorLabel.text = "⚠️ \(name) 里没找到这首歌"
+                self.errorLabel.isHidden = false
+            }
+        }
     }
 
     // MARK: - 工具
 
     private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds)
         return String(format: "%d:%02d", total / 60, total % 60)
     }

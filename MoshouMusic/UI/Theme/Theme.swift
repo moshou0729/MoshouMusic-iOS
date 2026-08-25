@@ -142,12 +142,9 @@ struct Theme {
         }
         UITabBar.appearance().tintColor = primary
 
-        // 搜索栏
-        let searchTFAppearance = UITextField.appearance(whenContainedInInstancesOf: [UISearchBar.self])
-        searchTFAppearance.backgroundColor = isDark ? darkSurfaceVariant : surfaceVariant
-        // 关键: 用 appearance 代理统一设置文字色, 否则搜索栏放入导航栏后文字色被系统外观重置导致看不见
-        searchTFAppearance.textColor = isDark ? darkOnSurface : onSurface
-        searchTFAppearance.tintColor = primary
+        // 注: 搜索框已改为自绘的 MDSearchField (普通 UITextField),
+        // 不再依赖 UISearchBar 的 appearance 代理 —— 那种做法在 iOS 14 上
+        // 会被导航栏外观 / 内部视图重建反复覆盖, 导致输入文字不可见。
     }
 
     // MARK: - 获取当前模式颜色
@@ -166,6 +163,10 @@ struct Theme {
     }
     static var border: UIColor {
         ConfigStore.shared.isDarkMode ? darkOutline : outline
+    }
+    /// 搜索框底色 (MDSearchField 使用)
+    static var searchFieldBg: UIColor {
+        ConfigStore.shared.isDarkMode ? darkSurfaceVariant : surfaceVariant
     }
 }
 

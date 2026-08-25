@@ -101,27 +101,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     private func installCrashReporter() {
-        let path = crashLogPath()
-        NSSetUncaughtExceptionHandler { exception in
-            let stack = (exception.callStackSymbols as? [String])?.joined(separator: "\n") ?? ""
-            let msg = """
-            === UNCAUGHT EXCEPTION \(Date()) ===
-            NAME: \(exception.name.rawValue)
-            REASON: \(exception.reason ?? "unknown")
-            STACK:
-            \(stack)
-
-            """
-            // 写入崩溃日志（不重新抛出 → App 存活，避免单一脚本异常导致整体闪退）
-            if let fh = FileHandle(forWritingAtPath: path) {
-                fh.seekToEndOfFile()
-                fh.write(msg.data(using: .utf8) ?? Data())
-                fh.closeFile()
-            } else {
-                try? msg.write(toFile: path, atomically: true, encoding: .utf8)
-            }
-            Logger.error("捕获未处理异常: \(exception.name.rawValue) - \(exception.reason ?? "")")
-        }
+        // 注意：NSSetUncaughtExceptionHandler 需要 @convention(c) 函数指针，
+        // 不能是捕获了上下文的闭包，因此用顶层函数 moshouHandleException 承接。
+        NSSetUncaughtExceptionHandler(moshouHandleException)
 
         signal(SIGABRT, moshouSignalHandler)
         signal(SIGSEGV, moshouSignalHandler)
@@ -151,6 +133,30 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 展示后清空，避免每次启动都弹
         try? FileManager.default.removeItem(atPath: path)
     }
+}
+
+@_cdecl("moshouHandleException")
+func moshouHandleException(_ exception: NSException) {
+    let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
+        ?? NSTemporaryDirectory()
+    let path = (dir as NSString).appendingPathComponent("crash.log")
+    let stack = exception.callStackSymbols.joined(separator: "\n")
+    let msg = """
+    === UNCAUGHT EXCEPTION \(Date()) ===
+    NAME: \(exception.name.rawValue)
+    REASON: \(exception.reason ?? "unknown")
+    STACK:
+    \(stack)
+
+    """
+    if let fh = FileHandle(forWritingAtPath: path) {
+        fh.seekToEndOfFile()
+        fh.write(msg.data(using: .utf8) ?? Data())
+        fh.closeFile()
+    } else {
+        try? msg.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+    Logger.error("捕获未处理异常: \(exception.name.rawValue) - \(exception.reason ?? "")")
 }
 
 @_cdecl("moshouSignalHandler")

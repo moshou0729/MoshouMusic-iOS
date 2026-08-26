@@ -131,7 +131,7 @@ class NetworkManager {
                 headers: responseHeaders,
                 body: bodyString,
                 rawData: data,
-                finalURL: response.url?.absoluteString
+                finalURL: httpResponse.url?.absoluteString
             )
 
             Logger.debug("[NET] \(httpResponse.statusCode) \(url) (\(bodyString.count) bytes)")

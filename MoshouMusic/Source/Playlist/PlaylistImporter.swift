@@ -194,6 +194,8 @@ final class PlaylistImporter {
             fetchKugouSong(hash: parsed.id, completion: completion)
         case (.kugou, .playlist):
             fetchKugouPlaylist(specialid: parsed.id, completion: completion)
+        default:
+            completion(.failure(ImportError.parseFailed("暂不支持该类型的分享链接")))
         }
     }
 
@@ -224,7 +226,7 @@ final class PlaylistImporter {
                 // 大歌单可能只返回 trackIds，需要再拉一次 song/detail
                 if let trackIds = pl["trackIds"] as? [[String: Any]], !trackIds.isEmpty {
                     let ids = trackIds.compactMap { ($0["id"] as? Int)?.description }
-                    let idsParam = "[" + ids.joined(separator: ",") + "]"
+                    let idsParam = "[\(ids.joined(separator: ","))]"
                         .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
                     self.fetchNeteaseSongs(url: "https://music.163.com/api/v3/song/detail?ids=\(idsParam)",
                                           nameKey: nil) { res in

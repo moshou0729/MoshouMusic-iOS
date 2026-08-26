@@ -91,10 +91,10 @@ class SearchViewController: UIViewController {
             searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
 
-            // 横向 chip 行：紧贴搜索框下沿，左右留 16pt 边距
+            // 横向 chip 行：紧贴搜索框下沿，左右各 16pt 边距 — 撑满整行避免右侧大空白
             chipRow.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
             chipRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            chipRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            chipRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             chipRow.heightAnchor.constraint(equalToConstant: 38),
 
             // 表格：紧贴 chip 行下沿

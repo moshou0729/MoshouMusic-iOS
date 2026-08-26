@@ -1,18 +1,19 @@
 import UIKit
 
 /// LX Music 桌面版同步设置页
-/// v1.0.15 仅支持 URL 配置 + HTTP /hello 握手
-/// 完整 WebSocket RPC + 加密双向同步将在 v1.0.16+ 上线
+/// v1.0.17 修复：4 张卡片改用 UIStackView 堆叠（修复所有卡片全叠顶部看不见 URL 输入的 bug）
+/// v1.0.18+ 将基于 LX 桌面版 WebSocket RPC（message2call）实现完整双向同步
 class LXSyncViewController: UIViewController {
 
     private let scrollView = UIScrollView()
-    private let containerView = UIView()
+    private let containerStack = UIStackView()
 
     private let urlField = UITextField()
     private let statusBadge = UILabel()
     private let detailLabel = UILabel()
     private let testButton = UIButton(type: .system)
     private let enableSwitch = UISwitch()
+    private let saveButton = UIButton(type: .system)
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -36,11 +37,22 @@ class LXSyncViewController: UIViewController {
 
     private func setupUI() {
         view.addSubview(scrollView)
-        scrollView.addSubview(containerView)
-        [scrollView, containerView].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.alwaysBounceVertical = true
+        scrollView.keyboardDismissMode = .onDrag
 
-        // 顶部卡片：URL 输入
-        let urlCard = makeCard(title: "同步服务地址", subtitle: "LX 桌面版 v2.4+ 或独立版数据同步服务")
+        // 一个 vertical stack 装所有卡片 — 自动按顺序堆叠，不会再叠在一起
+        containerStack.axis = .vertical
+        containerStack.spacing = 16
+        containerStack.alignment = .fill
+        containerStack.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(containerStack)
+
+        // ===== 卡片 1：URL 输入（首屏第一张，可见） =====
+        let urlCard = makeCard(
+            title: "同步服务地址",
+            subtitle: "LX 桌面版 v2.4+ / 独立版 sync-server v2.0+"
+        )
         urlField.borderStyle = .roundedRect
         urlField.placeholder = "http://192.168.1.5:23332"
         urlField.autocapitalizationType = .none
@@ -49,79 +61,87 @@ class LXSyncViewController: UIViewController {
         urlField.returnKeyType = .done
         urlField.font = Theme.bodyMedium
         urlField.delegate = self
-        urlField.translatesAutoresizingMaskIntoConstraints = false
-        urlCard.addRow(urlField)
+        urlCard.stack.addArrangedSubview(urlField)
+        urlField.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
-        // 提示
-        let hint = UILabel()
-        hint.text = "桌面端：「设置 → 数据同步」选择「服务端模式」\n同步 URL 在桌面版上显示，例：http://192.168.1.5:23332"
-        hint.font = Theme.bodySmall
-        hint.textColor = Theme.subtext
-        hint.numberOfLines = 0
-        urlCard.addRow(hint)
+        let urlHint = UILabel()
+        urlHint.text = "桌面端：「设置 → 数据同步 → 服务端模式」；URL 在桌面版同步设置里显示。"
+        urlHint.font = Theme.bodySmall
+        urlHint.textColor = Theme.subtext
+        urlHint.numberOfLines = 0
+        urlCard.stack.addArrangedSubview(urlHint)
 
-        urlCard.addTo(containerView, topSpacing: 16)
+        saveButton.setTitle("保存地址", for: .normal)
+        saveButton.titleLabel?.font = Theme.titleSmall
+        saveButton.setTitleColor(.white, for: .normal)
+        saveButton.backgroundColor = Theme.success
+        saveButton.layer.cornerRadius = Theme.cornerMedium
+        saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
+        urlCard.stack.addArrangedSubview(saveButton)
+        saveButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
-        // 状态卡片
+        urlCard.add(to: containerStack)
+
+        // ===== 卡片 2：连接状态 + 测试按钮 =====
         let statusCard = makeCard(title: "连接状态", subtitle: nil)
 
-        statusBadge.font = .systemFont(ofSize: 15, weight: .semibold)
+        statusBadge.font = .systemFont(ofSize: 16, weight: .semibold)
         statusBadge.numberOfLines = 0
-        statusBadge.translatesAutoresizingMaskIntoConstraints = false
-        statusCard.addRow(statusBadge)
+        statusCard.stack.addArrangedSubview(statusBadge)
 
         detailLabel.font = Theme.bodySmall
         detailLabel.textColor = Theme.subtext
         detailLabel.numberOfLines = 0
-        detailLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusCard.addRow(detailLabel)
+        statusCard.stack.addArrangedSubview(detailLabel)
 
         testButton.setTitle("测试连接", for: .normal)
         testButton.titleLabel?.font = Theme.titleSmall
         testButton.setTitleColor(.white, for: .normal)
         testButton.backgroundColor = Theme.primary
         testButton.layer.cornerRadius = Theme.cornerMedium
-        testButton.translatesAutoresizingMaskIntoConstraints = false
         testButton.addTarget(self, action: #selector(testTapped), for: .touchUpInside)
-        statusCard.addRow(testButton)
+        statusCard.stack.addArrangedSubview(testButton)
         testButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
-        statusCard.addTo(containerView, topSpacing: 16)
+        statusCard.add(to: containerStack)
 
-        // 启用开关卡片
+        // ===== 卡片 3：启用同步 =====
         let enableCard = makeCard(title: "启用同步", subtitle: nil)
-        enableSwitch.onTintColor = Theme.primary
-        enableSwitch.addTarget(self, action: #selector(enableChanged), for: .valueChanged)
-        enableSwitch.translatesAutoresizingMaskIntoConstraints = false
+
         let enableRow = UIStackView()
         enableRow.axis = .horizontal
         enableRow.alignment = .center
         enableRow.spacing = 12
-        enableRow.translatesAutoresizingMaskIntoConstraints = false
+
         let enableLabel = UILabel()
-        enableLabel.text = "打开后，启动时尝试与上述服务器建立连接"
+        enableLabel.text = "启动时尝试与上述服务器建立连接"
         enableLabel.font = Theme.bodyMedium
         enableLabel.textColor = Theme.text
         enableLabel.numberOfLines = 0
         enableRow.addArrangedSubview(enableLabel)
-        enableRow.addArrangedSubview(enableSwitch)
-        enableCard.addRow(enableRow)
-        enableCard.addTo(containerView, topSpacing: 16)
 
-        // 说明卡片
+        enableSwitch.onTintColor = Theme.primary
+        enableSwitch.addTarget(self, action: #selector(enableChanged), for: .valueChanged)
+        enableSwitch.setContentHuggingPriority(.required, for: .horizontal)
+        enableSwitch.setContentCompressionResistancePriority(.required, for: .horizontal)
+        enableRow.addArrangedSubview(enableSwitch)
+
+        enableCard.stack.addArrangedSubview(enableRow)
+        enableCard.add(to: containerStack)
+
+        // ===== 卡片 4：使用说明（页底，可滚动查看） =====
         let helpCard = makeCard(title: "关于本功能", subtitle: nil)
         let helpText = UILabel()
         helpText.font = Theme.bodySmall
         helpText.textColor = Theme.subtext
         helpText.numberOfLines = 0
-        helpText.translatesAutoresizingMaskIntoConstraints = false
         helpText.text = """
-        当前版本（v1.0.15）仅完成 HTTP 握手验证，可用于：
+        当前版本（v1.0.17）仅完成 HTTP 握手验证，可用于：
         · 确认手机与 LX 桌面版/独立服务在同一网络
         · 桌面端「服务端模式」是否已开启
         · 端口 / AP 隔离 等基础连通性排查
 
-        下一步（v1.0.16+）将基于 LX 桌面版的 WebSocket RPC 协议（message2call）实现：
+        下一步（v1.0.18+）将基于 LX 桌面版的 WebSocket RPC 协议（message2call）实现：
         · 收藏歌单双向同步
         · 「不喜欢」列表双向同步
         · 首次连接时的「合并 / 覆盖」选择
@@ -129,20 +149,20 @@ class LXSyncViewController: UIViewController {
 
         提示：协议传输的数据是明文，请仅在受信任的局域网使用（官方文档原话）。
         """
-        helpCard.addRow(helpText)
-        helpCard.addTo(containerView, topSpacing: 16)
+        helpCard.stack.addArrangedSubview(helpText)
+        helpCard.add(to: containerStack)
 
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
 
-            containerView.topAnchor.constraint(equalTo: scrollView.topAnchor),
-            containerView.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
-            containerView.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
-            containerView.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
-            containerView.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
+            containerStack.topAnchor.constraint(equalTo: scrollView.topAnchor, constant: 16),
+            containerStack.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor, constant: 16),
+            containerStack.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor, constant: -16),
+            containerStack.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -16),
+            containerStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor, constant: -32),
         ])
 
         navigationItem.rightBarButtonItem = UIBarButtonItem(
@@ -161,7 +181,7 @@ class LXSyncViewController: UIViewController {
         switch status {
         case .notConfigured:
             color = Theme.subtext
-            detail = "请填写上方同步服务地址后点击「保存」"
+            detail = "请填写上方同步服务地址后点「保存地址」"
         case .idle:
             color = Theme.subtext
             detail = "点「测试连接」可立即验证网络可达性"
@@ -181,11 +201,12 @@ class LXSyncViewController: UIViewController {
     }
 
     @objc private func testTapped() {
-        // 测试前先保存当前输入
         let text = (urlField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         ConfigStore.shared.lxSyncServerURL = text
+        ConfigStore.shared.save()
         LXSyncService.shared.refreshInitialState()
         LXSyncService.shared.testConnection()
+        showToast("已发起测试…")
     }
 
     @objc private func saveTapped() {
@@ -211,69 +232,67 @@ class LXSyncViewController: UIViewController {
 
     // MARK: - 卡片构建
 
-    private class Card {
-        let container = UIView()
-        let titleLabel = UILabel()
-        let subtitleLabel = UILabel()
-        let stack = UIStackView()
+    private func makeCard(title: String, subtitle: String?) -> Card {
+        return Card(title: title, subtitle: subtitle)
+    }
+
+    private final class Card {
+        let view: UIView
+        let stack: UIStackView
 
         init(title: String, subtitle: String?) {
+            let container = UIView()
             container.backgroundColor = Theme.cardBg
             container.layer.cornerRadius = Theme.cornerMedium
             container.translatesAutoresizingMaskIntoConstraints = false
 
+            let titleLabel = UILabel()
             titleLabel.font = Theme.titleSmall
             titleLabel.textColor = Theme.text
             titleLabel.text = title
             titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
+            let subtitleLabel = UILabel()
             subtitleLabel.font = Theme.bodySmall
             subtitleLabel.textColor = Theme.subtext
             subtitleLabel.text = subtitle
             subtitleLabel.numberOfLines = 0
             subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+            subtitleLabel.isHidden = (subtitle == nil || subtitle!.isEmpty)
 
-            stack.axis = .vertical
-            stack.spacing = 12
-            stack.translatesAutoresizingMaskIntoConstraints = false
+            let inner = UIStackView()
+            inner.axis = .vertical
+            inner.spacing = 12
+            inner.alignment = .fill
+            inner.translatesAutoresizingMaskIntoConstraints = false
 
             container.addSubview(titleLabel)
             container.addSubview(subtitleLabel)
-            container.addSubview(stack)
+            container.addSubview(inner)
 
             NSLayoutConstraint.activate([
                 titleLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
                 titleLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
                 titleLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
 
-                subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+                subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
                 subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
                 subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
 
-                stack.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 12),
-                stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-                stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-                stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
+                inner.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: subtitleLabel.isHidden ? 0 : 12),
+                inner.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+                inner.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+                inner.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
             ])
+
+            self.view = container
+            self.stack = inner
         }
 
-        func addRow(_ view: UIView) {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            stack.addArrangedSubview(view)
+        /// 把卡片 view 加入任何 vertical stack — 由 stack 自动堆叠，不再发生"全叠顶部"的 bug
+        func add(to parentStack: UIStackView) {
+            parentStack.addArrangedSubview(view)
         }
-
-        func addTo(_ parent: UIView, topSpacing: CGFloat) {
-            parent.addSubview(container)
-            NSLayoutConstraint.activate([
-                container.topAnchor.constraint(equalTo: parent.topAnchor, constant: topSpacing),
-                container.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 16),
-                container.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -16),
-            ])
-        }
-    }
-
-    private func makeCard(title: String, subtitle: String?) -> Card {
-        return Card(title: title, subtitle: subtitle)
     }
 }
 

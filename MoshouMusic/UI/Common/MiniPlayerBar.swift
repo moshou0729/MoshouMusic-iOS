@@ -4,6 +4,8 @@ import UIKit
 class MiniPlayerBar: UIView {
 
     var onTap: (() -> Void)?
+    /// 左滑收起为角落小方块
+    var onSwipeLeft: (() -> Void)?
 
     private let containerView = UIView()
     private let artworkImageView = UIImageView()
@@ -83,6 +85,11 @@ class MiniPlayerBar: UIView {
         // 手势
         let tap = UITapGestureRecognizer(target: self, action: #selector(barTapped))
         containerView.addGestureRecognizer(tap)
+
+        // 左滑收起
+        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeLeft))
+        swipe.direction = .left
+        containerView.addGestureRecognizer(swipe)
 
         setupConstraints()
     }
@@ -192,6 +199,10 @@ class MiniPlayerBar: UIView {
 
     @objc private func barTapped() {
         onTap?()
+    }
+
+    @objc private func handleSwipeLeft() {
+        onSwipeLeft?()
     }
 
     @objc private func playTapped() {

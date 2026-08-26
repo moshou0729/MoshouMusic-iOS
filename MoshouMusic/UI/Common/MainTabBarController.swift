@@ -10,8 +10,8 @@ class MainTabBarController: UITabBarController {
         setupMiniPlayer()
 
         // 初始播放状态决定迷你播放条可见性
-        let hasSong = PlayerManager.shared.currentSong != nil
-        setMiniPlayerVisible(hasSong, animated: false)
+        hasCurrentSong = PlayerManager.shared.currentSong != nil
+        updatePlayerChrome(animated: false)
 
         // 监听播放状态：变化时显示/隐藏播放条
         NotificationCenter.default.addObserver(
@@ -66,7 +66,13 @@ class MainTabBarController: UITabBarController {
     /// 播放条占据的高度（含阴影/微间距），FAB 等浮层用此值计算上移量
     static let miniPlayerVisibleHeight: CGFloat = 64
 
+    /// 是否有当前歌曲（决定播放条/收起控件是否该出现）
+    private var hasCurrentSong = false
+    /// 是否已收起为角落小方块
+    private var isCollapsed = false
+
     private var miniPlayerBar: MiniPlayerBar?
+    private var collapsedControl: CollapsedPlayerControl?
 
     private func setupMiniPlayer() {
         let bar = MiniPlayerBar()
@@ -86,60 +92,88 @@ class MainTabBarController: UITabBarController {
         bar.onTap = { [weak self] in
             self?.presentPlayer()
         }
+        // 左滑收起为角落小方块
+        bar.onSwipeLeft = { [weak self] in
+            self?.setCollapsed(true, animated: true)
+        }
+
+        setupCollapsedControl()
     }
 
-    /// 控制迷你播放条的显示/隐藏，并通过通知告知各页面（如 FAB）单独让位
-    /// - v1.0.20 起**不再**修改 `additionalSafeAreaInsets`（避免各页面整体上移留死区）
-    /// - 改为广播通知，让像「我的」页右下 FAB 这类悬浮元素自行抬升
-    private func setMiniPlayerVisible(_ visible: Bool, animated: Bool) {
-        guard let bar = miniPlayerBar else { return }
-
-        let work = {
-            bar.alpha = visible ? 1.0 : 0.0
-            self.view.layoutIfNeeded()
+    private func setupCollapsedControl() {
+        let c = CollapsedPlayerControl()
+        c.isHidden = true
+        c.alpha = 0
+        view.addSubview(c)
+        c.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            c.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            c.bottomAnchor.constraint(equalTo: tabBar.topAnchor, constant: -16),
+            c.widthAnchor.constraint(equalToConstant: 72),
+            c.heightAnchor.constraint(equalToConstant: 72),
+        ])
+        // 右滑展开回完整播放条
+        c.onExpand = { [weak self] in
+            self?.setCollapsed(false, animated: true)
         }
+        collapsedControl = c
+    }
 
-        let finish: (Bool) -> Void = { _ in
-            // 切换完成广播一次，让 FAB 等浮层单独上移
-            NotificationCenter.default.post(
-                name: .miniPlayerVisibilityChanged,
-                object: nil,
-                userInfo: ["visible": visible]
-            )
-        }
+    /// 设置收起/展开态并刷新视图
+    private func setCollapsed(_ collapsed: Bool, animated: Bool) {
+        guard isCollapsed != collapsed else { return }
+        isCollapsed = collapsed
+        updatePlayerChrome(animated: animated)
+    }
 
-        if visible {
-            bar.isHidden = false
+    /// 根据「是否有歌 + 是否收起」刷新两个控件的可见性，并广播给各页面浮层
+    /// - 完整播放条可见: 有歌 且 未收起
+    /// - 角落小方块可见: 有歌 且 已收起
+    /// - v1.0.20+ 不再改 `additionalSafeAreaInsets`（避免各页面整体上移留死区）
+    private func updatePlayerChrome(animated: Bool) {
+        let showBar = hasCurrentSong && !isCollapsed
+        let showCollapsed = hasCurrentSong && isCollapsed
+        updateVisibility(miniPlayerBar, show: showBar, animated: animated)
+        updateVisibility(collapsedControl, show: showCollapsed, animated: animated)
+
+        // 广播给「我的」页 FAB 等悬浮元素：有歌时让位，无歌时归位
+        NotificationCenter.default.post(
+            name: .miniPlayerVisibilityChanged,
+            object: nil,
+            userInfo: ["visible": hasCurrentSong]
+        )
+    }
+
+    private func updateVisibility(_ target: UIView?, show: Bool, animated: Bool) {
+        guard let target = target else { return }
+        if show {
+            target.isHidden = false
             if animated {
-                UIView.animate(
-                    withDuration: 0.25, delay: 0, options: .curveEaseInOut,
-                    animations: work, completion: finish
-                )
+                target.alpha = 0
+                UIView.animate(withDuration: 0.25) { target.alpha = 1 }
             } else {
-                work()
-                finish(true)
+                target.alpha = 1
             }
         } else {
             if animated {
-                UIView.animate(
-                    withDuration: 0.25, delay: 0, options: .curveEaseInOut,
-                    animations: work,
-                    completion: { _ in
-                        bar.isHidden = true
-                        finish(true)
-                    }
-                )
+                UIView.animate(withDuration: 0.25, animations: {
+                    target.alpha = 0
+                }, completion: { _ in
+                    target.isHidden = true
+                })
             } else {
-                work()
-                bar.isHidden = true
-                finish(true)
+                target.alpha = 0
+                target.isHidden = true
             }
         }
     }
 
     @objc private func playerStateChanged(_ notification: Notification) {
         let hasSong = PlayerManager.shared.currentSong != nil
-        setMiniPlayerVisible(hasSong, animated: true)
+        // 没歌了就重置收起态，下次播放从完整条开始
+        if !hasSong { isCollapsed = false }
+        hasCurrentSong = hasSong
+        updatePlayerChrome(animated: true)
     }
 
     private func presentPlayer() {

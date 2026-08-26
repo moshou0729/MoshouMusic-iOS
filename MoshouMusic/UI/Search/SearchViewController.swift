@@ -1,14 +1,13 @@
 import UIKit
 
 /// 搜索页 — Material Design 3 风格
-/// 左侧垂直源切换 + 右侧搜索框 + 结果列表
+/// 顶部横向 5 chip：未选中=透明+该源色字；选中=圆角矩形+该源色背景（取未选中时的颜色值）+白字
 class SearchViewController: UIViewController {
 
     private let searchField = MDSearchField()
 
-    // 左侧源切换侧栏
-    private let sidebar = UIView()
-    private let sourceStack = UIStackView()
+    /// 顶部横向源切换
+    private let chipRow = UIStackView()
 
     private let tableView = UITableView()
     private let emptyLabel = UILabel()
@@ -42,7 +41,7 @@ class SearchViewController: UIViewController {
         title = "搜索"
         navigationItem.largeTitleDisplayMode = .always
 
-        // 搜索框 — 放在右侧内容区
+        // 搜索框 — 顶部
         searchField.placeholder = "搜索歌曲、歌手、专辑"
         searchField.onTextChanged = { [weak self] text in
             self?.handleTextChanged(text)
@@ -52,13 +51,12 @@ class SearchViewController: UIViewController {
         }
         view.addSubview(searchField)
 
-        // 左侧源切换侧栏
-        view.addSubview(sidebar)
-        sourceStack.axis = .vertical
-        sourceStack.spacing = 10
-        sourceStack.alignment = .fill
-        sourceStack.distribution = .fill
-        sidebar.addSubview(sourceStack)
+        // 顶部横向 5 chip 行
+        chipRow.axis = .horizontal
+        chipRow.spacing = 10
+        chipRow.alignment = .center
+        chipRow.distribution = .equalSpacing
+        view.addSubview(chipRow)
 
         reloadChips()
 
@@ -83,32 +81,25 @@ class SearchViewController: UIViewController {
     }
 
     private func setupConstraints() {
-        sidebar.translatesAutoresizingMaskIntoConstraints = false
-        sourceStack.translatesAutoresizingMaskIntoConstraints = false
-        [searchField, tableView, emptyLabel].forEach {
+        [searchField, chipRow, tableView, emptyLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
         }
 
-        // 侧栏宽度（intrinsic 高度由 stack 决定 — 5×50pt + 4×10pt ≈ 290pt）
         NSLayoutConstraint.activate([
-            sidebar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            sidebar.widthAnchor.constraint(equalToConstant: 72),
-
-            // 源 stack 填满侧栏
-            sourceStack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 4),
-            sourceStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
-            sourceStack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            sourceStack.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -4),
-
-            // 搜索框：右侧
+            // 搜索框：顶部
             searchField.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            searchField.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 12),
-            searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
 
-            // 表格：右侧，紧贴搜索框下沿
-            tableView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
-            tableView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 4),
+            // 横向 chip 行：紧贴搜索框下沿，左右留 16pt 边距
+            chipRow.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
+            chipRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            chipRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            chipRow.heightAnchor.constraint(equalToConstant: 38),
+
+            // 表格：紧贴 chip 行下沿
+            tableView.topAnchor.constraint(equalTo: chipRow.bottomAnchor, constant: 12),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
@@ -121,78 +112,47 @@ class SearchViewController: UIViewController {
 
     private func reloadChips() {
         let ids = ConfigStore.shared.selectableSourceIds
-        let selected = ConfigStore.shared.currentSource
-        sourceStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for source in ids {
-            let chip = createSourceChip(source: source)
-            sourceStack.addArrangedSubview(chip)
-        }
-        // 确保选中态正确（首个选中源 + 给所有 chip 设置正确状态）
+        chipRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for (i, source) in ids.enumerated() {
-            if let chip = sourceStack.arrangedSubviews[i] as? UIButton {
-                updateChipAppearance(chip, source: source, isSelected: source == selected)
-            }
+            let chip = createSourceChip(source: source, tag: i)
+            chipRow.addArrangedSubview(chip)
         }
     }
 
-    private func createSourceChip(source: String) -> UIButton {
+    private func createSourceChip(source: String, tag: Int) -> UIButton {
         let chip = UIButton(type: .custom)
-        // 优先显示简称（"酷我"/"网易云"），在侧栏宽度下更紧凑
-        let shortName = shortNameFor(source)
-        chip.setTitle(shortName, for: .normal)
-        chip.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
-        chip.titleLabel?.adjustsFontSizeToFitWidth = true
-        chip.titleLabel?.minimumScaleFactor = 0.7
-        chip.titleLabel?.lineBreakMode = .byClipping
-        chip.layer.cornerRadius = 14
+        let name = ConfigStore.shared.displayName(for: source)
+        chip.setTitle(name, for: .normal)
+        chip.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+        chip.tag = tag
+        chip.layer.cornerRadius = 12
+        chip.layer.masksToBounds = true
         // 抑制系统 tint 渗透
         chip.tintColor = .clear
-        chip.contentEdgeInsets = UIEdgeInsets(top: 8, left: 6, bottom: 8, right: 6)
-        if let index = ConfigStore.shared.selectableSourceIds.firstIndex(of: source) {
-            chip.tag = index
-        }
+        chip.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
         chip.addTarget(self, action: #selector(sourceChipTapped(_:)), for: .touchUpInside)
 
-        let selected = ConfigStore.shared.currentSource == source
-        updateChipAppearance(chip, source: source, isSelected: selected)
-        // 强制刷新布局
-        chip.setNeedsLayout()
-
-        // 固定短矩形高度 (50pt)，让整列堆叠尺寸可控
-        chip.translatesAutoresizingMaskIntoConstraints = false
-        chip.heightAnchor.constraint(equalToConstant: 50).isActive = true
+        let isSelected = ConfigStore.shared.currentSource == source
+        updateChipAppearance(chip, source: source, isSelected: isSelected)
         return chip
     }
 
-    /// 短名用于 72pt 宽侧栏
-    private func shortNameFor(_ source: String) -> String {
-        switch source {
-        case "kw": return "酷我"
-        case "tx": return "QQ"
-        case "wy": return "云"
-        case "kg": return "酷狗"
-        case "mg": return "咪咕"
-        default: return ConfigStore.shared.displayName(for: source)
-        }
-    }
-
     private func updateChipAppearance(_ chip: UIButton, source: String, isSelected: Bool) {
+        let base = Theme.sourceColor(source)        // 该源未选中时显示的颜色值
         if isSelected {
-            // 选中：深色饱和背景 + 白色字（强制所有状态都白，避免被高亮/tint覆盖）
-            let bg = Theme.sourceColorDark(source)
-            chip.backgroundColor = bg
+            // 选中：背景 = 该源未选中时的颜色值 + 白字 + 圆角矩形
+            chip.backgroundColor = base
             chip.setTitleColor(.white, for: .normal)
             chip.setTitleColor(.white, for: .highlighted)
             chip.setTitleColor(.white, for: .selected)
             chip.setTitleColor(.white.withAlphaComponent(0.7), for: .disabled)
         } else {
-            // 未选中：浅色容器 + 鲜艳字
-            chip.backgroundColor = Theme.sourceColorLight(source)
-            let fg = Theme.sourceColor(source)
-            chip.setTitleColor(fg, for: .normal)
-            chip.setTitleColor(fg, for: .highlighted)
-            chip.setTitleColor(fg, for: .selected)
-            chip.setTitleColor(fg.withAlphaComponent(0.5), for: .disabled)
+            // 未选中：透明背景 + 该源色字
+            chip.backgroundColor = .clear
+            chip.setTitleColor(base, for: .normal)
+            chip.setTitleColor(base, for: .highlighted)
+            chip.setTitleColor(base, for: .selected)
+            chip.setTitleColor(base.withAlphaComponent(0.5), for: .disabled)
         }
         // 抑制 state-driven 颜色回弹
         chip.tintColor = .clear
@@ -207,7 +167,7 @@ class SearchViewController: UIViewController {
         ConfigStore.shared.currentSource = source
 
         for (i, s) in ids.enumerated() {
-            if let chip = sourceStack.arrangedSubviews[i] as? UIButton {
+            if let chip = chipRow.arrangedSubviews[i] as? UIButton {
                 updateChipAppearance(chip, source: s, isSelected: i == index)
             }
         }

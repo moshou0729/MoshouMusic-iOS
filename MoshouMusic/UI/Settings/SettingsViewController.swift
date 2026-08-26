@@ -37,7 +37,26 @@ class SettingsViewController: UIViewController {
 
     /// 计算属性：每次读取实时取配置，保证开关/副标题状态与 ConfigStore 同步
     private var sections: [SettingSection] {
+        // LX 同步状态指示色（与图标/副标题联动）
+        let lxStatusColor: UIColor
+        switch LXSyncService.shared.status {
+        case .ok: lxStatusColor = Theme.success
+        case .testing: lxStatusColor = Theme.warning
+        case .failed: lxStatusColor = Theme.error
+        default: lxStatusColor = Theme.tertiary
+        }
+
         return [
+        // LX 同步独立放到顶部作为醒目卡片 — 用户最大痛点（找不到入口）已修
+        SettingSection(title: "云端同步", items: [
+            SettingItem(
+                icon: "icloud.and.arrow.up.fill",
+                iconColor: lxStatusColor,
+                title: "LX Music 桌面版同步",
+                subtitle: "▶ \(lxSyncStatusSubtitle()) · 点击填写同步服务器地址",
+                type: .navigate
+            ),
+        ]),
         // 原来「音源设置」和「导入脚本」两条都跳同一个页面，属于重复入口，已合并为一条
         SettingSection(title: "音源管理", items: [
             SettingItem(icon: "music.note", iconColor: Theme.primary, title: "音源管理", subtitle: sourceSummary, type: .navigate),
@@ -50,9 +69,6 @@ class SettingsViewController: UIViewController {
         SettingSection(title: "悬浮歌词", items: [
             SettingItem(icon: "rectangle.expand.vertical", iconColor: Theme.primary, title: "悬浮歌词", subtitle: nil, type: .toggle(ConfigStore.shared.isFloatingLyricsOn)),
             SettingItem(icon: "circle.lefthalf.filled", iconColor: Theme.tertiary, title: "歌词透明度", subtitle: "\(Int(ConfigStore.shared.floatingOpacity * 100))%", type: .navigate),
-        ]),
-        SettingSection(title: "数据同步", items: [
-            SettingItem(icon: "icloud.and.arrow.up", iconColor: Theme.tertiary, title: "LX Music 同步", subtitle: lxSyncStatusSubtitle(), type: .navigate),
         ]),
         SettingSection(title: "外观", items: [
             SettingItem(icon: "moon", iconColor: Theme.primary, title: "深色模式", subtitle: nil, type: .toggle(ConfigStore.shared.isDarkMode)),
@@ -211,7 +227,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case "清除缓存":
             ConfigStore.shared.clearCache()
             showAlert(title: "已清除缓存", message: "缓存已清理完成")
-        case "LX Music 同步":
+        case "LX Music 桌面版同步":
             navigationController?.pushViewController(LXSyncViewController(), animated: true)
         default:
             showAlert(title: "功能开发中", message: "\(item.title) 即将上线")

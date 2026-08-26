@@ -290,7 +290,7 @@ class ScriptEngine {
     // MARK: - 脚本加载
 
     private func loadBuiltinScripts() {
-        let scriptNames = ["kw", "tx", "mg", "wy", "kg"]
+        let scriptNames = ["tx", "mg", "wy", "kg"]
 
         for name in scriptNames {
             let path = Bundle.main.path(forResource: name, ofType: "js", inDirectory: "default_scripts")

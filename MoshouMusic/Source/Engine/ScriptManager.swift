@@ -25,7 +25,7 @@ class ScriptManager {
         loadedScripts.removeAll()
 
         // 内置脚本
-        let builtinNames = ["kw", "tx", "mg", "wy", "kg"]
+        let builtinNames = ["tx", "mg", "wy", "kg"]
         for name in builtinNames {
             let info = ScriptInfo(
                 name: sourceDisplayName(name),
@@ -119,7 +119,7 @@ class ScriptManager {
     // MARK: - 获取可用源
 
     var availableSources: [String] {
-        let allSources = ["kw", "tx", "mg", "wy", "kg"]
+        let allSources = ["tx", "mg", "wy", "kg"]
         return allSources.filter { ConfigStore.shared.isSourceEnabled($0) }
     }
 
@@ -127,7 +127,6 @@ class ScriptManager {
 
     func sourceDisplayName(_ source: String) -> String {
         switch source {
-        case "kw": return "酷我"
         case "tx": return "QQ音乐"
         case "mg": return "咪咕"
         case "wy": return "网易云"

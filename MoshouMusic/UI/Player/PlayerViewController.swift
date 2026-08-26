@@ -298,7 +298,7 @@ class PlayerViewController: UIViewController {
         setSourceLabel(PlayerManager.shared.currentSource)
     }
 
-    /// "酷我 ⇄" —— 带箭头暗示可点换源
+    /// 带箭头暗示可点换源
     private func setSourceLabel(_ source: String) {
         sourceLabel.text = Theme.sourceName(source) + "  ⇄"
     }

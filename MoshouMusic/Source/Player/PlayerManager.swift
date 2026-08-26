@@ -18,7 +18,7 @@ class PlayerManager: NSObject {
     private(set) var currentTime: Double = 0
     private(set) var duration: Double = 0
     private(set) var currentSong: Song?
-    private(set) var currentSource: String = "kw"
+    private(set) var currentSource: String = "kg"
     private(set) var currentLyrics: [LRCLine] = []
     private(set) var currentLyricIndex: Int = -1
     /// 当前封面（供播放页/迷你条在出场后补显，避免错过 artworkLoaded 通知）
@@ -385,14 +385,12 @@ class PlayerManager: NSObject {
     }
 
     /// 把音源返回的原始报错转成更易读的中文
-    /// （如酷我版权独占提示「仅在酷我音乐手机端…/去应用市场…」，避免把一长串运营文案直接甩给用户）
     private func friendlyReason(_ raw: String) -> String {
-        if raw.contains("手机端") || (raw.contains("酷我") && raw.contains("仅")) ||
-           raw.contains("应用市场") || raw.contains("超低价") {
-            return "该歌曲为酷我版权独占，本机音源暂无法播放（可去酷我官方 App 收听）"
-        }
-        if raw.contains("仅") && (raw.contains("客户端") || raw.contains("App")) {
+        if raw.contains("仅") && (raw.contains("客户端") || raw.contains("App") || raw.contains("手机端")) {
             return "该歌曲需对应音乐客户端才能播放，已为你尝试其他音源"
+        }
+        if raw.contains("应用市场") || raw.contains("超低价") {
+            return "该歌曲暂无法在本机音源播放，已为你尝试其他音源"
         }
         return raw
     }

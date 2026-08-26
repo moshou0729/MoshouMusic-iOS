@@ -55,8 +55,8 @@ class ConfigStore {
 
     // MARK: - 音源设置
 
-    /// 所有可用源
-    let allSources = ["kw", "tx", "mg", "wy", "kg"]
+    /// 所有可用源（酷我已移除 — 其音源返回的播放链接均无法播放）
+    let allSources = ["tx", "mg", "wy", "kg"]
 
     /// 已启用的源
     var enabledSources: [String] {
@@ -89,7 +89,7 @@ class ConfigStore {
 
     /// 当前搜索/播放使用的音源
     var currentSource: String {
-        get { defaults.string(forKey: Keys.currentSource) ?? "kw" }
+        get { defaults.string(forKey: Keys.currentSource) ?? "kg" }
         set { defaults.set(newValue, forKey: Keys.currentSource) }
     }
 

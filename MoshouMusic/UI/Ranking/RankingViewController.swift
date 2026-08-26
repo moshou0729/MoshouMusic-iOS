@@ -4,7 +4,7 @@ import UIKit
 class RankingViewController: UIViewController {
 
     private let tableView = UITableView()
-    private let sources = ["kw", "tx", "mg", "wy", "kg"]
+    private let sources = ["tx", "mg", "wy", "kg"]
 
     override func viewDidLoad() {
         super.viewDidLoad()

@@ -9,8 +9,8 @@ final class SourceSwitcher {
 
     static let shared = SourceSwitcher()
 
-    /// 换源优先级：酷我最稳，其次酷狗，再到 QQ / 网易云 / 咪咕
-    private let preferredOrder = ["kw", "kg", "tx", "wy", "mg"]
+    /// 换源优先级：酷狗最稳，其次 QQ / 网易云 / 咪咕
+    private let preferredOrder = ["kg", "tx", "wy", "mg"]
 
     struct Hit {
         let source: String

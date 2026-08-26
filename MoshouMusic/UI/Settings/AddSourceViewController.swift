@@ -45,7 +45,7 @@ class AddSourceViewController: UIViewController {
             container.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
         ])
 
-        container.addArrangedSubview(makeField(title: "音源名称", field: nameField, placeholder: "如：我的酷我镜像"))
+        container.addArrangedSubview(makeField(title: "音源名称", field: nameField, placeholder: "如：我的镜像源"))
         container.addArrangedSubview(makeField(title: "音源ID (可选)", field: idField, placeholder: "留空则自动生成"))
 
         let codeLabel = UILabel()

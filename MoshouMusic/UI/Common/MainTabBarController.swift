@@ -106,14 +106,19 @@ class MainTabBarController: UITabBarController {
         c.alpha = 0
         view.addSubview(c)
         c.translatesAutoresizingMaskIntoConstraints = false
+        // 定位约束交给控件自己管理（拖动 / 就近吸附时改写 constant）
+        let leadC = c.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 0)
+        let bottomC = c.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
         NSLayoutConstraint.activate([
-            // 吸附左侧边：左边缘直接贴屏幕，不留空隙；控件尺寸收紧让正方形尽量贴边
-            c.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 0),
-            c.bottomAnchor.constraint(equalTo: tabBar.topAnchor, constant: -12),
+            leadC,
+            bottomC,
             c.widthAnchor.constraint(equalToConstant: 56),
             c.heightAnchor.constraint(equalToConstant: 56),
         ])
-        // 右滑展开回完整播放条
+        c.positionLeading = leadC
+        c.positionBottom = bottomC
+        c.configureDrag()
+        // 右滑 / 上滑展开回完整播放条
         c.onExpand = { [weak self] in
             self?.setCollapsed(false, animated: true)
         }
@@ -134,8 +139,8 @@ class MainTabBarController: UITabBarController {
     private func updatePlayerChrome(animated: Bool) {
         let showBar = hasCurrentSong && !isCollapsed
         let showCollapsed = hasCurrentSong && isCollapsed
-        updateVisibility(miniPlayerBar, show: showBar, animated: animated)
-        updateVisibility(collapsedControl, show: showCollapsed, animated: animated)
+        if showBar { showMiniBar(animated: animated) } else { hideMiniBar(animated: animated) }
+        if showCollapsed { showCollapsedControl(animated: animated) } else { hideCollapsedControl(animated: animated) }
 
         // 广播给「我的」页 FAB 等悬浮元素：有歌时让位，无歌时归位
         NotificationCenter.default.post(
@@ -145,27 +150,73 @@ class MainTabBarController: UITabBarController {
         )
     }
 
-    private func updateVisibility(_ target: UIView?, show: Bool, animated: Bool) {
-        guard let target = target else { return }
-        if show {
-            target.isHidden = false
-            if animated {
-                target.alpha = 0
-                UIView.animate(withDuration: 0.25) { target.alpha = 1 }
-            } else {
-                target.alpha = 1
+    // MARK: - 显示 / 隐藏动画（缩小 / 展开均有动态效果）
+
+    private func showMiniBar(animated: Bool) {
+        guard let bar = miniPlayerBar else { return }
+        bar.isHidden = false
+        if animated {
+            bar.alpha = 0
+            bar.transform = CGAffineTransform(translationX: 0, y: 18)
+            UIView.animate(withDuration: 0.32, delay: 0,
+                           usingSpringWithDamping: 0.8, initialSpringVelocity: 0.4) {
+                bar.alpha = 1
+                bar.transform = .identity
             }
         } else {
-            if animated {
-                UIView.animate(withDuration: 0.25, animations: {
-                    target.alpha = 0
-                }, completion: { _ in
-                    target.isHidden = true
-                })
-            } else {
-                target.alpha = 0
-                target.isHidden = true
+            bar.alpha = 1
+            bar.transform = .identity
+        }
+    }
+
+    private func hideMiniBar(animated: Bool) {
+        guard let bar = miniPlayerBar else { return }
+        if animated {
+            UIView.animate(withDuration: 0.24, animations: {
+                bar.alpha = 0
+                bar.transform = CGAffineTransform(translationX: 0, y: 18)
+            }, completion: { _ in
+                bar.isHidden = true
+                bar.transform = .identity
+            })
+        } else {
+            bar.alpha = 0
+            bar.isHidden = true
+            bar.transform = .identity
+        }
+    }
+
+    private func showCollapsedControl(animated: Bool) {
+        guard let c = collapsedControl else { return }
+        c.isHidden = false
+        if animated {
+            c.alpha = 0
+            c.transform = CGAffineTransform(scaleX: 0.35, y: 0.35)
+            UIView.animate(withDuration: 0.34, delay: 0,
+                           usingSpringWithDamping: 0.6, initialSpringVelocity: 0.8) {
+                c.alpha = 1
+                c.transform = .identity
             }
+        } else {
+            c.alpha = 1
+            c.transform = .identity
+        }
+    }
+
+    private func hideCollapsedControl(animated: Bool) {
+        guard let c = collapsedControl else { return }
+        if animated {
+            UIView.animate(withDuration: 0.24, animations: {
+                c.alpha = 0
+                c.transform = CGAffineTransform(scaleX: 0.35, y: 0.35)
+            }, completion: { _ in
+                c.isHidden = true
+                c.transform = .identity
+            })
+        } else {
+            c.alpha = 0
+            c.isHidden = true
+            c.transform = .identity
         }
     }
 

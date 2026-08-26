@@ -52,7 +52,6 @@ struct Theme {
 
     static func sourceColor(_ source: String) -> UIColor {
         switch source {
-        case "kw": return primary          // 酷我 — 紫
         case "tx": return secondary        // QQ音乐 — 珊瑚红
         case "wy": return tertiary         // 网易云 — 青
         case "kg": return warning          // 酷狗 — 黄
@@ -63,7 +62,6 @@ struct Theme {
 
     static func sourceColorLight(_ source: String) -> UIColor {
         switch source {
-        case "kw": return primaryContainer
         case "tx": return secondaryContainer
         case "wy": return tertiaryContainer
         case "kg": return UIColor(hex: 0xFAEEDA)
@@ -75,7 +73,6 @@ struct Theme {
     /// 深色饱和变体 — 用于「选中」chip 背景，确保白字有足够对比
     static func sourceColorDark(_ source: String) -> UIColor {
         switch source {
-        case "kw": return UIColor(hex: 0x4B3FAA)  // 深紫
         case "tx": return UIColor(hex: 0xC83A3A)  // 深珊瑚红
         case "wy": return UIColor(hex: 0x00807A)  // 深青
         case "kg": return UIColor(hex: 0x8C6500)  // 深琥珀
@@ -86,7 +83,6 @@ struct Theme {
 
     static func sourceName(_ source: String) -> String {
         switch source {
-        case "kw": return "酷我"
         case "tx": return "QQ音乐"
         case "wy": return "网易云"
         case "kg": return "酷狗"

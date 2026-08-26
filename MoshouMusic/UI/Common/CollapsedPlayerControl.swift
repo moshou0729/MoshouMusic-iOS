@@ -1,16 +1,26 @@
 import UIKit
 
 /// 收起后的迷你播放控制
-/// - 左下角小浮层：中心一个圆角正方形按钮（播放/暂停），正方形「周长描边」随播放进度沿四边走动
-/// - 右滑展开回完整播放条；点中心按钮 = 播放/暂停
+/// - 可拖动的小浮层：中心一个圆角正方形按钮（播放/暂停），正方形「周长描边」随播放进度沿四边走动
+/// - 拖动可移到任意位置，松手就近吸附到左 / 右边（保留落点高度）；
+///   右滑或上滑展开回完整播放条；点中心按钮 = 播放 / 暂停
 class CollapsedPlayerControl: UIView {
 
-    /// 右滑展开回完整播放条
+    /// 右滑 / 上滑展开回完整播放条
     var onExpand: (() -> Void)?
 
     private let squareView = UIView()
     private let playButton = UIButton(type: .system)
     private let ringLayer = CAShapeLayer()
+
+    /// 由 MainTabBarController 注入的定位约束（leading 控制左右，bottom 控制上下）
+    var positionLeading: NSLayoutConstraint?
+    var positionBottom: NSLayoutConstraint?
+
+    private var panGesture: UIPanGestureRecognizer?
+    private var dragStartFrame: CGRect = .zero
+    private var dragStartLead: CGFloat = 0
+    private var dragStartBottom: CGFloat = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -53,12 +63,26 @@ class CollapsedPlayerControl: UIView {
         playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         addSubview(playButton)
 
-        // 右滑展开
-        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeRight))
-        swipe.direction = .right
-        addGestureRecognizer(swipe)
-
         setupConstraints()
+    }
+
+    /// 配置拖动 + 展开手势（在约束注入后由 MainTabBarController 调用）
+    func configureDrag() {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        addGestureRecognizer(pan)
+        panGesture = pan
+
+        let rightSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeRight))
+        rightSwipe.direction = .right
+        addGestureRecognizer(rightSwipe)
+
+        let upSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeUp))
+        upSwipe.direction = .up
+        addGestureRecognizer(upSwipe)
+
+        // 先判定滑动手势，确认不是「展开」后才交给拖动，避免拖动与展开冲突
+        pan.require(toFail: rightSwipe)
+        pan.require(toFail: upSwipe)
     }
 
     private func setupConstraints() {
@@ -92,6 +116,61 @@ class CollapsedPlayerControl: UIView {
         let path = UIBezierPath(roundedRect: rect, cornerRadius: 14)
         ringLayer.path = path.cgPath
     }
+
+    // MARK: - 拖动 + 就近吸附
+
+    @objc private func handlePan(_ g: UIPanGestureRecognizer) {
+        guard let sup = self.superview,
+              let leadC = positionLeading,
+              let bottomC = positionBottom else { return }
+
+        let size = bounds.width
+        let w = sup.bounds.width
+        let h = sup.bounds.height
+        let insets = sup.safeAreaInsets
+        let leftMargin: CGFloat = 0     // 左侧贴边（无空隙）
+        let rightMargin: CGFloat = 12   // 右侧留 12pt
+        let topMin = insets.top + 8
+        let topMax = h - insets.bottom - 8 - size
+
+        switch g.state {
+        case .began:
+            dragStartFrame = self.frame
+            dragStartLead = leadC.constant
+            dragStartBottom = bottomC.constant
+
+        case .changed:
+            let t = g.translation(in: sup)
+            var x = dragStartFrame.origin.x + t.x
+            var y = dragStartFrame.origin.y + t.y
+            x = min(max(x, leftMargin), w - rightMargin - size)
+            y = min(max(y, topMin), topMax)
+            leadC.constant = x
+            // bottom 约束：bottomAnchor = safeAreaBottom + K
+            // → K = (方块底边 y) - safeAreaBottom = (y + size) - (h - insets.bottom)
+            bottomC.constant = (y + size) - (h - insets.bottom)
+            UIView.performWithoutAnimation { sup.layoutIfNeeded() }
+
+        case .ended, .cancelled, .failed:
+            // 就近吸附：以中心 x 判断靠左还是靠右，保留落点高度
+            let midX = self.frame.midX
+            let snapX = (midX < w / 2) ? leftMargin : (w - rightMargin - size)
+            let snapY = min(max(self.frame.origin.y, topMin), topMax)
+            leadC.constant = snapX
+            bottomC.constant = (snapY + size) - (h - insets.bottom)
+            // 弹性吸附动画
+            UIView.animate(withDuration: 0.32, delay: 0,
+                           usingSpringWithDamping: 0.72, initialSpringVelocity: 0.6) {
+                sup.layoutIfNeeded()
+            }
+
+        default:
+            break
+        }
+    }
+
+    @objc private func handleSwipeRight() { onExpand?() }
+    @objc private func handleSwipeUp() { onExpand?() }
 
     // MARK: - 播放器绑定
 
@@ -127,9 +206,5 @@ class CollapsedPlayerControl: UIView {
 
     @objc private func playTapped() {
         PlayerManager.shared.togglePlayPause()
-    }
-
-    @objc private func handleSwipeRight() {
-        onExpand?()
     }
 }

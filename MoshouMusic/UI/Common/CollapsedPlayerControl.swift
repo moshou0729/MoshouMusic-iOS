@@ -1,7 +1,7 @@
 import UIKit
 
 /// 收起后的迷你播放控制
-/// - 左下角小浮层：中心一个圆角正方形按钮（播放/暂停），四周一圈动态进度环
+/// - 左下角小浮层：中心一个圆角正方形按钮（播放/暂停），正方形「周长描边」随播放进度沿四边走动
 /// - 右滑展开回完整播放条；点中心按钮 = 播放/暂停
 class CollapsedPlayerControl: UIView {
 
@@ -30,7 +30,7 @@ class CollapsedPlayerControl: UIView {
         backgroundColor = .clear
         isUserInteractionEnabled = true
 
-        // 环形进度（绘制在 square 下方，绕中心一圈）
+        // 正方形周长描边进度（绕 squareView 外缘一圈，随播放进度沿周长走）
         ringLayer.fillColor = nil
         ringLayer.strokeColor = Theme.primary.cgColor
         ringLayer.lineWidth = 3
@@ -80,15 +80,16 @@ class CollapsedPlayerControl: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let center = CGPoint(x: bounds.width / 2, y: bounds.height / 2)
-        let radius = (min(bounds.width, bounds.height) - ringLayer.lineWidth) / 2 - 2
-        let path = UIBezierPath(
-            arcCenter: center,
-            radius: radius,
-            startAngle: -CGFloat.pi / 2,
-            endAngle: CGFloat.pi * 1.5,
-            clockwise: true
+        // 正方形周长描边：以 squareView 外缘为基准画一圈圆角矩形，进度沿周长走动
+        let sq: CGFloat = 52
+        let pad = (bounds.width - sq) / 2
+        let rect = CGRect(
+            x: pad - 1.5,
+            y: pad - 1.5,
+            width: sq + 3,
+            height: sq + 3
         )
+        let path = UIBezierPath(roundedRect: rect, cornerRadius: 14)
         ringLayer.path = path.cgPath
     }
 

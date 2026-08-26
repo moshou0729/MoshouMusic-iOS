@@ -107,10 +107,11 @@ class MainTabBarController: UITabBarController {
         view.addSubview(c)
         c.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            c.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            c.bottomAnchor.constraint(equalTo: tabBar.topAnchor, constant: -16),
-            c.widthAnchor.constraint(equalToConstant: 72),
-            c.heightAnchor.constraint(equalToConstant: 72),
+            // 吸附左侧边：左边缘直接贴屏幕，不留空隙；控件尺寸收紧让正方形尽量贴边
+            c.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 0),
+            c.bottomAnchor.constraint(equalTo: tabBar.topAnchor, constant: -12),
+            c.widthAnchor.constraint(equalToConstant: 56),
+            c.heightAnchor.constraint(equalToConstant: 56),
         ])
         // 右滑展开回完整播放条
         c.onExpand = { [weak self] in

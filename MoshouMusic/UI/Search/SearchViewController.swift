@@ -1,12 +1,15 @@
 import UIKit
 
 /// 搜索页 — Material Design 3 风格
-/// 药丸搜索栏 + 彩色 Chips 音源切换 (可持久化, 支持本机自定义音源) + 搜索结果列表
+/// 左侧垂直源切换 + 右侧搜索框 + 结果列表
 class SearchViewController: UIViewController {
 
     private let searchField = MDSearchField()
-    private let sourceChipsScrollView = UIScrollView()
-    private let sourceChipsContainer = UIStackView()
+
+    // 左侧源切换侧栏
+    private let sidebar = UIView()
+    private let sourceStack = UIStackView()
+
     private let tableView = UITableView()
     private let emptyLabel = UILabel()
 
@@ -39,7 +42,7 @@ class SearchViewController: UIViewController {
         title = "搜索"
         navigationItem.largeTitleDisplayMode = .always
 
-        // 搜索框 — 放在内容视图内的普通子视图，不进导航栏 titleView
+        // 搜索框 — 放在右侧内容区
         searchField.placeholder = "搜索歌曲、歌手、专辑"
         searchField.onTextChanged = { [weak self] text in
             self?.handleTextChanged(text)
@@ -49,15 +52,13 @@ class SearchViewController: UIViewController {
         }
         view.addSubview(searchField)
 
-        // 音源 Chips
-        sourceChipsScrollView.showsHorizontalScrollIndicator = false
-        sourceChipsScrollView.backgroundColor = .clear
-        view.addSubview(sourceChipsScrollView)
-
-        sourceChipsContainer.axis = .horizontal
-        sourceChipsContainer.spacing = 8
-        sourceChipsContainer.alignment = .center
-        sourceChipsScrollView.addSubview(sourceChipsContainer)
+        // 左侧源切换侧栏
+        view.addSubview(sidebar)
+        sourceStack.axis = .vertical
+        sourceStack.spacing = 10
+        sourceStack.alignment = .fill
+        sourceStack.distribution = .fill
+        sidebar.addSubview(sourceStack)
 
         reloadChips()
 
@@ -82,29 +83,32 @@ class SearchViewController: UIViewController {
     }
 
     private func setupConstraints() {
-        [searchField, sourceChipsScrollView, tableView, emptyLabel].forEach {
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        sourceStack.translatesAutoresizingMaskIntoConstraints = false
+        [searchField, tableView, emptyLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
         }
-        sourceChipsContainer.translatesAutoresizingMaskIntoConstraints = false
 
+        // 侧栏宽度（intrinsic 高度由 stack 决定 — 5×50pt + 4×10pt ≈ 290pt）
         NSLayoutConstraint.activate([
+            sidebar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            sidebar.widthAnchor.constraint(equalToConstant: 72),
+
+            // 源 stack 填满侧栏
+            sourceStack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 4),
+            sourceStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            sourceStack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            sourceStack.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -4),
+
+            // 搜索框：右侧
             searchField.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            searchField.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 12),
+            searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
 
-            sourceChipsScrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
-            sourceChipsScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            sourceChipsScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            sourceChipsScrollView.heightAnchor.constraint(equalToConstant: 44),
-
-            sourceChipsContainer.topAnchor.constraint(equalTo: sourceChipsScrollView.topAnchor),
-            sourceChipsContainer.leadingAnchor.constraint(equalTo: sourceChipsScrollView.leadingAnchor, constant: 12),
-            sourceChipsContainer.trailingAnchor.constraint(equalTo: sourceChipsScrollView.trailingAnchor, constant: -12),
-            sourceChipsContainer.bottomAnchor.constraint(equalTo: sourceChipsScrollView.bottomAnchor),
-            sourceChipsContainer.heightAnchor.constraint(equalTo: sourceChipsScrollView.heightAnchor),
-
-            tableView.topAnchor.constraint(equalTo: sourceChipsScrollView.bottomAnchor, constant: 4),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            // 表格：右侧，紧贴搜索框下沿
+            tableView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
+            tableView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 4),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
@@ -118,14 +122,14 @@ class SearchViewController: UIViewController {
     private func reloadChips() {
         let ids = ConfigStore.shared.selectableSourceIds
         let selected = ConfigStore.shared.currentSource
-        sourceChipsContainer.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        sourceStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for source in ids {
             let chip = createSourceChip(source: source)
-            sourceChipsContainer.addArrangedSubview(chip)
+            sourceStack.addArrangedSubview(chip)
         }
-        // 确保选中态正确
+        // 确保选中态正确（首个选中源 + 给所有 chip 设置正确状态）
         for (i, source) in ids.enumerated() {
-            if let chip = sourceChipsContainer.arrangedSubviews[i] as? UIButton {
+            if let chip = sourceStack.arrangedSubviews[i] as? UIButton {
                 updateChipAppearance(chip, source: source, isSelected: source == selected)
             }
         }
@@ -133,12 +137,17 @@ class SearchViewController: UIViewController {
 
     private func createSourceChip(source: String) -> UIButton {
         let chip = UIButton(type: .custom)
-        chip.setTitle(ConfigStore.shared.displayName(for: source), for: .normal)
+        // 优先显示简称（"酷我"/"网易云"），在侧栏宽度下更紧凑
+        let shortName = shortNameFor(source)
+        chip.setTitle(shortName, for: .normal)
         chip.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
-        chip.layer.cornerRadius = Theme.cornerFull
-        chip.contentEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
-        // 抑制系统 tint 渗透（.custom 仍可能从父 view 继承 tint）
+        chip.titleLabel?.adjustsFontSizeToFitWidth = true
+        chip.titleLabel?.minimumScaleFactor = 0.7
+        chip.titleLabel?.lineBreakMode = .byClipping
+        chip.layer.cornerRadius = 14
+        // 抑制系统 tint 渗透
         chip.tintColor = .clear
+        chip.contentEdgeInsets = UIEdgeInsets(top: 8, left: 6, bottom: 8, right: 6)
         if let index = ConfigStore.shared.selectableSourceIds.firstIndex(of: source) {
             chip.tag = index
         }
@@ -146,8 +155,25 @@ class SearchViewController: UIViewController {
 
         let selected = ConfigStore.shared.currentSource == source
         updateChipAppearance(chip, source: source, isSelected: selected)
+        // 强制刷新布局
+        chip.setNeedsLayout()
 
+        // 固定短矩形高度 (50pt)，让整列堆叠尺寸可控
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        chip.heightAnchor.constraint(equalToConstant: 50).isActive = true
         return chip
+    }
+
+    /// 短名用于 72pt 宽侧栏
+    private func shortNameFor(_ source: String) -> String {
+        switch source {
+        case "kw": return "酷我"
+        case "tx": return "QQ"
+        case "wy": return "云"
+        case "kg": return "酷狗"
+        case "mg": return "咪咕"
+        default: return ConfigStore.shared.displayName(for: source)
+        }
     }
 
     private func updateChipAppearance(_ chip: UIButton, source: String, isSelected: Bool) {
@@ -181,7 +207,7 @@ class SearchViewController: UIViewController {
         ConfigStore.shared.currentSource = source
 
         for (i, s) in ids.enumerated() {
-            if let chip = sourceChipsContainer.arrangedSubviews[i] as? UIButton {
+            if let chip = sourceStack.arrangedSubviews[i] as? UIButton {
                 updateChipAppearance(chip, source: s, isSelected: i == index)
             }
         }

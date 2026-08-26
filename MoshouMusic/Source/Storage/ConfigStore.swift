@@ -22,6 +22,8 @@ class ConfigStore {
         static let currentSource = "currentSource"
         static let customSources = "customSources"
         static let autoSwitchSource = "autoSwitchSource"
+        static let lxSyncServerURL = "lxSyncServerURL"
+        static let lxSyncEnabled = "lxSyncEnabled"
     }
 
     // MARK: - 路径
@@ -101,6 +103,21 @@ class ConfigStore {
             return defaults.bool(forKey: Keys.autoSwitchSource)
         }
         set { defaults.set(newValue, forKey: Keys.autoSwitchSource) }
+    }
+
+    // MARK: - LX Music 桌面版同步
+
+    /// 同步服务地址 (LX 桌面版 v2.4+ / 独立版 sync-server v2.0+)
+    /// 格式: http://192.168.x.x:23332 或 https://example.com/lxsync
+    var lxSyncServerURL: String {
+        get { defaults.string(forKey: Keys.lxSyncServerURL) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.lxSyncServerURL) }
+    }
+
+    /// 同步开关 (默认关 — 用户必须显式启用)
+    var lxSyncEnabled: Bool {
+        get { defaults.bool(forKey: Keys.lxSyncEnabled) }
+        set { defaults.set(newValue, forKey: Keys.lxSyncEnabled) }
     }
 
     // MARK: - 自定义音源 (本机手动添加)

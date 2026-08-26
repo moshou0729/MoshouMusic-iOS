@@ -22,6 +22,19 @@ class SettingsViewController: UIViewController {
         return "已启用 \(enabled.count)/\(all.count) 个 · 可用 \(ready.count) 个"
     }
 
+    /// LX 同步状态副标题（实时反映 LXSyncService 状态）
+    private func lxSyncStatusSubtitle() -> String {
+        let url = ConfigStore.shared.lxSyncServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if url.isEmpty { return "未配置" }
+        if !ConfigStore.shared.lxSyncEnabled { return "已关闭" }
+        switch LXSyncService.shared.status {
+        case .ok: return "已连接"
+        case .testing: return "连接中…"
+        case .failed(let r): return "失败 · \(r.prefix(20))"
+        default: return "已配置"
+        }
+    }
+
     /// 计算属性：每次读取实时取配置，保证开关/副标题状态与 ConfigStore 同步
     private var sections: [SettingSection] {
         return [
@@ -37,6 +50,9 @@ class SettingsViewController: UIViewController {
         SettingSection(title: "悬浮歌词", items: [
             SettingItem(icon: "rectangle.expand.vertical", iconColor: Theme.primary, title: "悬浮歌词", subtitle: nil, type: .toggle(ConfigStore.shared.isFloatingLyricsOn)),
             SettingItem(icon: "circle.lefthalf.filled", iconColor: Theme.tertiary, title: "歌词透明度", subtitle: "\(Int(ConfigStore.shared.floatingOpacity * 100))%", type: .navigate),
+        ]),
+        SettingSection(title: "数据同步", items: [
+            SettingItem(icon: "icloud.and.arrow.up", iconColor: Theme.tertiary, title: "LX Music 同步", subtitle: lxSyncStatusSubtitle(), type: .navigate),
         ]),
         SettingSection(title: "外观", items: [
             SettingItem(icon: "moon", iconColor: Theme.primary, title: "深色模式", subtitle: nil, type: .toggle(ConfigStore.shared.isDarkMode)),
@@ -195,6 +211,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case "清除缓存":
             ConfigStore.shared.clearCache()
             showAlert(title: "已清除缓存", message: "缓存已清理完成")
+        case "LX Music 同步":
+            navigationController?.pushViewController(LXSyncViewController(), animated: true)
         default:
             showAlert(title: "功能开发中", message: "\(item.title) 即将上线")
         }

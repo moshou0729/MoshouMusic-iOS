@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 
 /// LX Music 桌面版同步设置页
 /// v1.0.17 修复：4 张卡片改用 UIStackView 堆叠（修复所有卡片全叠顶部看不见 URL 输入的 bug）
@@ -14,6 +15,8 @@ class LXSyncViewController: UIViewController {
     private let testButton = UIButton(type: .system)
     private let enableSwitch = UISwitch()
     private let saveButton = UIButton(type: .system)
+    private let resultLabel = UILabel()
+    private var importPickerTimeout: Timer?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -152,6 +155,37 @@ class LXSyncViewController: UIViewController {
         helpCard.stack.addArrangedSubview(helpText)
         helpCard.add(to: containerStack)
 
+        // ===== 卡片 5：歌单文件互导 (Phase 1) =====
+        let bridgeCard = makeCard(title: "歌单文件互导（Phase 1）", subtitle: "无需实时连接，手动与 LX 桌面版互导歌单")
+        let bridgeDesc = UILabel()
+        bridgeDesc.font = Theme.bodySmall
+        bridgeDesc.textColor = Theme.subtext
+        bridgeDesc.numberOfLines = 0
+        bridgeDesc.text = "导入：把 LX 桌面版「导出」的歌单 JSON 导入到本机。\n导出：把本机歌单导出为 LX 兼容 JSON（可再导回本 App；导入 LX 桌面版为尽力而为）。"
+        bridgeCard.stack.addArrangedSubview(bridgeDesc)
+
+        let importBtn = makeButton("从 LX 导出文件导入", color: Theme.primary)
+        importBtn.addTarget(self, action: #selector(importFromFileTapped), for: .touchUpInside)
+        bridgeCard.stack.addArrangedSubview(importBtn)
+        importBtn.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        let importDocsBtn = makeButton("导入 Documents/lx-playlist.json", color: Theme.secondary)
+        importDocsBtn.addTarget(self, action: #selector(importFromDocsTapped), for: .touchUpInside)
+        bridgeCard.stack.addArrangedSubview(importDocsBtn)
+        importDocsBtn.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        let exportBtn = makeButton("导出我的歌单为 JSON", color: Theme.tertiary)
+        exportBtn.addTarget(self, action: #selector(exportTapped), for: .touchUpInside)
+        bridgeCard.stack.addArrangedSubview(exportBtn)
+        exportBtn.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        resultLabel.font = Theme.bodyMedium
+        resultLabel.textColor = Theme.text
+        resultLabel.numberOfLines = 0
+        bridgeCard.stack.addArrangedSubview(resultLabel)
+
+        bridgeCard.add(to: containerStack)
+
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -230,6 +264,78 @@ class LXSyncViewController: UIViewController {
         }
     }
 
+    // MARK: - 歌单文件互导 (Phase 1)
+
+    @objc private func importFromFileTapped() {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.json])
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+
+        // TrollStore 沙盒下文档选择器常无回调，加超时兜底提示
+        importPickerTimeout?.invalidate()
+        importPickerTimeout = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+            self?.resultLabel.text = "提示：TrollStore 环境下系统文件选择器可能选不到文件。可改用「导入 Documents/lx-playlist.json」：把 LX 导出的 JSON 用 Filza/Files 放进 App 沙盒的 Documents 目录后点此按钮。"
+        }
+    }
+
+    @objc private func importFromDocsTapped() {
+        let url = ConfigStore.shared.documentsDirectory.appendingPathComponent("lx-playlist.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            resultLabel.text = "未在 Documents 找到 lx-playlist.json。请把 LX 导出的歌单 JSON 命名为 lx-playlist.json 放进 App 沙盒 Documents 目录（可用 Filza）。"
+            return
+        }
+        doImport(at: url)
+    }
+
+    private func doImport(at url: URL) {
+        let secured = url.startAccessingSecurityScopedResource()
+        defer { if secured { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else {
+            resultLabel.text = "读取文件失败"
+            return
+        }
+        do {
+            let imports = try LXPlaylistBridge.parse(data: data)
+            var totalPlaylists = 0, totalSongs = 0
+            for imp in imports {
+                let added = PlaylistStore.shared.mergeSongs(imp.songs, intoPlaylistNamed: imp.name)
+                totalPlaylists += 1
+                totalSongs += added
+            }
+            resultLabel.text = "导入成功：歌单 \(totalPlaylists) 个，新增歌曲 \(totalSongs) 首。"
+            NotificationCenter.default.post(name: PlaylistStore.didChangeNotification, object: nil)
+        } catch {
+            resultLabel.text = "导入失败：\(error.localizedDescription)"
+        }
+    }
+
+    @objc private func exportTapped() {
+        let playlists = PlaylistStore.shared.playlists
+        let data = LXPlaylistBridge.encode(playlists: playlists)
+        let url = ConfigStore.shared.documentsDirectory.appendingPathComponent("MoshouMusic-lx-export.json")
+        do {
+            try data.write(to: url, options: .atomic)
+            let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            av.completionWithItemsHandler = { [weak self] _, _, _, _ in
+                self?.resultLabel.text = "已导出到：\(url.lastPathComponent)\n可用「分享」存到 Files / AirDrop，或再导回本 App。"
+            }
+            present(av, animated: true)
+        } catch {
+            resultLabel.text = "导出失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func makeButton(_ title: String, color: UIColor) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(title, for: .normal)
+        b.titleLabel?.font = Theme.titleSmall
+        b.setTitleColor(.white, for: .normal)
+        b.backgroundColor = color
+        b.layer.cornerRadius = Theme.cornerMedium
+        return b
+    }
+
     // MARK: - 卡片构建
 
     private func makeCard(title: String, subtitle: String?) -> Card {
@@ -300,5 +406,19 @@ extension LXSyncViewController: UITextFieldDelegate {
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         textField.resignFirstResponder()
         return true
+    }
+}
+
+extension LXSyncViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        importPickerTimeout?.invalidate()
+        importPickerTimeout = nil
+        guard let url = urls.first else { return }
+        doImport(at: url)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        importPickerTimeout?.invalidate()
+        importPickerTimeout = nil
     }
 }

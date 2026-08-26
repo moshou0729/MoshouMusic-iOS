@@ -137,4 +137,33 @@ class PlaylistStore {
         playlists[index].updatedAt = Date()
         save()
     }
+
+    // MARK: - LX 导入合并
+
+    /// 合并一批歌曲到指定名称的歌单：不存在则新建，存在则追加去重后的歌曲，整体只保存一次。
+    /// 返回本次新增加的歌曲数。供 LXPlaylistBridge 导入使用。
+    @discardableResult
+    func mergeSongs(_ songs: [Song], intoPlaylistNamed name: String) -> Int {
+        let unique = dedupe(songs)
+        if let index = playlists.firstIndex(where: { $0.name == name }) {
+            var added = 0
+            for s in unique where !playlists[index].songs.contains(where: { $0.id == s.id }) {
+                playlists[index].songs.append(s)
+                added += 1
+            }
+            playlists[index].updatedAt = Date()
+            save()
+            return added
+        } else {
+            let pl = Playlist(name: name, songs: unique)
+            playlists.append(pl)
+            save()
+            return unique.count
+        }
+    }
+
+    private func dedupe(_ songs: [Song]) -> [Song] {
+        var seen = Set<String>()
+        return songs.filter { seen.insert($0.id).inserted }
+    }
 }

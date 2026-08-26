@@ -9,11 +9,15 @@ class MainTabBarController: UITabBarController {
         setupTabs()
         setupMiniPlayer()
 
-        // 预留迷你播放条高度：additionalSafeAreaInsets 会沿视图控制器层级
-        // 累加到每个子页面（搜索/排行/我的/设置）的 safe area 底部，
-        // 从而让各页面的滚动内容自动上移、悬浮按钮（如「我的」页 FAB）自动抬升，
-        // 避免被底部 64pt 的迷你播放条遮挡。
-        additionalSafeAreaInsets.bottom = 64
+        // 初始播放状态决定迷你播放条可见性与底部安全区预留
+        let hasSong = PlayerManager.shared.currentSong != nil
+        setMiniPlayerVisible(hasSong, animated: false)
+
+        // 监听播放状态：有当前歌曲才显示播放条并预留安全区
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(playerStateChanged(_:)),
+            name: .playerStateChanged, object: nil
+        )
     }
 
     private func setupTabs() {
@@ -81,15 +85,49 @@ class MainTabBarController: UITabBarController {
         }
     }
 
+    /// 控制迷你播放条的显示/隐藏，以及对应的底部安全区预留
+    /// - 有当前歌曲时：显示播放条 + 底部预留 64pt，各页面 safe area 自动上移避开
+    /// - 无当前歌曲时：隐藏播放条 + 不预留，页面回归正常布局
+    private func setMiniPlayerVisible(_ visible: Bool, animated: Bool) {
+        guard let bar = miniPlayerBar else { return }
+
+        let work = {
+            // 同步调整安全区，避免页面内容被播放条遮挡
+            self.additionalSafeAreaInsets.bottom = visible ? 64 : 0
+            bar.alpha = visible ? 1.0 : 0.0
+            self.view.layoutIfNeeded()
+        }
+
+        if visible {
+            bar.isHidden = false
+            if animated {
+                UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseInOut, animations: work)
+            } else {
+                work()
+            }
+        } else {
+            if animated {
+                UIView.animate(
+                    withDuration: 0.25, delay: 0, options: .curveEaseInOut,
+                    animations: work,
+                    completion: { _ in bar.isHidden = true }
+                )
+            } else {
+                work()
+                bar.isHidden = true
+            }
+        }
+    }
+
+    @objc private func playerStateChanged(_ notification: Notification) {
+        let hasSong = PlayerManager.shared.currentSong != nil
+        setMiniPlayerVisible(hasSong, animated: true)
+    }
+
     private func presentPlayer() {
         let playerVC = PlayerViewController()
         playerVC.modalPresentationStyle = .overFullScreen
         playerVC.modalTransitionStyle = .crossDissolve
         present(playerVC, animated: true)
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        // 确保 mini player 在 tabBar 上方
     }
 }

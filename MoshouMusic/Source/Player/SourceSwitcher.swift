@@ -7,6 +7,8 @@ import Foundation
 /// 全部串行执行（JSContext 非线程安全），任一成功即返回。
 final class SourceSwitcher {
 
+    static let shared = SourceSwitcher()
+
     /// 换源优先级：酷我最稳，其次酷狗，再到 QQ / 网易云 / 咪咕
     private let preferredOrder = ["kw", "kg", "tx", "wy", "mg"]
 
@@ -173,6 +175,83 @@ final class SourceSwitcher {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: - 仅查找可匹配的 Song（不取播放链接）
+
+    /// 歌单导入用：在已启用音源里按「歌名+歌手」搜索并匹配，返回第一个命中的 Song
+    /// 与 findPlayable 的区别：不调用 getMusicUrl，不做播放兜底，速度更快、适合批量
+    func findSong(name: String, singer: String, completion: @escaping (Song?) -> Void) {
+        let enabled = ConfigStore.shared.enabledSources
+        let candidates = preferredOrder.filter {
+            enabled.contains($0) && ScriptEngine.shared.hasHandler(for: $0)
+        }
+        guard !candidates.isEmpty else {
+            completion(nil)
+            return
+        }
+
+        let keyword = singer.isEmpty || singer == "未知歌手" ? name : "\(name) \(singer)"
+        var idx = 0
+
+        func step() {
+            guard idx < candidates.count else {
+                completion(nil)
+                return
+            }
+            let source = candidates[idx]
+            idx += 1
+            attemptSearchBuiltin(source: source, keyword: keyword, name: name, singer: singer) { song in
+                if let song = song {
+                    completion(song)
+                    return
+                }
+                self.attemptSearchLX(source: source, keyword: keyword, name: name, singer: singer) { lxSong in
+                    if let lxSong = lxSong {
+                        completion(lxSong)
+                    } else {
+                        step()
+                    }
+                }
+            }
+        }
+        step()
+    }
+
+    private func attemptSearchBuiltin(
+        source: String, keyword: String, name: String, singer: String,
+        completion: @escaping (Song?) -> Void
+    ) {
+        ScriptEngine.shared.search(keyword: keyword, page: 1, source: source) { result in
+            DispatchQueue.main.async {
+                guard case .success(let rawList) = result, !rawList.isEmpty else {
+                    completion(nil)
+                    return
+                }
+                let songs = rawList.compactMap { Song(from: $0, source: source) }
+                completion(SourceSwitcher.bestMatch(in: songs, name: name, singer: singer))
+            }
+        }
+    }
+
+    private func attemptSearchLX(
+        source: String, keyword: String, name: String, singer: String,
+        completion: @escaping (Song?) -> Void
+    ) {
+        guard LXCompatEngine.shared.isPlatformAvailable(source) else {
+            completion(nil)
+            return
+        }
+        LXCompatEngine.shared.search(keyword: keyword, platform: source, page: 1) { result in
+            DispatchQueue.main.async {
+                guard case .success(let rawList) = result, !rawList.isEmpty else {
+                    completion(nil)
+                    return
+                }
+                let songs = rawList.compactMap { Song(from: $0, source: source) }
+                completion(SourceSwitcher.bestMatch(in: songs, name: name, singer: singer))
             }
         }
     }

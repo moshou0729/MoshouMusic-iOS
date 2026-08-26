@@ -6,6 +6,8 @@ struct NetworkResponse {
     let headers: [String: String]
     let body: String
     let rawData: Data?
+    /// 跟随重定向后的最终地址（短链解析用）
+    let finalURL: String?
 }
 
 /// 阻止自动重定向的 delegate — 让脚本能读到 302 的 Location 头
@@ -128,7 +130,8 @@ class NetworkManager {
                 statusCode: httpResponse.statusCode,
                 headers: responseHeaders,
                 body: bodyString,
-                rawData: data
+                rawData: data,
+                finalURL: response.url?.absoluteString
             )
 
             Logger.debug("[NET] \(httpResponse.statusCode) \(url) (\(bodyString.count) bytes)")

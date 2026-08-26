@@ -64,6 +64,14 @@ class PlaylistViewController: UIViewController {
 
         setupConstraints()
 
+        // 导入歌单按钮
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "导入",
+            style: .plain,
+            target: self,
+            action: #selector(importTapped)
+        )
+
         // 监听歌单变化
         NotificationCenter.default.addObserver(
             self, selector: #selector(playlistsChanged),
@@ -117,6 +125,59 @@ class PlaylistViewController: UIViewController {
                 PlaylistStore.shared.create(name: name)
             }
         })
+        present(alert, animated: true)
+    }
+
+    // MARK: - 导入分享链接
+
+    @objc private func importTapped() {
+        let alert = UIAlertController(
+            title: "导入歌单",
+            message: "粘贴网易云 / QQ音乐 / 酷狗的分享链接，自动匹配本机音源后加入歌单",
+            preferredStyle: .alert
+        )
+        alert.addTextField { tf in
+            tf.placeholder = "https://..."
+            tf.keyboardType = .URL
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "导入", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            let link = alert.textFields?.first?.text ?? ""
+            guard !link.isEmpty else { return }
+            self.runImport(link: link)
+        })
+        present(alert, animated: true)
+    }
+
+    private func runImport(link: String) {
+        let progressAlert = UIAlertController(title: "正在导入…", message: "准备中", preferredStyle: .alert)
+        present(progressAlert, animated: true)
+
+        PlaylistImporter.shared.importFromLink(link: link, progress: { [weak progressAlert] p in
+            progressAlert?.message = "\(p.stage)\n已匹配 \(p.matched)/\(p.total)"
+        }) { [weak self] result in
+            progressAlert.dismiss(animated: true) {
+                guard let self = self else { return }
+                switch result {
+                case .failure(let e):
+                    self.showImportResult(title: "导入失败", message: e.localizedDescription)
+                case .success(let r):
+                    var msg = "平台：\(r.platform)\n共 \(r.total) 首，成功匹配 \(r.matched) 首"
+                    if !r.skipped.isEmpty {
+                        let names = r.skipped.prefix(5).map { "· \($0.name) - \($0.artist)" }.joined(separator: "\n")
+                        msg += "\n\n未找到可播放版本（\(r.skipped.count) 首）：\n\(names)"
+                        if r.skipped.count > 5 { msg += "\n…" }
+                    }
+                    self.showImportResult(title: "已导入「\(r.playlistName)」", message: msg)
+                }
+            }
+        }
+    }
+
+    private func showImportResult(title: String, message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好的", style: .default))
         present(alert, animated: true)
     }
 }

@@ -72,6 +72,22 @@ class PlaylistStore {
         return playlist
     }
 
+    /// 直接加入一个已构造好的歌单（歌单导入用）
+    func add(_ playlist: Playlist) {
+        playlists.append(playlist)
+        save()
+    }
+
+    /// 批量加入歌曲（歌单导入用，仅一次 save）
+    func addSongs(_ songs: [Song], to playlistId: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistId }) else { return }
+        for song in songs where !playlists[index].songs.contains(where: { $0.id == song.id }) {
+            playlists[index].songs.append(song)
+        }
+        playlists[index].updatedAt = Date()
+        save()
+    }
+
     /// 删除歌单
     func delete(id: String) {
         playlists.removeAll { $0.id == id }

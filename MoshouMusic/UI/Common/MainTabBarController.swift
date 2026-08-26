@@ -77,7 +77,7 @@ class MainTabBarController: UITabBarController {
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bar.bottomAnchor.constraint(equalTo: tabBar.topAnchor),
-            bar.heightAnchor.constraint(equalToConstant: miniPlayerVisibleHeight)
+            bar.heightAnchor.constraint(equalToConstant: Self.miniPlayerVisibleHeight)
         ])
 
         miniPlayerBar = bar

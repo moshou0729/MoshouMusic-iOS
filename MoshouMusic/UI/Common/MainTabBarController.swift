@@ -8,14 +8,20 @@ class MainTabBarController: UITabBarController {
         super.viewDidLoad()
         setupTabs()
         setupMiniPlayer()
+
+        // 预留迷你播放条高度：additionalSafeAreaInsets 会沿视图控制器层级
+        // 累加到每个子页面（搜索/排行/我的/设置）的 safe area 底部，
+        // 从而让各页面的滚动内容自动上移、悬浮按钮（如「我的」页 FAB）自动抬升，
+        // 避免被底部 64pt 的迷你播放条遮挡。
+        additionalSafeAreaInsets.bottom = 64
     }
 
     private func setupTabs() {
         let searchVC = SearchViewController()
         searchVC.tabBarItem = UITabBarItem(
             title: "搜索",
-            image: UIImage(systemName: "magnifyingcircle"),
-            selectedImage: UIImage(systemName: "magnifyingcircle.fill")
+            image: UIImage(systemName: "magnifyingglass"),
+            selectedImage: UIImage(systemName: "magnifyingglass.fill")
         )
 
         let rankingVC = RankingViewController()

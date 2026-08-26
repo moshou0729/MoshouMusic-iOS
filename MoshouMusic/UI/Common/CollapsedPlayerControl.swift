@@ -1,9 +1,10 @@
 import UIKit
 
 /// 收起后的迷你播放控制
-/// - 可拖动的小浮层：中心一个圆角正方形按钮（播放/暂停），正方形「周长描边」随播放进度沿四边走动
-/// - 拖动可移到任意位置，松手就近吸附到左 / 右边（保留落点高度）；
-///   右滑或上滑展开回完整播放条；点中心按钮 = 播放 / 暂停
+/// - 中心一个圆角正方形按钮（播放/暂停），正方形「周长描边」随播放进度沿四边走动
+/// - 长按 + 拖动：上下左右任意换位，松手就近吸附到左 / 右边（保留落点高度）
+/// - 短滑展开：吸附左侧时向右滑、吸附右侧时向左滑，展开回完整播放条
+/// - 单击 = 播放 / 暂停
 class CollapsedPlayerControl: UIView {
 
     /// 右滑 / 上滑展开回完整播放条
@@ -17,10 +18,18 @@ class CollapsedPlayerControl: UIView {
     var positionLeading: NSLayoutConstraint?
     var positionBottom: NSLayoutConstraint?
 
-    private var panGesture: UIPanGestureRecognizer?
-    private var dragStartFrame: CGRect = .zero
-    private var dragStartLead: CGFloat = 0
-    private var dragStartBottom: CGFloat = 0
+    private var longPress: UILongPressGestureRecognizer!
+    private var tapGesture: UITapGestureRecognizer!
+    private var leftSwipe: UISwipeGestureRecognizer!
+    private var rightSwipe: UISwipeGestureRecognizer!
+
+    /// 当前吸附在哪一侧（决定「短滑展开」的方向）
+    private var isLeftSide = true
+
+    /// 长按拖动起点
+    private var lpStartFrame: CGRect = .zero
+    private var lpStartLead: CGFloat = 0
+    private var lpStartBottom: CGFloat = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -60,25 +69,38 @@ class CollapsedPlayerControl: UIView {
 
         playButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
         playButton.tintColor = Theme.primary
-        playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
+        playButton.isUserInteractionEnabled = false   // 点击交给整块的 tap 手势统一处理
         addSubview(playButton)
 
         setupConstraints()
     }
 
-    /// 配置拖动 + 展开手势（在约束注入后由 MainTabBarController 调用）
-    func configureDrag() {
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        addGestureRecognizer(pan)
-        panGesture = pan
+    /// 配置手势（在约束注入后由 MainTabBarController 调用）
+    /// - 单击：播放 / 暂停
+    /// - 长按 + 拖动：上下左右任意方向换位（就近吸附到左 / 右侧）
+    /// - 短滑：依当前吸附侧决定展开方向（左吸附→右滑展开；右吸附→左滑展开）
+    func configureGestures() {
+        // 长按 = 进入拖动态
+        longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.18
+        longPress.allowableMovement = 12
+        addGestureRecognizer(longPress)
 
-        let rightSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeRight))
+        // 单击 = 播放 / 暂停（长按优先，避免拖动 / 长按误触播放）
+        tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        tapGesture.require(toFail: longPress)
+        addGestureRecognizer(tapGesture)
+
+        // 短滑动 = 展开（方向取决于吸附侧）
+        leftSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeLeft))
+        leftSwipe.direction = .left
+        leftSwipe.require(toFail: longPress)   // 先判定是否长按拖动，避免冲突
+        addGestureRecognizer(leftSwipe)
+
+        rightSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeRight))
         rightSwipe.direction = .right
+        rightSwipe.require(toFail: longPress)
         addGestureRecognizer(rightSwipe)
-
-        // 先判定「右滑」手势，确认不是「展开（右滑）」后才交给拖动，
-        // 让上下 / 左方向都能自由拖动换位；上滑不再绑展开，避免与「上拖换位」冲突
-        pan.require(toFail: rightSwipe)
     }
 
     private func setupConstraints() {
@@ -113,9 +135,9 @@ class CollapsedPlayerControl: UIView {
         ringLayer.path = path.cgPath
     }
 
-    // MARK: - 拖动 + 就近吸附
+    // MARK: - 长按拖动换位 + 就近吸附 + 短滑展开
 
-    @objc private func handlePan(_ g: UIPanGestureRecognizer) {
+    @objc private func handleLongPress(_ g: UILongPressGestureRecognizer) {
         guard let sup = self.superview,
               let leadC = positionLeading,
               let bottomC = positionBottom else { return }
@@ -124,22 +146,23 @@ class CollapsedPlayerControl: UIView {
         let w = sup.bounds.width
         let h = sup.bounds.height
         let insets = sup.safeAreaInsets
-        let leftMargin: CGFloat = 0     // 左侧贴边（无空隙）
-        let rightMargin: CGFloat = 0    // 右侧同样贴边，与左侧对称无空隙
+        let margin: CGFloat = 0          // 左右都贴边，无空隙
         let topMin = insets.top + 8
         let topMax = h - insets.bottom - 8 - size
 
         switch g.state {
         case .began:
-            dragStartFrame = self.frame
-            dragStartLead = leadC.constant
-            dragStartBottom = bottomC.constant
+            lpStartFrame = self.frame
+            lpStartLead = leadC.constant
+            lpStartBottom = bottomC.constant
+            // 抓取反馈：轻微放大
+            UIView.animate(withDuration: 0.12) { self.transform = CGAffineTransform(scaleX: 1.12, y: 1.12) }
 
         case .changed:
             let t = g.translation(in: sup)
-            var x = dragStartFrame.origin.x + t.x
-            var y = dragStartFrame.origin.y + t.y
-            x = min(max(x, leftMargin), w - rightMargin - size)
+            var x = lpStartFrame.origin.x + t.x
+            var y = lpStartFrame.origin.y + t.y
+            x = min(max(x, margin), w - margin - size)
             y = min(max(y, topMin), topMax)
             leadC.constant = x
             // bottom 约束：bottomAnchor = safeAreaBottom + K
@@ -148,24 +171,53 @@ class CollapsedPlayerControl: UIView {
             UIView.performWithoutAnimation { sup.layoutIfNeeded() }
 
         case .ended, .cancelled, .failed:
-            // 就近吸附：以中心 x 判断靠左还是靠右，保留落点高度
-            let midX = self.frame.midX
-            let snapX = (midX < w / 2) ? leftMargin : (w - rightMargin - size)
-            let snapY = min(max(self.frame.origin.y, topMin), topMax)
-            leadC.constant = snapX
-            bottomC.constant = (snapY + size) - (h - insets.bottom)
-            // 弹性吸附动画
-            UIView.animate(withDuration: 0.32, delay: 0,
-                           usingSpringWithDamping: 0.72, initialSpringVelocity: 0.6) {
-                sup.layoutIfNeeded()
-            }
+            UIView.animate(withDuration: 0.12) { self.transform = .identity }
+            snapToNearestEdge()
 
         default:
             break
         }
     }
 
-    @objc private func handleSwipeRight() { onExpand?() }
+    /// 松手后就近吸附到左 / 右侧（保留落点高度），并记录当前吸附侧
+    private func snapToNearestEdge() {
+        guard let sup = superview,
+              let leadC = positionLeading,
+              let bottomC = positionBottom else { return }
+
+        let size = bounds.width
+        let w = sup.bounds.width
+        let h = sup.bounds.height
+        let insets = sup.safeAreaInsets
+        let margin: CGFloat = 0
+        let topMin = insets.top + 8
+        let topMax = h - insets.bottom - 8 - size
+
+        let midX = self.frame.midX
+        isLeftSide = midX < w / 2
+        let snapX = isLeftSide ? margin : (w - margin - size)
+        let snapY = min(max(self.frame.origin.y, topMin), topMax)
+        leadC.constant = snapX
+        bottomC.constant = (snapY + size) - (h - insets.bottom)
+        UIView.animate(withDuration: 0.32, delay: 0,
+                       usingSpringWithDamping: 0.72, initialSpringVelocity: 0.6) {
+            sup.layoutIfNeeded()
+        }
+    }
+
+    @objc private func handleSwipeLeft() {
+        // 吸附在右侧时，短向左滑 = 展开
+        if !isLeftSide { onExpand?() }
+    }
+
+    @objc private func handleSwipeRight() {
+        // 吸附在左侧时，短向右滑 = 展开
+        if isLeftSide { onExpand?() }
+    }
+
+    @objc private func handleTap() {
+        PlayerManager.shared.togglePlayPause()
+    }
 
     // MARK: - 播放器绑定
 
@@ -198,8 +250,4 @@ class CollapsedPlayerControl: UIView {
     }
 
     // MARK: - Actions
-
-    @objc private func playTapped() {
-        PlayerManager.shared.togglePlayPause()
-    }
 }

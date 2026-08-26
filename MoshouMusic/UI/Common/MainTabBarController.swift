@@ -117,8 +117,8 @@ class MainTabBarController: UITabBarController {
         ])
         c.positionLeading = leadC
         c.positionBottom = bottomC
-        c.configureDrag()
-        // 右滑 / 上滑展开回完整播放条
+        c.configureGestures()
+        // 短滑展开（方向取决于吸附侧，见控件内逻辑）
         c.onExpand = { [weak self] in
             self?.setCollapsed(false, animated: true)
         }

@@ -24,6 +24,16 @@ class PlayerViewController: UIViewController {
 
     private var currentArtworkImage: UIImage?
 
+    // 手势：长按快进/快退、短滑切歌
+    private var scrubLongPress: UILongPressGestureRecognizer!
+    private var prevSwipe: UISwipeGestureRecognizer!
+    private var nextSwipe: UISwipeGestureRecognizer!
+
+    private var scrubStartX: CGFloat = 0
+    private var scrubStartTime: Double = 0
+    private var lastScrubApplied: Double = 0
+    private var isScrubbing = false
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -148,6 +158,7 @@ class PlayerViewController: UIViewController {
         }
 
         setupConstraints()
+        setupSwipeGestures()
     }
 
     private func setupConstraints() {
@@ -248,6 +259,68 @@ class PlayerViewController: UIViewController {
             playModeButton.widthAnchor.constraint(equalToConstant: 36),
             playModeButton.heightAnchor.constraint(equalToConstant: 36),
         ])
+    }
+
+    // MARK: - 手势：快进/快退 + 切歌
+
+    private func setupSwipeGestures() {
+        // 长按 + 左右拖动 = 快进 / 快退（歌词区域除外，见 delegate）
+        scrubLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleScrub(_:)))
+        scrubLongPress.minimumPressDuration = 0.18
+        scrubLongPress.allowableMovement = 12
+        scrubLongPress.delegate = self
+        view.addGestureRecognizer(scrubLongPress)
+
+        // 短滑：左 = 上一首，右 = 下一首（歌词区域除外）
+        prevSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeLeft))
+        prevSwipe.direction = .left
+        prevSwipe.delegate = self
+        prevSwipe.require(toFail: scrubLongPress)
+        view.addGestureRecognizer(prevSwipe)
+
+        nextSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeRight))
+        nextSwipe.direction = .right
+        nextSwipe.delegate = self
+        nextSwipe.require(toFail: scrubLongPress)
+        view.addGestureRecognizer(nextSwipe)
+    }
+
+    @objc private func handleScrub(_ g: UILongPressGestureRecognizer) {
+        let duration = PlayerManager.shared.duration
+        guard duration.isFinite, duration > 0 else { return }
+        let loc = g.location(in: view)
+
+        switch g.state {
+        case .began:
+            scrubStartX = loc.x
+            scrubStartTime = PlayerManager.shared.currentTime
+            lastScrubApplied = scrubStartTime
+            isScrubbing = true
+        case .changed:
+            guard isScrubbing else { return }
+            let dx = loc.x - scrubStartX
+            let w = view.bounds.width
+            // 横向拖动整屏宽 ≈ 整首歌时长，方便估算快进 / 快退
+            var newTime = scrubStartTime + (dx / w) * duration
+            newTime = min(max(newTime, 0), duration)
+            // 节流：移动超过 0.3s 才真正 seek，避免每帧频繁拖动
+            if abs(newTime - lastScrubApplied) >= 0.3 {
+                PlayerManager.shared.seek(to: newTime)
+                lastScrubApplied = newTime
+            }
+        case .ended, .cancelled, .failed:
+            isScrubbing = false
+        default:
+            break
+        }
+    }
+
+    @objc private func handleSwipeLeft() {
+        PlayerManager.shared.previous()
+    }
+
+    @objc private func handleSwipeRight() {
+        PlayerManager.shared.next()
     }
 
     // MARK: - 绑定播放器
@@ -470,5 +543,22 @@ class PlayerViewController: UIViewController {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds)
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+// MARK: - 手势代理：歌词显示区域不接管手势，让歌词能正常垂直滚动
+
+extension PlayerViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        let loc = g.location(in: view)
+        // 歌词区域一律不接管：让歌词能正常滚动
+        if lyricsScrollView.frame.contains(loc) { return false }
+        // 长按拖动（快进/快退）不作用于进度条与底部控制按钮，避免与它们自身交互冲突
+        if g === scrubLongPress {
+            let excluded = [progressSlider, playButton, previousButton,
+                            nextButton, playModeButton, currentTimeLabel, durationLabel]
+            for v in excluded where v.frame.contains(loc) { return false }
+        }
+        return true
     }
 }

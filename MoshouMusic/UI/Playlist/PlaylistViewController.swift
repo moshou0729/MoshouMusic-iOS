@@ -9,17 +9,39 @@ class PlaylistViewController: UIViewController {
 
     private var playlists: [Playlist] = []
 
+    /// FAB 距底部距离，播放条显示时单独抬升（不动页面整体布局）
+    /// 闲置：safeArea.bottom - 20
+    /// 播放：safeArea.bottom - 20 - 64 = safeArea.bottom - 84
+    private var fabBottomConstraint: NSLayoutConstraint!
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
         loadPlaylists()
+
+        // 按当前状态初始化 FAB 位置（防止播放中首次进入时被遮挡）
+        applyMiniPlayerAdjustment(visible: PlayerManager.shared.currentSong != nil)
+
+        // 监听播放条可见性变化，单独上移 FAB（不动页面整体）
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(miniPlayerVisibilityChanged(_:)),
+            name: .miniPlayerVisibilityChanged,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         loadPlaylists()
+        // 页面每次回到前台再校准一次（处理其他页面播放过再切回）
+        applyMiniPlayerAdjustment(visible: PlayerManager.shared.currentSong != nil)
     }
 
     // MARK: - UI
@@ -84,6 +106,11 @@ class PlaylistViewController: UIViewController {
             $0.translatesAutoresizingMaskIntoConstraints = false
         }
 
+        // FAB 的 bottom 约束做成可变的，便于后续通知驱动单独抬升
+        fabBottomConstraint = fabButton.bottomAnchor.constraint(
+            equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20
+        )
+
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -94,10 +121,38 @@ class PlaylistViewController: UIViewController {
             emptyLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
 
             fabButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            fabButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
+            fabBottomConstraint,
             fabButton.widthAnchor.constraint(equalToConstant: 56),
             fabButton.heightAnchor.constraint(equalToConstant: 56),
         ])
+    }
+
+    // MARK: - FAB 让位逻辑
+
+    /// 单独让 FAB 上移避让播放条，不动页面整体布局
+    /// - 闲置时 FAB 距 safeArea 底部 20pt；播放时再多抬 64pt = 84pt
+    /// - 同步调整 tableView.contentInset 避免最后一行被抬起的 FAB 遮住
+    @objc private func miniPlayerVisibilityChanged(_ note: Notification) {
+        let visible = (note.userInfo?["visible"] as? Bool) ?? false
+        applyMiniPlayerAdjustment(visible: visible)
+    }
+
+    private func applyMiniPlayerAdjustment(visible: Bool) {
+        // FAB 离底部距离：闲置 20pt，播放 20 + 64 = 84pt
+        let fabBottom: CGFloat = visible ? -84 : -20
+        // 列表底部 inset：保留 FAB 56 + 间距(16) ≈ 80pt；播放时再多 64pt
+        let tableBottom: CGFloat = visible ? 144 : 80
+
+        if fabBottomConstraint.constant != fabBottom {
+            fabBottomConstraint.constant = fabBottom
+        }
+        if tableView.contentInset.bottom != tableBottom {
+            tableView.contentInset.bottom = tableBottom
+            tableView.verticalScrollIndicatorInsets.bottom = tableBottom
+        }
+        UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseInOut) {
+            self.view.layoutIfNeeded()
+        }
     }
 
     // MARK: - 数据

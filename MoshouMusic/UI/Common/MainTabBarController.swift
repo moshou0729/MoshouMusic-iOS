@@ -9,11 +9,11 @@ class MainTabBarController: UITabBarController {
         setupTabs()
         setupMiniPlayer()
 
-        // 初始播放状态决定迷你播放条可见性与底部安全区预留
+        // 初始播放状态决定迷你播放条可见性
         let hasSong = PlayerManager.shared.currentSong != nil
         setMiniPlayerVisible(hasSong, animated: false)
 
-        // 监听播放状态：有当前歌曲才显示播放条并预留安全区
+        // 监听播放状态：变化时显示/隐藏播放条
         NotificationCenter.default.addObserver(
             self, selector: #selector(playerStateChanged(_:)),
             name: .playerStateChanged, object: nil
@@ -63,6 +63,9 @@ class MainTabBarController: UITabBarController {
 
     // MARK: - 迷你播放条
 
+    /// 播放条占据的高度（含阴影/微间距），FAB 等浮层用此值计算上移量
+    static let miniPlayerVisibleHeight: CGFloat = 64
+
     private var miniPlayerBar: MiniPlayerBar?
 
     private func setupMiniPlayer() {
@@ -74,7 +77,7 @@ class MainTabBarController: UITabBarController {
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bar.bottomAnchor.constraint(equalTo: tabBar.topAnchor),
-            bar.heightAnchor.constraint(equalToConstant: 64)
+            bar.heightAnchor.constraint(equalToConstant: miniPlayerVisibleHeight)
         ])
 
         miniPlayerBar = bar
@@ -85,36 +88,51 @@ class MainTabBarController: UITabBarController {
         }
     }
 
-    /// 控制迷你播放条的显示/隐藏，以及对应的底部安全区预留
-    /// - 有当前歌曲时：显示播放条 + 底部预留 64pt，各页面 safe area 自动上移避开
-    /// - 无当前歌曲时：隐藏播放条 + 不预留，页面回归正常布局
+    /// 控制迷你播放条的显示/隐藏，并通过通知告知各页面（如 FAB）单独让位
+    /// - v1.0.20 起**不再**修改 `additionalSafeAreaInsets`（避免各页面整体上移留死区）
+    /// - 改为广播通知，让像「我的」页右下 FAB 这类悬浮元素自行抬升
     private func setMiniPlayerVisible(_ visible: Bool, animated: Bool) {
         guard let bar = miniPlayerBar else { return }
 
         let work = {
-            // 同步调整安全区，避免页面内容被播放条遮挡
-            self.additionalSafeAreaInsets.bottom = visible ? 64 : 0
             bar.alpha = visible ? 1.0 : 0.0
             self.view.layoutIfNeeded()
+        }
+
+        let finish: (Bool) -> Void = { _ in
+            // 切换完成广播一次，让 FAB 等浮层单独上移
+            NotificationCenter.default.post(
+                name: .miniPlayerVisibilityChanged,
+                object: nil,
+                userInfo: ["visible": visible]
+            )
         }
 
         if visible {
             bar.isHidden = false
             if animated {
-                UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseInOut, animations: work)
+                UIView.animate(
+                    withDuration: 0.25, delay: 0, options: .curveEaseInOut,
+                    animations: work, completion: finish
+                )
             } else {
                 work()
+                finish(true)
             }
         } else {
             if animated {
                 UIView.animate(
                     withDuration: 0.25, delay: 0, options: .curveEaseInOut,
                     animations: work,
-                    completion: { _ in bar.isHidden = true }
+                    completion: { _ in
+                        bar.isHidden = true
+                        finish(true)
+                    }
                 )
             } else {
                 work()
                 bar.isHidden = true
+                finish(true)
             }
         }
     }
@@ -130,4 +148,11 @@ class MainTabBarController: UITabBarController {
         playerVC.modalTransitionStyle = .crossDissolve
         present(playerVC, animated: true)
     }
+}
+
+// MARK: - 全局通知名（迷你播放条可见性变化，让各页面浮层单独让位）
+
+extension Notification.Name {
+    /// userInfo: ["visible": Bool]
+    static let miniPlayerVisibilityChanged = Notification.Name("MainTabBarController.miniPlayerVisibilityChanged")
 }

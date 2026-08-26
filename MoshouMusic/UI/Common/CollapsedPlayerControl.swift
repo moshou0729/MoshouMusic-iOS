@@ -30,6 +30,7 @@ class CollapsedPlayerControl: UIView {
     private var lpStartFrame: CGRect = .zero
     private var lpStartLead: CGFloat = 0
     private var lpStartBottom: CGFloat = 0
+    private var lpStartLocation: CGPoint = .zero   // 长按起始触点（用 location 增量算位移，因 UILongPress 无 translation）
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -83,7 +84,8 @@ class CollapsedPlayerControl: UIView {
         // 长按 = 进入拖动态
         longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         longPress.minimumPressDuration = 0.18
-        longPress.allowableMovement = 12
+        // 长按后允许大幅拖动，避免拖动期间被判定为「移动超阈值」而取消识别
+        longPress.allowableMovement = .greatestFiniteMagnitude
         addGestureRecognizer(longPress)
 
         // 单击 = 播放 / 暂停（长按优先，避免拖动 / 长按误触播放）
@@ -155,13 +157,18 @@ class CollapsedPlayerControl: UIView {
             lpStartFrame = self.frame
             lpStartLead = leadC.constant
             lpStartBottom = bottomC.constant
+            lpStartLocation = g.location(in: sup)
             // 抓取反馈：轻微放大
             UIView.animate(withDuration: 0.12) { self.transform = CGAffineTransform(scaleX: 1.12, y: 1.12) }
 
         case .changed:
-            let t = g.translation(in: sup)
-            var x = lpStartFrame.origin.x + t.x
-            var y = lpStartFrame.origin.y + t.y
+            // UILongPressGestureRecognizer 没有 translation(in:)，
+            // 改用起始触点与当前触点的差值作为位移
+            let cur = g.location(in: sup)
+            let dx = cur.x - lpStartLocation.x
+            let dy = cur.y - lpStartLocation.y
+            var x = lpStartFrame.origin.x + dx
+            var y = lpStartFrame.origin.y + dy
             x = min(max(x, margin), w - margin - size)
             y = min(max(y, topMin), topMax)
             leadC.constant = x

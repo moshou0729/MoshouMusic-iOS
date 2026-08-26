@@ -194,7 +194,7 @@
     function handleBoard(info, callback) {
         const rankId = (info && info.bangId) ? String(info.bangId) : '8888'
 
-        const url = 'http://mobiles.kugou.com/api/v3/rank/song?version=9108' +
+        const url = 'https://mobiles.kugou.com/api/v3/rank/song?version=9108' +
             '&ranktype=1&plat=0&pagesize=50&area_code=1&page=1' +
             '&rankid=' + rankId + '&with_res_tag=0'
 
@@ -270,16 +270,20 @@
     }
 
     // ==================== 歌词 ====================
+    // 注意：酷狗歌词接口必须用 HTTPS —— iOS ATS 默认禁止明文 HTTP，
+    // 用 http 会在真机被直接拦截（表现为「有歌放但没歌词」）。
+    // 另外 download 返回的 content 是 base64 编码，必须用
+    // lx.utils.crypto.base64Decode 解码才是明文 LRC。
     function handleLyric(info, callback) {
         const hash = info.hash || info.songmid
         if (!hash) { callback({ message: '缺少歌曲 hash' }, null); return }
 
-        // 第一步：按 hash 搜候选歌词，拿到 id + accesskey
-        const searchUrl = 'http://krcs.kugou.com/search?ver=1&man=yes&client=mobi&hash=' +
+        // 第一步：按 hash 搜候选歌词，拿到 id + accesskey（HTTPS）
+        const searchUrl = 'https://krcs.kugou.com/search?ver=1&man=yes&client=mobi&hash=' +
             encodeURIComponent(String(hash))
 
         lx.request(searchUrl, { method: 'GET', headers: HEADERS, timeout: 15 }, function(err, resp) {
-            if (err) { callback(err, null); return }
+            if (err) { callback(null, { lyric: '', tlyric: '' }); return }
 
             const result = parseJSON(resp.body)
             const cands = result && result.candidates
@@ -289,15 +293,19 @@
             }
 
             const c = cands[0]
-            // 第二步：下载歌词内容（decode=1 直接返回明文 LRC）
-            const dlUrl = 'http://lyrics.kugou.com/download?ver=1&client=pc&fmt=lrc&charset=utf8' +
+            // 第二步：下载歌词内容（HTTPS）
+            const dlUrl = 'https://lyrics.kugou.com/download?ver=1&client=pc&fmt=lrc&charset=utf8' +
                 '&accesskey=' + encodeURIComponent(c.accesskey) +
                 '&id=' + encodeURIComponent(c.id) + '&decode=1'
 
             lx.request(dlUrl, { method: 'GET', headers: HEADERS, timeout: 15 }, function(err2, resp2) {
                 if (err2) { callback(null, { lyric: '', tlyric: '' }); return }
                 const r2 = parseJSON(resp2.body)
-                callback(null, { lyric: (r2 && r2.content) || '', tlyric: '' })
+                // content 为 base64 编码，解码后才是对齐的 LRC 文本
+                const raw = (r2 && r2.content) || ''
+                let lyric = ''
+                try { lyric = lx.utils.crypto.base64Decode(raw) || '' } catch (e) { lyric = '' }
+                callback(null, { lyric: lyric, tlyric: '' })
             })
         })
     }

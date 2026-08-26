@@ -76,13 +76,9 @@ class CollapsedPlayerControl: UIView {
         rightSwipe.direction = .right
         addGestureRecognizer(rightSwipe)
 
-        let upSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeUp))
-        upSwipe.direction = .up
-        addGestureRecognizer(upSwipe)
-
-        // 先判定滑动手势，确认不是「展开」后才交给拖动，避免拖动与展开冲突
+        // 先判定「右滑」手势，确认不是「展开（右滑）」后才交给拖动，
+        // 让上下 / 左方向都能自由拖动换位；上滑不再绑展开，避免与「上拖换位」冲突
         pan.require(toFail: rightSwipe)
-        pan.require(toFail: upSwipe)
     }
 
     private func setupConstraints() {
@@ -129,7 +125,7 @@ class CollapsedPlayerControl: UIView {
         let h = sup.bounds.height
         let insets = sup.safeAreaInsets
         let leftMargin: CGFloat = 0     // 左侧贴边（无空隙）
-        let rightMargin: CGFloat = 12   // 右侧留 12pt
+        let rightMargin: CGFloat = 0    // 右侧同样贴边，与左侧对称无空隙
         let topMin = insets.top + 8
         let topMax = h - insets.bottom - 8 - size
 
@@ -170,7 +166,6 @@ class CollapsedPlayerControl: UIView {
     }
 
     @objc private func handleSwipeRight() { onExpand?() }
-    @objc private func handleSwipeUp() { onExpand?() }
 
     // MARK: - 播放器绑定
 

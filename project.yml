@@ -32,7 +32,7 @@ targets:
       path: MoshouMusic/App/Info.plist
       properties:
         CFBundleDisplayName: 墨守music
-        CFBundleShortVersionString: "1.0.33"
+        CFBundleShortVersionString: "1.0.34"
         CFBundleVersion: "1"
         UILaunchScreen:
           UIColorName: PrimaryColor

@@ -668,4 +668,58 @@ final class PlaylistImporter {
         }
         step()
     }
+
+    // MARK: - 按「平台 + 源列表ID」直接导入（搜索页「歌单」模式点击使用）
+
+    /// 直接按 source + listId 拉取整张歌单并写入本地（网易云 / QQ / 酷狗）。
+    /// 复用 fetchTracks + buildPlaylist 的逐首匹配流程，与「分享链接导入」一致。
+    func importPlaylist(
+        source: String,
+        listId: String,
+        hintName: String? = nil,
+        progress: @escaping (Progress) -> Void,
+        completion: @escaping (Swift.Result<ImportResult, Error>) -> Void
+    ) {
+        let safeProgress: (Progress) -> Void = { p in DispatchQueue.main.async { progress(p) } }
+        let safeComplete: (Swift.Result<ImportResult, Error>) -> Void = { r in DispatchQueue.main.async { completion(r) } }
+
+        let platform: Platform?
+        let platformName: String
+        switch source {
+        case "wy": platform = .netease; platformName = "网易云"
+        case "tx": platform = .qq;      platformName = "QQ音乐"
+        case "kg": platform = .kugou;   platformName = "酷狗"
+        default:    platform = nil;      platformName = ""
+        }
+        guard let p = platform else {
+            safeComplete(.failure(ImportError.parseFailed("暂不支持该音源的歌单导入")))
+            return
+        }
+        let parsed = ParsedLink(platform: p, platformKey: source,
+                                platformName: platformName, type: .playlist, id: listId)
+        safeProgress(Progress(platform: platformName, stage: "正在拉取歌单…", current: 0, total: 0, matched: 0))
+
+        fetchTracks(parsed, progress: safeProgress) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .failure(let e):
+                safeComplete(.failure(e))
+            case .success(let (name, tracks)):
+                guard !tracks.isEmpty else {
+                    safeComplete(.failure(ImportError.empty))
+                    return
+                }
+                let finalName = (hintName?.isEmpty == false) ? hintName! : name
+                self.buildPlaylist(
+                    name: finalName,
+                    platformKey: source,
+                    platformName: platformName,
+                    listId: listId,
+                    tracks: tracks,
+                    progress: safeProgress,
+                    completion: safeComplete
+                )
+            }
+        }
+    }
 }

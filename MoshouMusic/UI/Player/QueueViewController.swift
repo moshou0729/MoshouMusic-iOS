@@ -208,6 +208,7 @@ class QueueCell: UITableViewCell {
             artistLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             artistLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
             artistLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+            artistLabel.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -12),
         ])
     }
 

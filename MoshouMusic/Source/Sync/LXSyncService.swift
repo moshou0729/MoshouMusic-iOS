@@ -546,29 +546,94 @@ final class LXSyncService {
         }
     }
 
-    /// 诊断：向 /ah 发一个带明显非法 m 的 GET，原样返回服务器状态码 / 响应体 / 底层错误。
-    /// 目的：让用户直接看到桌面端对 /ah 的真实响应，区分“服务器不响应（网络/防火墙）”还是“响应了但认证失败（码/协议）”。
-    func probeAH(completion: @escaping (String) -> Void) {
+    /// 诊断：用用户实际输入的同步码做真实 /ah 认证，并把链路各步结果原样返回。
+    ///
+    /// 旧版故意发送非法 `m="__probe_invalid__"`，导致**永远返回 401**，用户即便码正确也看到 401。
+    /// 现在与 `startSync` 走同一套加密流程（AES-128-ECB(keyFromAuthCode(code)) 加密
+    /// `lx-music auth::\n<pub>\n<deviceName>\nlx_music_desktop`），因此 401 现在**真实代表「同步码错误或已失效」**，
+    /// 而不再是诊断按钮自身的假错误。
+    func probeAH(authCode: String, completion: @escaping (String) -> Void) {
         guard let hostPath = hostPathFromConfig() else {
             completion("未配置同步服务地址（请先在上方填写并保存）。"); return
         }
+        let code = authCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            completion("请先在「同步码」框输入桌面端显示的 6 位同步码，再点诊断。"); return
+        }
+
+        var report = "诊断目标：\(hostPath)\n同步码：\(code)\n\n"
+        var steps: [String] = []
+        let group = DispatchGroup()
+        var helloOk = false
+        var idOk = false
+
+        group.enter()
+        getHello(hostPath) { result in
+            switch result {
+            case .success: helloOk = true; steps.append("① /hello：✓ 握手正常")
+            case .failure(let e): steps.append("① /hello：✗ \(e.localizedDescription)")
+            }
+            group.leave()
+        }
+
+        group.enter()
+        getServerId(hostPath) { result in
+            switch result {
+            case .success: idOk = true; steps.append("② /id：✓ 服务 ID 正常")
+            case .failure(let e): steps.append("② /id：✗ \(e.localizedDescription)")
+            }
+            group.leave()
+        }
+
+        group.enter()
+        guard let (pub, priv) = LXSyncCrypto.generateRSAKeyPair() else {
+            steps.append("③ /ah：✗ 本地 RSA 密钥生成失败")
+            group.leave(); return
+        }
+        let aesKey = LXSyncCrypto.keyFromAuthCode(code)
+        let pubB64 = pub
+            .replacingOccurrences(of: "-----BEGIN PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+        let deviceName = UIDevice.current.name
+        let plaintext = "lx-music auth::\n\(pubB64)\n\(deviceName)\nlx_music_desktop"
+        let m = LXSyncCrypto.aesEncryptLX(plaintext: plaintext, keyBase64: aesKey)
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
         req.httpMethod = "GET"
         req.timeoutInterval = 20
-        req.setValue("__probe_invalid__", forHTTPHeaderField: "m")
+        req.setValue(m, forHTTPHeaderField: "m")
         syncHTTPSession.dataTask(with: req) { data, response, error in
-            DispatchQueue.main.async {
-                if let error = error {
-                    let e = error as NSError
-                    completion("【/ah 无响应】\n错误：\(e.localizedDescription)\n(domain=\(e.domain) code=\(e.code))\n\n说明：code=\(e.code) 为超时(-1001)表示手机到桌面端的 /ah 请求没收到回包，几乎都是网络/防火墙问题。")
-                    return
-                }
-                let http = response as? HTTPURLResponse
-                let body = String(data: data ?? Data(), encoding: .utf8) ?? ""
-                let status = http?.statusCode ?? -1
-                completion("【/ah 响应】\nHTTP \(status)\n响应体：\(body.isEmpty ? "(空)" : body)\n\n说明：能收到响应说明网络通；401/Auth failed 表示需要正确的同步码；403/Blocked IP 表示被限流，稍后重试。")
+            defer { group.leave() }
+            if let error = error {
+                let e = error as NSError
+                steps.append("③ /ah：✗ 网络错误（\(e.localizedDescription)，domain=\(e.domain) code=\(e.code)）")
+                return
+            }
+            let http = response as? HTTPURLResponse
+            let body = String(data: data ?? Data(), encoding: .utf8) ?? ""
+            let status = http?.statusCode ?? -1
+            if status == 200 {
+                steps.append("③ /ah：✓ HTTP 200，同步码有效，认证通过。")
+            } else if body.contains("Blocked") {
+                steps.append("③ /ah：✗ HTTP \(status) — IP 被封禁（请求过于频繁，稍后重试）。")
+            } else if body.contains("Auth failed") || status == 401 {
+                steps.append("③ /ah：✗ HTTP \(status) — 同步码错误或已失效（桌面端码每 60 秒轮换，请确保在有效期内使用）。")
+            } else {
+                steps.append("③ /ah：✗ HTTP \(status) — 响应体：\(body.isEmpty ? "(空)" : body)")
             }
         }.resume()
+
+        group.notify(queue: .main) {
+            var summary = report + steps.joined(separator: "\n") + "\n\n"
+            if helloOk && idOk && steps.contains(where: { $0.hasPrefix("③ /ah：✓") }) {
+                summary += "结论：链路正常，同步码有效。若实际同步仍失败，请确认桌面端「同步」服务在同步期间保持运行，且未开启会把局域网请求转公网的 VPN/代理。"
+            } else if !helloOk {
+                summary += "结论：手机连不上桌面同步服务（/hello 失败），几乎都是网络/防火墙问题——确认同一局域网、桌面端同步服务运行、端口放行、关闭 VPN/代理。"
+            } else if helloOk && idOk {
+                summary += "结论：握手与 ID 正常，但 /ah 认证未过。请重新点桌面端的「生成同步码」拿到最新 6 位码，并在 60 秒有效期内完成同步/诊断。"
+            }
+            completion(summary)
+        }
     }
 
     private func notify() {

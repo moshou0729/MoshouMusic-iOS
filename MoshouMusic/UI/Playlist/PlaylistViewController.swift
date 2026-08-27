@@ -232,8 +232,11 @@ class PlaylistViewController: UIViewController {
 
     /// 文件导入：LX 桌面版导出 .lxmc（gzip JSON）或 .json
     private func presentImportFilePicker() {
-        var types: [UTType] = [.json, .plainText, .data]
+        // 用 public.item 兜底：TrollStore 环境下系统可能未把 com.moshou.music.lxmc 注册进全局 UTI 库，
+        // 仅用 .data/.json 会过滤掉「未知类型」的 .lxmc 导致选不到。public.item 可列出任意文件。
+        var types: [UTType] = [.item]
         if let lxmc = UTType(filenameExtension: "lxmc") { types.append(lxmc) }
+        types.append(.json)
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
         picker.delegate = self
         picker.allowsMultipleSelection = false
@@ -243,7 +246,7 @@ class PlaylistViewController: UIViewController {
         importPickerTimeout?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: 12, repeats: false) { [weak self] _ in
             self?.showAlert(title: "文件导入可能不可用",
-                            message: "在 TrollStore 环境下系统文件选择器偶尔选不到文件。可改用「粘贴 JSON 文本」，或在 Files / 分享菜单里用「墨守music」打开 .lxmc 文件。")
+                            message: "在 TrollStore 环境下系统文件选择器偶尔选不到文件。可改用「粘贴 JSON 文本」（限 .json），或在 iOS「文件」App 里长按 .lxmc → 共享 → 墨守music 打开。")
         }
         importPickerTimeout = timer
     }

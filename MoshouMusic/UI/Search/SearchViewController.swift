@@ -22,8 +22,10 @@ class SearchViewController: UIViewController {
     private let emptyLabel = UILabel()
 
     private var searchResults: [Song] = []
+    private var playlistResults: [SearchedPlaylist] = []
     private var currentKeyword: String = ""
     private var searchTask: DispatchWorkItem?
+    private var hud: UIAlertController?
 
     // MARK: - Lifecycle
 
@@ -80,6 +82,7 @@ class SearchViewController: UIViewController {
         tableView.dataSource = self
         tableView.delegate = self
         tableView.register(SongCell.self, forCellReuseIdentifier: SongCell.reuseIdentifier)
+        tableView.register(PlaylistSearchCell.self, forCellReuseIdentifier: PlaylistSearchCell.reuseIdentifier)
         tableView.backgroundColor = .clear
         tableView.separatorStyle = .none
         tableView.estimatedRowHeight = 68
@@ -201,9 +204,11 @@ class SearchViewController: UIViewController {
 
     @objc private func modeChanged(_ sender: UISegmentedControl) {
         searchMode = SearchMode(rawValue: sender.selectedSegmentIndex) ?? .song
-        // 仅影响点击播放的行为，无需重新搜索；刷新下方提示
-        if searchResults.isEmpty {
-            emptyLabel.text = searchMode == .playlist ? "搜索你喜欢的音乐（歌单模式：点击将整列作为播放队列）" : "搜索你喜欢的音乐"
+        // 歌曲 / 歌单 是两种不同搜索，切换后若已有关键词则立即重搜
+        if !currentKeyword.isEmpty {
+            performSearch()
+        } else {
+            emptyLabel.text = searchMode == .playlist ? "搜索你喜欢的歌单" : "搜索你喜欢的音乐"
         }
     }
 
@@ -215,37 +220,67 @@ class SearchViewController: UIViewController {
         emptyLabel.text = "搜索中..."
 
         let source = ConfigStore.shared.currentSource
-        ScriptEngine.shared.search(
-            keyword: currentKeyword,
-            page: 1,
-            source: source
-        ) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-
-                switch result {
-                case .success(let list):
-                    self.searchResults = list.compactMap { Song(from: $0, source: source) }
-                    // 原唱综合评分高的优先（同时排除翻唱/live/伴奏版）；同等评分再看音质
-                    self.searchResults.sort {
-                        if $0.originalScore != $1.originalScore {
-                            return $0.originalScore > $1.originalScore
+        if searchMode == .playlist {
+            // 歌单模式：原生逐音源搜索「歌单名字 + id」
+            PlaylistSearchService.shared.search(keyword: currentKeyword, source: source) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    switch result {
+                    case .success(let list):
+                        self.playlistResults = list
+                        self.tableView.reloadData()
+                        if list.isEmpty {
+                            let supported = PlaylistSearchService.supportedSources.contains(source)
+                            self.emptyLabel.text = supported
+                                ? "没有找到相关歌单"
+                                : "该音源暂不支持歌单搜索（请切换到 网易云 / QQ / 酷狗）"
+                        } else {
+                            self.emptyLabel.text = ""
                         }
-                        if $0.qualityRank != $1.qualityRank {
-                            return $0.qualityRank > $1.qualityRank
-                        }
-                        return false
+                        self.emptyLabel.isHidden = !list.isEmpty
+                    case .failure(let error):
+                        Logger.error("歌单搜索失败: \(error.localizedDescription)")
+                        self.playlistResults = []
+                        self.tableView.reloadData()
+                        self.emptyLabel.text = "歌单搜索失败：\(error.localizedDescription)"
+                        self.emptyLabel.isHidden = false
                     }
-                    self.tableView.reloadData()
-                    self.emptyLabel.text = self.searchResults.isEmpty ? "没有找到相关音乐" : ""
-                    self.emptyLabel.isHidden = !self.searchResults.isEmpty
+                }
+            }
+        } else {
+            // 歌曲模式：走音源脚本 musicSearch
+            ScriptEngine.shared.search(
+                keyword: currentKeyword,
+                page: 1,
+                source: source
+            ) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
 
-                case .failure(let error):
-                    Logger.error("搜索失败: \(error.localizedDescription)")
-                    self.searchResults = []
-                    self.tableView.reloadData()
-                    self.emptyLabel.text = "搜索失败，请检查音源脚本"
-                    self.emptyLabel.isHidden = false
+                    switch result {
+                    case .success(let list):
+                        self.searchResults = list.compactMap { Song(from: $0, source: source) }
+                        // 原唱综合评分高的优先（同时排除翻唱/live/伴奏版）；同等评分再看音质
+                        self.searchResults.sort {
+                            if $0.originalScore != $1.originalScore {
+                                return $0.originalScore > $1.originalScore
+                            }
+                            if $0.qualityRank != $1.qualityRank {
+                                return $0.qualityRank > $1.qualityRank
+                            }
+                            return false
+                        }
+                        self.tableView.reloadData()
+                        self.emptyLabel.text = self.searchResults.isEmpty ? "没有找到相关音乐" : ""
+                        self.emptyLabel.isHidden = !self.searchResults.isEmpty
+
+                    case .failure(let error):
+                        Logger.error("搜索失败: \(error.localizedDescription)")
+                        self.searchResults = []
+                        self.tableView.reloadData()
+                        self.emptyLabel.text = "搜索失败，请检查音源脚本"
+                        self.emptyLabel.isHidden = false
+                    }
                 }
             }
         }
@@ -295,10 +330,15 @@ extension SearchViewController {
 extension SearchViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return searchResults.count
+        return searchMode == .playlist ? playlistResults.count : searchResults.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        if searchMode == .playlist {
+            let cell = tableView.dequeueReusableCell(withIdentifier: PlaylistSearchCell.reuseIdentifier, for: indexPath) as! PlaylistSearchCell
+            cell.configure(with: playlistResults[indexPath.row], index: indexPath.row)
+            return cell
+        }
         let cell = tableView.dequeueReusableCell(withIdentifier: SongCell.reuseIdentifier, for: indexPath) as! SongCell
         let song = searchResults[indexPath.row]
         cell.configure(with: song, index: indexPath.row)
@@ -311,14 +351,14 @@ extension SearchViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        let song = searchResults[indexPath.row]
-        switch searchMode {
-        case .song:
+        tableView.deselectRow(at: indexPath, animated: true)
+        if searchMode == .playlist {
+            // 歌单模式：点击某一歌单 → 拉取整张并播放
+            importPlaylist(playlistResults[indexPath.row])
+        } else {
             // 歌曲模式：只播放这一首
+            let song = searchResults[indexPath.row]
             PlayerManager.shared.play(song: song, queue: [song])
-        case .playlist:
-            // 歌单模式：清空当前队列，把整列结果作为播放队列（点击任意一首都替换队列）
-            PlayerManager.shared.play(song: song, queue: searchResults)
         }
     }
 }
@@ -373,5 +413,51 @@ extension SearchViewController {
             }
         })
         present(alert, animated: true)
+    }
+}
+
+// MARK: - 歌单导入（歌单搜索点击）
+
+extension SearchViewController {
+    /// 点击搜索结果里的某个歌单：拉取整张 → 匹配本机音源 → 加入队列并播放
+    private func importPlaylist(_ pl: SearchedPlaylist) {
+        let hud = showHUD("正在拉取歌单「\(pl.name)」…")
+        PlaylistImporter.shared.importPlaylist(source: pl.source, listId: pl.sourceListId, hintName: pl.name) { result in
+            DispatchQueue.main.async {
+                hud.dismiss(animated: true)
+                self.hud = nil
+                switch result {
+                case .failure(let e):
+                    self.showAlert("导入失败", message: e.localizedDescription)
+                case .success(let res):
+                    let songs = res.playlist.songs
+                    if let first = songs.first {
+                        PlayerManager.shared.play(song: first, queue: songs)
+                    }
+                    self.showToast("已导入「\(res.playlistName)」：\(res.matched)/\(res.total) 首匹配，已加入播放队列")
+                }
+            }
+        }
+    }
+
+    private func showHUD(_ msg: String) -> UIAlertController {
+        let a = UIAlertController(title: nil, message: msg, preferredStyle: .alert)
+        present(a, animated: true)
+        hud = a
+        return a
+    }
+
+    private func showAlert(_ title: String, message: String) {
+        let a = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        a.addAction(UIAlertAction(title: "确定", style: .default))
+        present(a, animated: true)
+    }
+
+    private func showToast(_ msg: String) {
+        let alert = UIAlertController(title: nil, message: msg, preferredStyle: .alert)
+        present(alert, animated: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            alert.dismiss(animated: true)
+        }
     }
 }

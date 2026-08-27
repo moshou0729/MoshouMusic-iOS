@@ -361,9 +361,10 @@ class LXSyncViewController: UIViewController {
     }
 
     @objc private func diagTapped() {
-        syncStatusLabel.text = "正在探测 /ah …（最多 20 秒）"
+        let code = (codeField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        syncStatusLabel.text = "正在用同步码做真实 /ah 认证…（最多 20 秒）"
         syncStatusLabel.textColor = Theme.warning
-        LXSyncService.shared.probeAH { [weak self] result in
+        LXSyncService.shared.probeAH(authCode: code) { [weak self] result in
             DispatchQueue.main.async {
                 self?.syncStatusLabel.text = result
             }
@@ -392,15 +393,19 @@ class LXSyncViewController: UIViewController {
     // MARK: - 歌单文件互导 (Phase 1)
 
     @objc private func importFromFileTapped() {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.json])
+        // 用 .item 兜底，TrollStore 沙盒下才能列出 .lxmc / .json 等任意文件
+        var types: [UTType] = [.item]
+        if let lxmc = UTType(filenameExtension: "lxmc") { types.append(lxmc) }
+        types.append(.json)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
         picker.delegate = self
         picker.allowsMultipleSelection = false
         present(picker, animated: true)
 
-        // TrollStore 沙盒下文档选择器常无回调，加超时兜底提示
+        // TrollStore 沙盒下文档选择器常无回调，加超时兜底提示（含导入/导出操作说明）
         importPickerTimeout?.invalidate()
         importPickerTimeout = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
-            self?.resultLabel.text = "提示：TrollStore 环境下系统文件选择器可能选不到文件。可改用「导入 Documents/lx-playlist.json」：把 LX 导出的 JSON 用 Filza/Files 放进 App 沙盒的 Documents 目录后点此按钮。"
+            self?.resultLabel.text = "提示：若文件选择器选不到 .lxmc / .json，可改用「导入 Documents/lx-playlist.json」：把 LX 桌面版导出的文件用 Filza/Files 放进 App 沙盒 Documents 目录后点此按钮。\n\n导入/导出说明：\n· 导出：点「导出我的歌单为 JSON」→ 用分享面板存到 Files / AirDrop（文件名 MoshouMusic-lx-export.json）。\n· 导入：本机文件用上方选择器选 .lxmc（LX 数据备份，gzip 压缩）或 .json；或把文件命名为 lx-playlist.json 放进 Documents 后点「导入 Documents/lx-playlist.json」。"
         }
     }
 
@@ -421,7 +426,9 @@ class LXSyncViewController: UIViewController {
             return
         }
         do {
-            let imports = try LXPlaylistBridge.parse(data: data)
+            // parseLXMC 会先嗅探 gzip 魔数（.lxmc 为 gzip 压缩 JSON），再走通用解析，
+            // 因此 .lxmc 与 .json 都能正确导入
+            let imports = try LXPlaylistBridge.parseLXMC(data: data)
             var totalPlaylists = 0, totalSongs = 0
             for imp in imports {
                 let added = PlaylistStore.shared.mergeSongs(imp.songs, intoPlaylistNamed: imp.name)

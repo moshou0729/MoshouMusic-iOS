@@ -21,6 +21,7 @@ class PlayerViewController: UIViewController {
     private let closeButton = UIButton(type: .system)
     private let sourceLabel = UILabel()
     private let queueButton = UIButton(type: .system)
+    private let controlBar = UIStackView()   // 底部控制栏：等大小、等间距
     private let errorLabel = UILabel()
 
     private var currentArtworkImage: UIImage?
@@ -87,12 +88,6 @@ class PlayerViewController: UIViewController {
         errorLabel.isHidden = true
         view.addSubview(errorLabel)
 
-        // 队列按钮（查看当前播放清单）
-        queueButton.setImage(UIImage(systemName: "music.note.list"), for: .normal)
-        queueButton.tintColor = .white.withAlphaComponent(0.7)
-        queueButton.addTarget(self, action: #selector(queueTapped), for: .touchUpInside)
-        view.addSubview(queueButton)
-
         // 封面
         artworkImageView.contentMode = .scaleAspectFill
         artworkImageView.layer.cornerRadius = Theme.cornerLarge
@@ -144,8 +139,8 @@ class PlayerViewController: UIViewController {
         durationLabel.textAlignment = .right
         view.addSubview(durationLabel)
 
-        // 控制按钮
-        playModeButton.tintColor = .white.withAlphaComponent(0.7)
+        // 控制按钮（统一放进底部 controlBar：等大小、等间距）
+        playModeButton.tintColor = .white.withAlphaComponent(0.85)
         playModeButton.addTarget(self, action: #selector(playModeTapped), for: .touchUpInside)
 
         previousButton.setImage(UIImage(systemName: "backward.fill"), for: .normal)
@@ -160,19 +155,40 @@ class PlayerViewController: UIViewController {
         nextButton.tintColor = .white
         nextButton.addTarget(self, action: #selector(nextTapped), for: .touchUpInside)
 
-        [playModeButton, previousButton, playButton, nextButton].forEach {
-            view.addSubview($0)
+        queueButton.setImage(UIImage(systemName: "music.note.list"), for: .normal)
+        queueButton.tintColor = .white.withAlphaComponent(0.85)
+        queueButton.addTarget(self, action: #selector(queueTapped), for: .touchUpInside)
+
+        // 五个按钮等大小、等间距放进底部控制栏
+        let barButtons = [playModeButton, previousButton, playButton, nextButton, queueButton]
+        barButtons.forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            $0.backgroundColor = UIColor(white: 1, alpha: 0.12)
+            $0.layer.cornerRadius = 28
         }
+        controlBar.axis = .horizontal
+        controlBar.alignment = .center
+        controlBar.distribution = .equalSpacing
+        controlBar.translatesAutoresizingMaskIntoConstraints = false
+        for b in barButtons { controlBar.addArrangedSubview(b) }
+        view.addSubview(controlBar)
+
+        // 封面下滑手势：快速下滑 = 缩小/关闭播放页
+        let downSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
+        downSwipe.direction = .down
+        downSwipe.require(toFail: scrubLongPress)
+        artworkImageView.addGestureRecognizer(downSwipe)
+        artworkImageView.isUserInteractionEnabled = true
 
         setupConstraints()
         setupSwipeGestures()
     }
 
     private func setupConstraints() {
-        let allViews: [UIView] = [backgroundView, closeButton, sourceLabel, queueButton, errorLabel, artworkImageView,
+        let allViews: [UIView] = [backgroundView, closeButton, sourceLabel, errorLabel, artworkImageView,
                                    titleLabel, artistLabel, lyricsScrollView, lyricsLabel,
                                    progressSlider, currentTimeLabel, durationLabel,
-                                   playModeButton, previousButton, playButton, nextButton]
+                                   controlBar]
         allViews.forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
 
         let screenWidth = UIScreen.main.bounds.width
@@ -193,15 +209,9 @@ class PlayerViewController: UIViewController {
 
             // 源标签（高度 36 保证热区够大）
             sourceLabel.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
-            sourceLabel.trailingAnchor.constraint(equalTo: queueButton.leadingAnchor, constant: -8),
+            sourceLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             sourceLabel.heightAnchor.constraint(equalToConstant: 36),
             sourceLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
-
-            // 队列按钮（查看当前播放清单）
-            queueButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
-            queueButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            queueButton.widthAnchor.constraint(equalToConstant: 36),
-            queueButton.heightAnchor.constraint(equalToConstant: 36),
 
             // 错误提示条
             errorLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 8),
@@ -237,7 +247,7 @@ class PlayerViewController: UIViewController {
             lyricsLabel.bottomAnchor.constraint(equalTo: lyricsScrollView.bottomAnchor, constant: -20),
 
             // 进度条
-            progressSlider.bottomAnchor.constraint(equalTo: playButton.topAnchor, constant: -24),
+            progressSlider.bottomAnchor.constraint(equalTo: controlBar.topAnchor, constant: -24),
             progressSlider.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
             progressSlider.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
             progressSlider.heightAnchor.constraint(equalToConstant: 30),
@@ -251,26 +261,23 @@ class PlayerViewController: UIViewController {
             durationLabel.trailingAnchor.constraint(equalTo: progressSlider.trailingAnchor),
             durationLabel.widthAnchor.constraint(equalToConstant: 50),
 
-            // 控制
-            playButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -24),
-            playButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            playButton.widthAnchor.constraint(equalToConstant: 72),
-            playButton.heightAnchor.constraint(equalToConstant: 72),
+            // 底部控制栏：等大小、等间距
+            controlBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
+            controlBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
+            controlBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -28),
+            controlBar.heightAnchor.constraint(equalToConstant: 56),
 
-            previousButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            previousButton.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: -40),
-            previousButton.widthAnchor.constraint(equalToConstant: 48),
-            previousButton.heightAnchor.constraint(equalToConstant: 48),
-
-            nextButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            nextButton.leadingAnchor.constraint(equalTo: playButton.trailingAnchor, constant: 40),
-            nextButton.widthAnchor.constraint(equalToConstant: 48),
-            nextButton.heightAnchor.constraint(equalToConstant: 48),
-
-            playModeButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            playModeButton.trailingAnchor.constraint(equalTo: previousButton.leadingAnchor, constant: -24),
-            playModeButton.widthAnchor.constraint(equalToConstant: 36),
-            playModeButton.heightAnchor.constraint(equalToConstant: 36),
+            // 五个按钮统一 56×56
+            playModeButton.widthAnchor.constraint(equalToConstant: 56),
+            playModeButton.heightAnchor.constraint(equalToConstant: 56),
+            previousButton.widthAnchor.constraint(equalToConstant: 56),
+            previousButton.heightAnchor.constraint(equalToConstant: 56),
+            playButton.widthAnchor.constraint(equalToConstant: 56),
+            playButton.heightAnchor.constraint(equalToConstant: 56),
+            nextButton.widthAnchor.constraint(equalToConstant: 56),
+            nextButton.heightAnchor.constraint(equalToConstant: 56),
+            queueButton.widthAnchor.constraint(equalToConstant: 56),
+            queueButton.heightAnchor.constraint(equalToConstant: 56),
         ])
     }
 
@@ -382,6 +389,9 @@ class PlayerViewController: UIViewController {
         titleLabel.text = song.name
         artistLabel.text = song.singer
         setSourceLabel(PlayerManager.shared.currentSource)
+        // 打开播放页时立即显示播放模式/播放按钮图标，避免按钮“空白”看起来像隐藏
+        playModeButton.setImage(UIImage(systemName: PlayerManager.shared.playMode.iconName), for: .normal)
+        playButton.setImage(UIImage(systemName: PlayerManager.shared.isPlaying ? "pause.fill" : "play.fill"), for: .normal)
     }
 
     /// 带箭头暗示可点换源
@@ -468,6 +478,11 @@ class PlayerViewController: UIViewController {
     // MARK: - Actions
 
     @objc private func closeTapped() {
+        dismiss(animated: true)
+    }
+
+    /// 封面快速下滑 = 缩小/关闭播放页
+    @objc private func handleSwipeDown() {
         dismiss(animated: true)
     }
 

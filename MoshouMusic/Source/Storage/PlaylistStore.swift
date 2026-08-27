@@ -48,7 +48,11 @@ class PlaylistStore {
             Logger.error("保存歌单失败: \(error)")
         }
 
-        NotificationCenter.default.post(name: PlaylistStore.didChangeNotification, object: nil)
+        // 通知统一在主线程派发：LX 同步路径会在后台线程调用 save()，
+        // 若在此直接 post，观察者（如歌单列表 reload）会在后台线程修改布局引擎而崩溃。
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: PlaylistStore.didChangeNotification, object: nil)
+        }
     }
 
     // MARK: - 默认歌单

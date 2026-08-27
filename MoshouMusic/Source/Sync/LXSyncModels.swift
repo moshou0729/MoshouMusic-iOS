@@ -210,7 +210,6 @@ enum LXSyncModels {
                 }
             }
         }
-        NotificationCenter.default.post(name: PlaylistStore.didChangeNotification, object: nil)
     }
 
     private static func replaceOrCreate(id: String, name: String, songs: [Song], in lists: inout [Playlist]) {
@@ -332,6 +331,5 @@ enum LXSyncModels {
         default:
             Logger.error("LX 未知 list action: \(action.action)")
         }
-        NotificationCenter.default.post(name: PlaylistStore.didChangeNotification, object: nil)
     }
 }

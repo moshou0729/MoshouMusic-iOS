@@ -512,7 +512,12 @@ final class LXSyncService {
     // MARK: - Helpers
 
     private func notify() {
-        NotificationCenter.default.post(name: Self.stateChangedNotification, object: self)
+        // 状态变化会驱动 UI 刷新（LXSyncViewController.lxStateChanged），
+        // 而本服务大量回调来自 URLSession / syncQueue 后台线程，
+        // 必须回到主线程 post，否则观察者会在后台线程触碰布局引擎导致崩溃。
+        DispatchQueue.main.async { [weak self] in
+            NotificationCenter.default.post(name: Self.stateChangedNotification, object: self)
+        }
     }
 
     /// 接受 `192.168.1.5:23332`/`example.com/lxsync`/`http://...` 等多种写法

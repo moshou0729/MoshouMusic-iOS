@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 
 /// 歌单页 — 我的列表管理
 class PlaylistViewController: UIViewController {
@@ -188,6 +189,30 @@ class PlaylistViewController: UIViewController {
     @objc private func importTapped() {
         let alert = UIAlertController(
             title: "导入歌单",
+            message: "选择导入方式",
+            preferredStyle: .actionSheet
+        )
+        alert.addAction(UIAlertAction(title: "从分享链接导入", style: .default) { [weak self] _ in
+            self?.presentLinkImport()
+        })
+        alert.addAction(UIAlertAction(title: "从文件导入 (.lxmc/.json)", style: .default) { [weak self] _ in
+            self?.presentImportFilePicker()
+        })
+        alert.addAction(UIAlertAction(title: "粘贴 JSON 文本", style: .default) { [weak self] _ in
+            self?.presentPasteJSON()
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let pop = alert.popoverPresentationController {
+            pop.sourceView = view
+            pop.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+        }
+        present(alert, animated: true)
+    }
+
+    /// 链接导入弹窗
+    private func presentLinkImport() {
+        let alert = UIAlertController(
+            title: "从分享链接导入",
             message: "粘贴网易云 / QQ音乐 / 酷狗的分享链接，自动匹配本机音源后加入歌单",
             preferredStyle: .alert
         )
@@ -203,6 +228,55 @@ class PlaylistViewController: UIViewController {
             self.runImport(link: link)
         })
         present(alert, animated: true)
+    }
+
+    /// 文件导入：LX 桌面版导出 .lxmc（gzip JSON）或 .json
+    private func presentImportFilePicker() {
+        var types: [UTType] = [.json, .plainText, .data]
+        if let lxmc = UTType(filenameExtension: "lxmc") { types.append(lxmc) }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+
+        // TrollStore 沙盒下文档选择器常无回调，加超时兜底提示
+        importPickerTimeout?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 12, repeats: false) { [weak self] _ in
+            self?.showAlert(title: "文件导入可能不可用",
+                            message: "在 TrollStore 环境下系统文件选择器偶尔选不到文件。可改用「粘贴 JSON 文本」，或在 Files / 分享菜单里用「墨守music」打开 .lxmc 文件。")
+        }
+        importPickerTimeout = timer
+    }
+
+    private var importPickerTimeout: Timer?
+
+    /// 粘贴 JSON 文本（.lxmc 需先解压为 JSON 再粘贴）
+    private func presentPasteJSON() {
+        let alert = UIAlertController(title: "粘贴歌单 JSON", message: "把 LX 导出文件的 JSON 内容粘贴到此处", preferredStyle: .alert)
+        alert.addTextField { tf in
+            tf.placeholder = "粘贴 JSON…"
+            tf.keyboardType = .default
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "导入", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            guard let text = alert.textFields?.first?.text, !text.isEmpty,
+                  let data = text.data(using: .utf8) else { return }
+            self.importLXData(data)
+        })
+        present(alert, animated: true)
+    }
+
+    /// 解析 LX 文件数据并写入本地歌单
+    func importLXData(_ data: Data) {
+        do {
+            let lists = try LXPlaylistBridge.parseLXMC(data: data)
+            let (pls, songs) = LXPlaylistBridge.importParsed(lists)
+            showAlert(title: "导入成功",
+                      message: "共导入 \(pls) 个歌单，\(songs) 首歌曲")
+        } catch {
+            showAlert(title: "导入失败", message: error.localizedDescription)
+        }
     }
 
     private func runImport(link: String) {
@@ -234,6 +308,29 @@ class PlaylistViewController: UIViewController {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好的", style: .default))
         present(alert, animated: true)
+    }
+}
+
+// MARK: - 文件导入代理
+
+extension PlaylistViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        importPickerTimeout?.invalidate()
+        importPickerTimeout = nil
+        guard let url = urls.first else { return }
+        let secured = url.startAccessingSecurityScopedResource()
+        defer { if secured { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            importLXData(data)
+        } catch {
+            showAlert(title: "读取文件失败", message: error.localizedDescription)
+        }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        importPickerTimeout?.invalidate()
+        importPickerTimeout = nil
     }
 }
 
@@ -355,7 +452,7 @@ class PlaylistCell: UITableViewCell {
 
 class PlaylistDetailViewController: UIViewController {
 
-    private let playlist: Playlist
+    private var playlist: Playlist
     private let tableView = UITableView()
 
     init(playlist: Playlist) {
@@ -385,6 +482,64 @@ class PlaylistDetailViewController: UIViewController {
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+
+        // F5: 在线导入且保留链接的歌单，提供「更新歌单」按钮
+        if !playlist.sourceListId.isEmpty, playlist.location == "online" {
+            navigationItem.rightBarButtonItem = UIBarButtonItem(
+                title: "更新歌单", style: .plain, target: self, action: #selector(updateTapped)
+            )
+        }
+
+        // 歌单被更新（replaceSongs）后刷新本页
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(playlistStoreChanged),
+            name: PlaylistStore.didChangeNotification, object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func playlistStoreChanged() {
+        if let updated = PlaylistStore.shared.get(id: playlist.id) {
+            playlist = updated
+            title = playlist.name
+            tableView.reloadData()
+        }
+    }
+
+    // MARK: - 更新歌单
+
+    @objc private func updateTapped() {
+        let alert = UIAlertController(title: "正在更新歌单…", message: "准备中", preferredStyle: .alert)
+        present(alert, animated: true)
+
+        PlaylistImporter.shared.updatePlaylist(playlistId: playlist.id, progress: { [weak alert] p in
+            alert?.message = "\(p.stage)\n已匹配 \(p.matched)/\(p.total)"
+        }) { [weak self] result in
+            alert.dismiss(animated: true) {
+                guard let self = self else { return }
+                switch result {
+                case .failure(let e):
+                    self.showDetailResult(title: "更新失败", message: e.localizedDescription)
+                case .success(let r):
+                    var msg = "更新完成\n平台：\(r.platform)\n共 \(r.total) 首，成功匹配 \(r.matched) 首"
+                    if !r.skipped.isEmpty {
+                        let names = r.skipped.prefix(5).map { "· \($0.name) - \($0.artist)" }.joined(separator: "\n")
+                        msg += "\n\n未找到可播放版本（\(r.skipped.count) 首）：\n\(names)"
+                        if r.skipped.count > 5 { msg += "\n…" }
+                    }
+                    self.showDetailResult(title: "已更新「\(r.playlistName)」", message: msg)
+                }
+            }
+        }
+    }
+
+    private func showDetailResult(title: String, message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好的", style: .default))
+        present(alert, animated: true)
     }
 }
 

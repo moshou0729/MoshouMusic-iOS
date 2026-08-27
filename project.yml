@@ -32,7 +32,7 @@ targets:
       path: MoshouMusic/App/Info.plist
       properties:
         CFBundleDisplayName: 墨守music
-        CFBundleShortVersionString: "1.0.32"
+        CFBundleShortVersionString: "1.0.31"
         CFBundleVersion: "1"
         UILaunchScreen:
           UIColorName: PrimaryColor
@@ -50,6 +50,25 @@ targets:
         NSAppleMusicUsageDescription: 墨守music需要音乐权限以播放音乐
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: LX Music Playlist
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.moshou.music.lxmc
+          - CFBundleTypeName: JSON Playlist
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.json
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.moshou.music.lxmc
+            UTTypeDescription: LX Music Compressed Playlist
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - lxmc
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.moshou.music

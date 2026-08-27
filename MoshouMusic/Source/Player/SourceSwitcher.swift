@@ -259,11 +259,31 @@ final class SourceSwitcher {
     // MARK: - 匹配打分
 
     /// 在搜索结果中挑最接近的一首
+    ///
+    /// 匹配原则（F4 强化）：必须结合「歌名 + 歌手」。
+    /// 旧逻辑只对歌手轻微加分，导致换源/导入时经常选中「歌名相同但歌手不对」的版本。
+    /// 现在：
+    /// - 目标歌手非空时，先判断是否存在「歌手对得上」的候选。
+    /// - 若存在，则直接排除「歌手明显不符」的候选（不与其竞争），让歌手对得上的胜出。
+    /// - 若不存在任何歌手对得上的候选（纯属音源歌手字段缺失/不一致），才退而求其次，
+    ///   但仍对「歌手明显不符」者显著扣分，避免它排在前面。
     static func bestMatch(in songs: [Song], name: String, singer: String) -> Song? {
         guard !songs.isEmpty else { return nil }
 
         let targetName = normalize(name)
         let targetSinger = normalize(singer)
+
+        // 先扫一遍：是否存在歌手能对应上的候选
+        var hasSingerMatch = false
+        if !targetSinger.isEmpty {
+            for song in songs {
+                let s = normalize(song.singer)
+                if s == targetSinger || s.contains(targetSinger) || targetSinger.contains(s) {
+                    hasSingerMatch = true
+                    break
+                }
+            }
+        }
 
         var best: (song: Song, score: Int)?
 
@@ -279,6 +299,19 @@ final class SourceSwitcher {
             if !targetSinger.isEmpty {
                 if s == targetSinger { score += 50 }
                 else if s.contains(targetSinger) || targetSinger.contains(s) { score += 25 }
+                else if s.isEmpty {
+                    // 候选无歌手信息：中性，不加分也不重罚（避免误杀）
+                    score += 0
+                } else {
+                    // 候选歌手与目标明显不符
+                    if hasSingerMatch {
+                        // 已有更对的候选，直接排除这首错的
+                        continue
+                    } else {
+                        // 实在没有对的，只能退而求其次，但显著扣分
+                        score -= 70
+                    }
+                }
             }
 
             // 有时长信息的更可信

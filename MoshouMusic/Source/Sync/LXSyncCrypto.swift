@@ -138,6 +138,12 @@ enum LXSyncCrypto {
     /// 标准 gzip 解码（输入 base64，对应 LX 的 cg_ 前缀内容）-> utf8 字符串
     static func gunzipString(_ base64: String) -> String? {
         guard let data = Data(base64Encoded: base64) else { return nil }
+        return gunzipData(data).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    /// 标准 gzip 解码（输入原始 Data，首两字节为 0x1f 0x8b）-> 解压后的 Data
+    /// 供 LX 桌面版导出的 .lxmc（gzip 压缩的 JSON）使用
+    static func gunzipData(_ data: Data) -> Data? {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("lxg_\(UUID().uuidString).gz")
         try? data.write(to: tmp)
@@ -159,7 +165,7 @@ enum LXSyncCrypto {
             if n <= 0 { break }
             out.append(contentsOf: buf[0..<n])
         }
-        return String(data: out, encoding: .utf8)
+        return out
     }
 
     // MARK: - 线格式 encodeData / decodeData（LX 约定 >1024 字节 gzip 加 cg_ 前缀）

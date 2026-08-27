@@ -9,6 +9,15 @@ class SearchViewController: UIViewController {
     /// 顶部横向源切换
     private let chipRow = UIStackView()
 
+    /// 搜索模式：歌曲（点击只播这一首）/ 歌单（点击把队列替换为结果列表）
+    private enum SearchMode: Int { case song = 0, playlist = 1 }
+    private var searchMode: SearchMode = .song
+    private let modeSegment: UISegmentedControl = {
+        let sg = UISegmentedControl(items: ["歌曲", "歌单"])
+        sg.selectedSegmentIndex = SearchMode.song.rawValue
+        return sg
+    }()
+
     private let tableView = UITableView()
     private let emptyLabel = UILabel()
 
@@ -51,6 +60,13 @@ class SearchViewController: UIViewController {
         }
         view.addSubview(searchField)
 
+        // 搜索模式分段控件（歌曲 / 歌单）
+        modeSegment.selectedSegmentTintColor = Theme.primary
+        modeSegment.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
+        modeSegment.setTitleTextAttributes([.foregroundColor: Theme.primary], for: .normal)
+        modeSegment.addTarget(self, action: #selector(modeChanged(_:)), for: .valueChanged)
+        view.addSubview(modeSegment)
+
         // 顶部横向 5 chip 行
         chipRow.axis = .horizontal
         chipRow.spacing = 10
@@ -81,7 +97,7 @@ class SearchViewController: UIViewController {
     }
 
     private func setupConstraints() {
-        [searchField, chipRow, tableView, emptyLabel].forEach {
+        [searchField, modeSegment, chipRow, tableView, emptyLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
         }
 
@@ -91,8 +107,13 @@ class SearchViewController: UIViewController {
             searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
 
-            // 横向 chip 行：紧贴搜索框下沿，左右各 16pt 边距 — 撑满整行避免右侧大空白
-            chipRow.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
+            // 搜索模式分段：紧贴搜索框下沿
+            modeSegment.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
+            modeSegment.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            modeSegment.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            // 横向 chip 行：紧贴分段下沿，左右各 16pt 边距 — 撑满整行避免右侧大空白
+            chipRow.topAnchor.constraint(equalTo: modeSegment.bottomAnchor, constant: 12),
             chipRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             chipRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             chipRow.heightAnchor.constraint(equalToConstant: 38),
@@ -175,6 +196,14 @@ class SearchViewController: UIViewController {
         // 重新搜索
         if !currentKeyword.isEmpty {
             performSearch()
+        }
+    }
+
+    @objc private func modeChanged(_ sender: UISegmentedControl) {
+        searchMode = SearchMode(rawValue: sender.selectedSegmentIndex) ?? .song
+        // 仅影响点击播放的行为，无需重新搜索；刷新下方提示
+        if searchResults.isEmpty {
+            emptyLabel.text = searchMode == .playlist ? "搜索你喜欢的音乐（歌单模式：点击将整列作为播放队列）" : "搜索你喜欢的音乐"
         }
     }
 
@@ -283,7 +312,14 @@ extension SearchViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         let song = searchResults[indexPath.row]
-        PlayerManager.shared.play(song: song, queue: searchResults)
+        switch searchMode {
+        case .song:
+            // 歌曲模式：只播放这一首
+            PlayerManager.shared.play(song: song, queue: [song])
+        case .playlist:
+            // 歌单模式：清空当前队列，把整列结果作为播放队列（点击任意一首都替换队列）
+            PlayerManager.shared.play(song: song, queue: searchResults)
+        }
     }
 }
 

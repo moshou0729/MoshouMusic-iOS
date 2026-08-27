@@ -20,6 +20,7 @@ class PlayerViewController: UIViewController {
     private let nextButton = UIButton(type: .system)
     private let closeButton = UIButton(type: .system)
     private let sourceLabel = UILabel()
+    private let queueButton = UIButton(type: .system)
     private let errorLabel = UILabel()
 
     private var currentArtworkImage: UIImage?
@@ -85,6 +86,12 @@ class PlayerViewController: UIViewController {
         errorLabel.numberOfLines = 0
         errorLabel.isHidden = true
         view.addSubview(errorLabel)
+
+        // 队列按钮（查看当前播放清单）
+        queueButton.setImage(UIImage(systemName: "music.note.list"), for: .normal)
+        queueButton.tintColor = .white.withAlphaComponent(0.7)
+        queueButton.addTarget(self, action: #selector(queueTapped), for: .touchUpInside)
+        view.addSubview(queueButton)
 
         // 封面
         artworkImageView.contentMode = .scaleAspectFill
@@ -162,7 +169,7 @@ class PlayerViewController: UIViewController {
     }
 
     private func setupConstraints() {
-        let allViews: [UIView] = [backgroundView, closeButton, sourceLabel, errorLabel, artworkImageView,
+        let allViews: [UIView] = [backgroundView, closeButton, sourceLabel, queueButton, errorLabel, artworkImageView,
                                    titleLabel, artistLabel, lyricsScrollView, lyricsLabel,
                                    progressSlider, currentTimeLabel, durationLabel,
                                    playModeButton, previousButton, playButton, nextButton]
@@ -186,9 +193,15 @@ class PlayerViewController: UIViewController {
 
             // 源标签（高度 36 保证热区够大）
             sourceLabel.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
-            sourceLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            sourceLabel.trailingAnchor.constraint(equalTo: queueButton.leadingAnchor, constant: -8),
             sourceLabel.heightAnchor.constraint(equalToConstant: 36),
             sourceLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
+
+            // 队列按钮（查看当前播放清单）
+            queueButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+            queueButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            queueButton.widthAnchor.constraint(equalToConstant: 36),
+            queueButton.heightAnchor.constraint(equalToConstant: 36),
 
             // 错误提示条
             errorLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 8),
@@ -456,6 +469,13 @@ class PlayerViewController: UIViewController {
 
     @objc private func closeTapped() {
         dismiss(animated: true)
+    }
+
+    /// 打开当前播放队列
+    @objc private func queueTapped() {
+        let vc = QueueViewController()
+        let nav = UINavigationController(rootViewController: vc)
+        present(nav, animated: true)
     }
 
     @objc private func playTapped() {

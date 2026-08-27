@@ -77,6 +77,38 @@ enum LXPlaylistBridge {
 
     // MARK: - 编码（本机 → LX 兼容 JSON）
 
+    // MARK: - .lxmc 解析（gzip 压缩的 JSON）
+
+    /// 解析 LX 桌面版导出的文件（.lxmc 为 gzip 压缩的 JSON，.json 为纯 JSON）
+    /// 先嗅探 gzip 魔数（0x1f 0x8b），命中则解压后再走通用解析
+    static func parseLXMC(data: Data) throws -> [ImportPlaylist] {
+        var jsonData = data
+        if data.count >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+            if let ungz = LXSyncCrypto.gunzipData(data), !ungz.isEmpty {
+                jsonData = ungz
+            }
+        }
+        return try parse(data: jsonData)
+    }
+
+    /// 把解析出的歌单（歌曲已带 source + songmid）直接写入本地，
+    /// 不二次匹配，忠实保留 LX 原始音源。返回 (新建歌单数, 歌曲数)
+    static func importParsed(_ lists: [ImportPlaylist]) -> (playlists: Int, songs: Int) {
+        var songTotal = 0
+        for pl in lists {
+            let playlist = Playlist(
+                name: pl.name,
+                source: "local",
+                sourceListId: "",
+                location: "local",
+                songs: pl.songs
+            )
+            PlaylistStore.shared.add(playlist)
+            songTotal += pl.songs.count
+        }
+        return (lists.count, songTotal)
+    }
+
     /// 把本机歌单编码为 LX 兼容 JSON（结构同「形状 B」，可再导回本 App；
     /// 导入 LX 桌面版为尽力而为，因 LX 各版本导入 schema 略有差异）
     static func encode(playlists: [Playlist]) -> Data {

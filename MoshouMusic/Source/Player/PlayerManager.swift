@@ -91,6 +91,7 @@ class PlayerManager: NSObject {
             queueIndex = queue.firstIndex(where: { $0.id == song.id }) ?? 0
         }
 
+        postQueueChanged()
         currentSong = song
         currentSource = song.source
         isSwitchingSource = false
@@ -726,10 +727,46 @@ class PlayerManager: NSObject {
         // 夹紧下标，避免调用方传入越界值导致崩溃
         queueIndex = max(0, min(index, songs.count - 1))
         play(song: songs[queueIndex])
+        postQueueChanged()
     }
 
     func addToQueue(_ song: Song) {
         playQueue.append(song)
+        postQueueChanged()
+    }
+
+    /// 从队列移除指定位置（同步维护当前播放下标）
+    func removeFromQueue(at index: Int) {
+        guard index >= 0, index < playQueue.count else { return }
+        playQueue.remove(at: index)
+        if index < queueIndex {
+            queueIndex = max(0, queueIndex - 1)
+        } else if index == queueIndex {
+            if queueIndex >= playQueue.count {
+                queueIndex = max(0, playQueue.count - 1)
+            }
+        }
+        postQueueChanged()
+    }
+
+    /// 移动队列中某首歌到新位置（同步维护当前播放下标）
+    func moveQueueItem(from: Int, to: Int) {
+        guard from != to, from >= 0, from < playQueue.count,
+              to >= 0, to < playQueue.count else { return }
+        let moved = playQueue.remove(at: from)
+        playQueue.insert(moved, at: to)
+        if from < queueIndex, to >= queueIndex {
+            queueIndex -= 1
+        } else if from > queueIndex, to <= queueIndex {
+            queueIndex += 1
+        } else if from == queueIndex {
+            queueIndex = to
+        }
+        postQueueChanged()
+    }
+
+    private func postQueueChanged() {
+        NotificationCenter.default.post(name: .playerQueueChanged, object: nil)
     }
 
     // MARK: - 清理
@@ -765,4 +802,5 @@ extension Notification.Name {
     static let artworkLoaded = Notification.Name("ArtworkLoaded")
     static let playerStateChanged = Notification.Name("PlayerStateChanged")
     static let playerTimeChanged = Notification.Name("PlayerTimeChanged")
+    static let playerQueueChanged = Notification.Name("PlayerQueueChanged")
 }

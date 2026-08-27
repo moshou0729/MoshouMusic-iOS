@@ -388,27 +388,61 @@ final class PlaylistImporter {
         specialid: String,
         completion: @escaping (Swift.Result<(String, [Track]), Error>) -> Void
     ) {
-        let url = "https://www.kugou.com/yy/special/single.php?specialid=\(specialid)&json=true&page=1"
-        fetchJSON(url: url, headers: ["Referer": "https://www.kugou.com/"]) { result in
-            switch result {
-            case .failure(let e):
-                completion(.failure(ImportError.network(e)))
-            case .success(let json):
-                guard let dict = json as? [String: Any],
-                      let list = dict["list"] as? [[String: Any]], !list.isEmpty else {
-                    completion(.failure(ImportError.parseFailed(
-                        "酷狗歌单解析失败（接口需要签名）。请改用网易云或 QQ 音乐的分享链接。")))
-                    return
-                }
-                let name = (dict["specialname"] as? String) ?? "酷狗歌单"
-                let tracks = list.compactMap { Self.kgPlaylistTrack($0) }
-                if tracks.isEmpty {
-                    completion(.failure(ImportError.empty))
-                } else {
-                    completion(.success((name, tracks)))
+        // 酷狗 special 接口默认每页约 10 首，需要翻页才能拿到全部曲目（F5 修复：此前只取首页）
+        var accumulated: [Track] = []
+        var playlistName = "酷狗歌单"
+        var page = 1
+        let maxPages = 50
+
+        func loadNext() {
+            guard page <= maxPages else { finish(); return }
+            let url = "https://www.kugou.com/yy/special/single.php?" +
+                      "specialid=\(specialid)&json=true&page=\(page)&pagesize=100"
+            fetchJSON(url: url, headers: ["Referer": "https://www.kugou.com/"]) { result in
+                switch result {
+                case .failure(let e):
+                    if page == 1 {
+                        completion(.failure(ImportError.network(e)))
+                    } else {
+                        // 后续页失败：返回已收集到的部分（比整单失败更友好）
+                        finish()
+                    }
+                case .success(let json):
+                    guard let dict = json as? [String: Any] else {
+                        if page == 1 {
+                            completion(.failure(ImportError.parseFailed("酷狗歌单解析失败（接口需要签名）。请改用网易云或 QQ 音乐的分享链接。")))
+                        } else {
+                            finish()
+                        }
+                        return
+                    }
+                    if page == 1 {
+                        playlistName = (dict["specialname"] as? String) ?? playlistName
+                    }
+                    let list = (dict["list"] as? [[String: Any]]) ?? []
+                    let tracks = list.compactMap { Self.kgPlaylistTrack($0) }
+                    accumulated.append(contentsOf: tracks)
+                    let total = (dict["total"] as? Int) ?? 0
+                    page += 1
+                    if list.isEmpty || (total > 0 && accumulated.count >= total) {
+                        finish()
+                    } else {
+                        loadNext()
+                    }
                 }
             }
         }
+
+        func finish() {
+            if accumulated.isEmpty {
+                completion(.failure(ImportError.parseFailed(
+                    "酷狗歌单解析失败（接口需要签名或该歌单为空）。请改用网易云或 QQ 音乐的分享链接。")))
+            } else {
+                completion(.success((playlistName, accumulated)))
+            }
+        }
+
+        loadNext()
     }
 
     private static func kgTrack(from json: Any) -> Track? {
@@ -522,6 +556,116 @@ final class PlaylistImporter {
             }
         }
 
+        step()
+    }
+
+    // MARK: - 手动更新在线歌单
+
+    /// 按歌单保存的「平台 + 源列表ID」重新拉取曲目并整体替换本地歌曲（F5）
+    /// 仅对 location == "online" 且 sourceListId 非空的歌单有效。
+    func updatePlaylist(
+        playlistId: String,
+        progress: @escaping (Progress) -> Void,
+        completion: @escaping (Swift.Result<ImportResult, Error>) -> Void
+    ) {
+        let safeProgress: (Progress) -> Void = { p in DispatchQueue.main.async { progress(p) } }
+        let safeComplete: (Swift.Result<ImportResult, Error>) -> Void = { r in DispatchQueue.main.async { completion(r) } }
+
+        guard let playlist = PlaylistStore.shared.get(id: playlistId),
+              !playlist.sourceListId.isEmpty,
+              playlist.location == "online" else {
+            safeComplete(.failure(ImportError.parseFailed("该歌单不支持更新（仅「在线导入且保留链接」的歌单可更新）")))
+            return
+        }
+
+        let platformKey = playlist.source
+        let listId = playlist.sourceListId
+        let platform: Platform?
+        let platformName: String
+        switch platformKey {
+        case "kg": platform = .kugou;   platformName = "酷狗"
+        case "wy": platform = .netease; platformName = "网易云"
+        case "tx": platform = .qq;      platformName = "QQ音乐"
+        default:    platform = nil;      platformName = ""
+        }
+
+        guard let p = platform else {
+            safeComplete(.failure(ImportError.parseFailed("暂不支持更新该平台的歌单")))
+            return
+        }
+
+        let parsed = ParsedLink(platform: p, platformKey: platformKey,
+                                platformName: platformName, type: .playlist, id: listId)
+
+        safeProgress(Progress(platform: platformName, stage: "正在重新拉取歌单…", current: 0, total: 0, matched: 0))
+
+        fetchTracks(parsed, progress: safeProgress) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .failure(let e):
+                safeComplete(.failure(e))
+            case .success(let (name, tracks)):
+                guard !tracks.isEmpty else {
+                    safeComplete(.failure(ImportError.empty))
+                    return
+                }
+                self.matchTracks(tracks, into: playlistId, platformName: platformName, progress: safeProgress) { matchResult in
+                    switch matchResult {
+                    case .failure(let e):
+                        safeComplete(.failure(e))
+                    case .success(let (matched, total, skipped)):
+                        let updated = PlaylistStore.shared.get(id: playlistId) ?? playlist
+                        let result = ImportResult(
+                            playlistName: name,
+                            platform: platformName,
+                            total: total,
+                            matched: matched,
+                            skipped: skipped,
+                            playlist: updated
+                        )
+                        safeComplete(.success(result))
+                    }
+                }
+            }
+        }
+    }
+
+    /// 把拉取到的曲目逐首在本机音源匹配，写入已有歌单（整体替换）
+    private func matchTracks(
+        _ tracks: [Track],
+        into playlistId: String,
+        platformName: String,
+        progress: @escaping (Progress) -> Void,
+        completion: @escaping (Swift.Result<(matched: Int, total: Int, skipped: [Track]), Error>) -> Void
+    ) {
+        var matchedSongs: [Song] = []
+        var skipped: [Track] = []
+        var idx = 0
+
+        func step() {
+            if idx >= tracks.count {
+                PlaylistStore.shared.replaceSongs(matchedSongs, in: playlistId)
+                completion(.success((matchedSongs.count, tracks.count, skipped)))
+                return
+            }
+            let t = tracks[idx]
+            idx += 1
+            progress(Progress(
+                platform: platformName,
+                stage: "匹配 \(idx)/\(tracks.count)：\(t.name)",
+                current: idx,
+                total: tracks.count,
+                matched: matchedSongs.count
+            ))
+            SourceSwitcher.shared.findSong(name: t.name, singer: t.artist) { song in
+                if let song = song {
+                    matchedSongs.append(song)
+                } else {
+                    skipped.append(t)
+                }
+                step()
+            }
+        }
         step()
     }
 }

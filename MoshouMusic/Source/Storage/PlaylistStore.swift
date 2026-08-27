@@ -92,6 +92,14 @@ class PlaylistStore {
         save()
     }
 
+    /// 用新曲目整体替换歌单的歌曲（手动更新在线歌单用）
+    func replaceSongs(_ songs: [Song], in playlistId: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistId }) else { return }
+        playlists[index].songs = songs
+        playlists[index].updatedAt = Date()
+        save()
+    }
+
     /// 删除歌单
     func delete(id: String) {
         playlists.removeAll { $0.id == id }

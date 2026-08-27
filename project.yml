@@ -57,7 +57,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: NO
-        SWIFT_OBJC_BRIDGING_HEADER: ""
+        SWIFT_OBJC_BRIDGING_HEADER: "MoshouMusic/MoshouMusic-Bridging-Header.h"
 schemes:
   MoshouMusic:
     build:

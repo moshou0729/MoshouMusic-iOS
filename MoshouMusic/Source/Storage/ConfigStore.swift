@@ -24,6 +24,8 @@ class ConfigStore {
         static let autoSwitchSource = "autoSwitchSource"
         static let lxSyncServerURL = "lxSyncServerURL"
         static let lxSyncEnabled = "lxSyncEnabled"
+        static let lxSyncMode = "lxSyncMode"
+        static let lxLastSyncDate = "lxLastSyncDate"
     }
 
     // MARK: - 路径
@@ -118,6 +120,19 @@ class ConfigStore {
     var lxSyncEnabled: Bool {
         get { defaults.bool(forKey: Keys.lxSyncEnabled) }
         set { defaults.set(newValue, forKey: Keys.lxSyncEnabled) }
+    }
+
+    /// 同步模式偏好（实际合并/覆盖策略由桌面端在连接时选择，此为手机端建议值）
+    /// 可选：merge_local_remote / merge_remote_local / overwrite_local_remote / overwrite_remote_local
+    var lxSyncMode: String {
+        get { defaults.string(forKey: Keys.lxSyncMode) ?? "merge_local_remote" }
+        set { defaults.set(newValue, forKey: Keys.lxSyncMode) }
+    }
+
+    /// 上次成功同步时间
+    var lxLastSyncDate: Date? {
+        get { defaults.object(forKey: Keys.lxLastSyncDate) as? Date }
+        set { defaults.set(newValue, forKey: Keys.lxLastSyncDate) }
     }
 
     // MARK: - 自定义音源 (本机手动添加)

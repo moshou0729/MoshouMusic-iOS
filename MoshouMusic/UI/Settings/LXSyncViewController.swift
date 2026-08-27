@@ -18,6 +18,13 @@ class LXSyncViewController: UIViewController {
     private let resultLabel = UILabel()
     private var importPickerTimeout: Timer?
 
+    // 开始同步（Phase 2 实时双向）
+    private let codeField = UITextField()
+    private let modeSegment = UISegmentedControl(items: ["合并(推荐)", "以桌面为准", "以手机为准"])
+    private let startSyncButton = UIButton(type: .system)
+    private let stopSyncButton = UIButton(type: .system)
+    private let syncStatusLabel = UILabel()
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "LX 数据同步"
@@ -132,6 +139,63 @@ class LXSyncViewController: UIViewController {
         enableCard.stack.addArrangedSubview(enableRow)
         enableCard.add(to: containerStack)
 
+        // ===== 卡片 3.5：开始同步（Phase 2 实时双向） =====
+        let syncCard = makeCard(title: "开始同步（实时双向）",
+                               subtitle: "输入桌面端「同步设置 → 服务端模式」里显示的 6 位同步码")
+        codeField.borderStyle = .roundedRect
+        codeField.placeholder = "6 位同步码"
+        codeField.keyboardType = .numberPad
+        codeField.delegate = self
+        codeField.font = Theme.bodyMedium
+        codeField.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        syncCard.stack.addArrangedSubview(codeField)
+
+        let modeHint = UILabel()
+        modeHint.text = "手机端建议的合并策略（最终由桌面端连接时确认）："
+        modeHint.font = Theme.bodySmall
+        modeHint.textColor = Theme.subtext
+        modeHint.numberOfLines = 0
+        syncCard.stack.addArrangedSubview(modeHint)
+
+        let mode = ConfigStore.shared.lxSyncMode
+        switch mode {
+        case "overwrite_remote_local": modeSegment.selectedSegmentIndex = 1
+        case "overwrite_local_remote": modeSegment.selectedSegmentIndex = 2
+        default:                       modeSegment.selectedSegmentIndex = 0
+        }
+        modeSegment.selectedSegmentTintColor = Theme.primary
+        modeSegment.addTarget(self, action: #selector(modeChanged), for: .valueChanged)
+        syncCard.stack.addArrangedSubview(modeSegment)
+
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 12
+        row.distribution = .fillEqually
+        startSyncButton.setTitle("开始同步", for: .normal)
+        startSyncButton.setTitleColor(.white, for: .normal)
+        startSyncButton.backgroundColor = Theme.primary
+        startSyncButton.layer.cornerRadius = Theme.cornerMedium
+        startSyncButton.titleLabel?.font = Theme.titleSmall
+        startSyncButton.addTarget(self, action: #selector(startSyncTapped), for: .touchUpInside)
+        startSyncButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        stopSyncButton.setTitle("断开", for: .normal)
+        stopSyncButton.setTitleColor(.white, for: .normal)
+        stopSyncButton.backgroundColor = Theme.secondary
+        stopSyncButton.layer.cornerRadius = Theme.cornerMedium
+        stopSyncButton.titleLabel?.font = Theme.titleSmall
+        stopSyncButton.addTarget(self, action: #selector(stopSyncTapped), for: .touchUpInside)
+        stopSyncButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        row.addArrangedSubview(startSyncButton)
+        row.addArrangedSubview(stopSyncButton)
+        syncCard.stack.addArrangedSubview(row)
+
+        syncStatusLabel.font = Theme.bodyMedium
+        syncStatusLabel.textColor = Theme.text
+        syncStatusLabel.numberOfLines = 0
+        syncCard.stack.addArrangedSubview(syncStatusLabel)
+
+        syncCard.add(to: containerStack)
+
         // ===== 卡片 4：使用说明（页底，可滚动查看） =====
         let helpCard = makeCard(title: "关于本功能", subtitle: nil)
         let helpText = UILabel()
@@ -139,18 +203,20 @@ class LXSyncViewController: UIViewController {
         helpText.textColor = Theme.subtext
         helpText.numberOfLines = 0
         helpText.text = """
-        当前版本（v1.0.17）仅完成 HTTP 握手验证，可用于：
-        · 确认手机与 LX 桌面版/独立服务在同一网络
-        · 桌面端「服务端模式」是否已开启
-        · 端口 / AP 隔离 等基础连通性排查
+        当前版本已支持 LX 桌面版原生 WebSocket 实时双向同步（message2call RPC 协议），可同步「收藏歌单」与「我喜欢」。
 
-        下一步（v1.0.18+）将基于 LX 桌面版的 WebSocket RPC 协议（message2call）实现：
-        · 收藏歌单双向同步
-        · 「不喜欢」列表双向同步
-        · 首次连接时的「合并 / 覆盖」选择
-        · 同局域网自动发现 LX 桌面端
+        使用步骤：
+        1. 桌面端「设置 → 同步 → 开启服务端模式」，记下 6 位同步码
+        2. 上方填写桌面端显示的地址（如 http://192.168.x.x:23332）
+        3. 输入 6 位同步码，点「开始同步」
+        4. 桌面端弹出合并/覆盖选择，确认后即双向同步
 
-        提示：协议传输的数据是明文，请仅在受信任的局域网使用（官方文档原话）。
+        同步模式说明：
+        · 合并（推荐）：手机与桌面数据合并
+        · 以桌面为准：用桌面数据覆盖手机
+        · 以手机为准：用手机数据覆盖桌面
+
+        提示：协议传输的数据为明文，请仅在受信任的局域网内使用（官方文档原话）。
         """
         helpCard.stack.addArrangedSubview(helpText)
         helpCard.add(to: containerStack)
@@ -226,12 +292,29 @@ class LXSyncViewController: UIViewController {
             color = Theme.success
             let parts = h.split(separator: "\n").map(String.init)
             detail = "握手成功，服务器标识：\n" + (parts.last ?? h)
+        case .connecting:
+            color = Theme.warning
+            detail = "正在与桌面端完成认证（/id、RSA 密钥交换、/ah）"
+        case .syncing:
+            color = Theme.warning
+            detail = "WebSocket 已连接，桌面端正在编排歌单同步"
+        case .synced(let n):
+            color = Theme.success
+            let date = ConfigStore.shared.lxLastSyncDate.map {
+                DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short)
+            } ?? ""
+            detail = "歌单已同步，当前共 \(n) 个歌单" + (date.isEmpty ? "" : "（\(date)）")
         case .failed(let r):
             color = Theme.error
             detail = r
+        case .disconnected:
+            color = Theme.subtext
+            detail = "连接已断开（已同步的数据已保留在本机）"
         }
         statusBadge.textColor = color
         detailLabel.text = detail
+        syncStatusLabel.text = status.displayText
+        syncStatusLabel.textColor = color
     }
 
     @objc private func testTapped() {
@@ -253,6 +336,33 @@ class LXSyncViewController: UIViewController {
 
     @objc private func enableChanged() {
         ConfigStore.shared.lxSyncEnabled = enableSwitch.isOn
+        ConfigStore.shared.save()
+    }
+
+    @objc private func startSyncTapped() {
+        codeField.resignFirstResponder()
+        let code = (codeField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard code.count == 6, CharacterSet.decimalDigits.isSuperset(of: CharacterSet(charactersIn: code)) else {
+            showToast("请输入 6 位数字同步码")
+            return
+        }
+        LXSyncService.shared.startSync(authCode: code)
+        showToast("正在连接桌面端…")
+    }
+
+    @objc private func stopSyncTapped() {
+        LXSyncService.shared.stopSync()
+        showToast("已断开连接")
+    }
+
+    @objc private func modeChanged() {
+        let mode: String
+        switch modeSegment.selectedSegmentIndex {
+        case 1: mode = "overwrite_remote_local"
+        case 2: mode = "overwrite_local_remote"
+        default: mode = "merge_local_remote"
+        }
+        ConfigStore.shared.lxSyncMode = mode
         ConfigStore.shared.save()
     }
 

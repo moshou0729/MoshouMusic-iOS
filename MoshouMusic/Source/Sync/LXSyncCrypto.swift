@@ -65,6 +65,7 @@ enum LXSyncCrypto {
               let input = plaintext.data(using: .utf8) else { return "" }
         let keyBytes = [UInt8](keyData.prefix(16))
         var buf = [UInt8](repeating: 0, count: input.count + kCCBlockSizeAES128)
+        let bufCount = buf.count
         var num: size_t = 0
         let st = keyBytes.withUnsafeBytes { kp in
             input.withUnsafeBytes { ip in
@@ -72,7 +73,7 @@ enum LXSyncCrypto {
                     CCCrypt(CCOperation(kCCEncrypt), CCAlgorithm(kCCAlgorithmAES),
                             CCOptions(kCCOptionPKCS7Padding | kCCOptionECBMode),
                             kp.baseAddress, kCCKeySizeAES128, nil,
-                            ip.baseAddress, input.count, bp.baseAddress, buf.count, &num)
+                            ip.baseAddress, input.count, bp.baseAddress, bufCount, &num)
                 }
             }
         }
@@ -85,6 +86,7 @@ enum LXSyncCrypto {
               let input = Data(base64Encoded: cipherBase64) else { return "" }
         let keyBytes = [UInt8](keyData.prefix(16))
         var buf = [UInt8](repeating: 0, count: input.count + kCCBlockSizeAES128)
+        let bufCount = buf.count
         var num: size_t = 0
         let st = keyBytes.withUnsafeBytes { kp in
             input.withUnsafeBytes { ip in
@@ -92,7 +94,7 @@ enum LXSyncCrypto {
                     CCCrypt(CCOperation(kCCDecrypt), CCAlgorithm(kCCAlgorithmAES),
                             CCOptions(kCCOptionPKCS7Padding | kCCOptionECBMode),
                             kp.baseAddress, kCCKeySizeAES128, nil,
-                            ip.baseAddress, input.count, bp.baseAddress, buf.count, &num)
+                            ip.baseAddress, input.count, bp.baseAddress, bufCount, &num)
                 }
             }
         }
@@ -149,9 +151,10 @@ enum LXSyncCrypto {
         defer { gzclose(fp) }
         var out = Data()
         var buf = [UInt8](repeating: 0, count: 1 << 16)
+        let bufCount = buf.count
         while true {
             let n = buf.withUnsafeMutableBytes { ptr -> Int in
-                Int(gzread(fp, ptr.baseAddress!, UInt32(buf.count)))
+                Int(gzread(fp, ptr.baseAddress!, UInt32(bufCount)))
             }
             if n <= 0 { break }
             out.append(contentsOf: buf[0..<n])

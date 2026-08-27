@@ -309,6 +309,13 @@ class PlaylistViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "好的", style: .default))
         present(alert, animated: true)
     }
+
+    /// 通用提示弹窗（F1 文件/LX 导入路径共用）
+    private func showAlert(title: String, message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好的", style: .default))
+        present(alert, animated: true)
+    }
 }
 
 // MARK: - 文件导入代理

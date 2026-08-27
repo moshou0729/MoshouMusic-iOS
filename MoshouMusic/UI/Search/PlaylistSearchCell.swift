@@ -88,6 +88,9 @@ class PlaylistSearchCell: UITableViewCell {
             subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
             subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+            // 关键：把容器底边链回 subtitleLabel 底边，否则 contentView 高度无驱动，
+            // automaticDimension 算成 0，标签会全部画在 y=0 互相重叠。
+            subtitleLabel.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -12),
         ])
     }
 

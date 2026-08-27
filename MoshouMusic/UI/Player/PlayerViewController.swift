@@ -174,14 +174,16 @@ class PlayerViewController: UIViewController {
         view.addSubview(controlBar)
 
         // 封面下滑手势：快速下滑 = 缩小/关闭播放页
+        // 注意：必须先 setupSwipeGestures() 初始化 scrubLongPress 再 require(toFail:)，
+        // 否则访问 nil 的 IUO 会闪退（点底部播放条崩溃的根因）。
+        setupConstraints()
+        setupSwipeGestures()
+
         let downSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
         downSwipe.direction = .down
         downSwipe.require(toFail: scrubLongPress)
         artworkImageView.addGestureRecognizer(downSwipe)
         artworkImageView.isUserInteractionEnabled = true
-
-        setupConstraints()
-        setupSwipeGestures()
     }
 
     private func setupConstraints() {

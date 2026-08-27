@@ -433,8 +433,13 @@ extension SearchViewController {
                     let songs = res.playlist.songs
                     if let first = songs.first {
                         PlayerManager.shared.play(song: first, queue: songs)
+                        self.showToast("已导入「\(res.playlistName)」：\(res.matched)/\(res.total) 首匹配，已加入播放队列")
+                    } else {
+                        // 拉到了曲目但本机音源一个都没匹配上 — 静默 toast 用户感知不到，
+                        // 改成显式 alert 提示换音源 / 装脚本。
+                        self.showAlert("导入完成但未匹配",
+                                       message: "已从「\(res.platform)」拉取「\(res.playlistName)」共 \(res.total) 首，但在本机已启用音源中没有匹配到任何可播放版本。\n\n建议：\n1. 切到含「\(res.platform)」的音源；\n2. 或在「设置 → 音源设置」中加载该平台的脚本后重试。")
                     }
-                    self.showToast("已导入「\(res.playlistName)」：\(res.matched)/\(res.total) 首匹配，已加入播放队列")
                 }
             }
         }

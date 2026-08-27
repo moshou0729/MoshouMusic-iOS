@@ -218,29 +218,89 @@ final class PlaylistImporter {
                     return
                 }
                 let name = (pl["name"] as? String) ?? "网易云歌单"
+                let trackIdsArr = (pl["trackIds"] as? [[String: Any]]) ?? []
+                let allIds: [Int] = trackIdsArr.compactMap { $0["id"] as? Int }
                 let tracks = self.neTracks(from: dict)
-                if !tracks.isEmpty {
+
+                // 快路径：convenience tracks 已覆盖 trackIds 全部（无需额外请求）
+                if !tracks.isEmpty && (allIds.isEmpty || tracks.count >= allIds.count) {
                     completion(.success((name, tracks)))
                     return
                 }
-                // 大歌单可能只返回 trackIds，需要再拉一次 song/detail
-                if let trackIds = pl["trackIds"] as? [[String: Any]], !trackIds.isEmpty {
-                    let ids = trackIds.compactMap { ($0["id"] as? Int)?.description }
-                    let idsParam = "[\(ids.joined(separator: ","))]"
-                        .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                    self.fetchNeteaseSongs(url: "https://music.163.com/api/v3/song/detail?ids=\(idsParam)",
-                                          nameKey: nil) { res in
-                        // 用歌单名覆盖（fetchNeteaseSongs 内部名可能为默认）
-                        switch res {
-                        case .success(let (_, t)): completion(.success((name, t)))
-                        case .failure(let e): completion(.failure(e))
+
+                // 慢路径：用 trackIds 批量补全（v6 在大歌单下 tracks 经常被截断到 ~10 首）
+                if !allIds.isEmpty {
+                    self.batchFetchNeteaseSongs(ids: allIds) { batchResult in
+                        switch batchResult {
+                        case .failure(let e):
+                            // 批量失败但已有部分 convenience tracks → 仍返回它（比整单失败更友好）
+                            if !tracks.isEmpty {
+                                completion(.success((name, tracks)))
+                            } else {
+                                completion(.failure(e))
+                            }
+                        case .success(let fetched):
+                            // 优先用批量结果（保证完整），若批量明显更少则用 tracks
+                            let merged = fetched.count >= tracks.count ? fetched : tracks
+                            completion(.success((name, merged)))
                         }
                     }
-                } else {
+                    return
+                }
+
+                // 既没 trackIds 也没 tracks
+                if tracks.isEmpty {
                     completion(.failure(ImportError.empty))
+                } else {
+                    completion(.success((name, tracks)))
                 }
             }
         }
+    }
+
+    /// 按 100 首/批 调 163 v3 song/detail，补全 tracks 列表（修复大歌单只导入 ~10 首）
+    /// 接口：`GET /api/v3/song/detail?c=[{"id":1},{"id":2},...]` → `{"songs":[...],"code":200}`
+    private func batchFetchNeteaseSongs(
+        ids: [Int],
+        completion: @escaping (Swift.Result<[Track], Error>) -> Void
+    ) {
+        let chunkSize = 100
+        let chunks: [[Int]] = stride(from: 0, to: ids.count, by: chunkSize).map {
+            Array(ids[$0..<min($0 + chunkSize, ids.count)])
+        }
+        var accumulated: [Track] = []
+        var firstError: Error?
+
+        func loadChunk(_ idx: Int) {
+            guard idx < chunks.count else {
+                if accumulated.isEmpty, let e = firstError {
+                    completion(.failure(e))
+                } else {
+                    completion(.success(accumulated))
+                }
+                return
+            }
+            let chunk = chunks[idx]
+            // 构造 c=[{"id":1},...] 的 JSON 字符串
+            let cArray: [[String: Any]] = chunk.map { ["id": $0] }
+            let cJson = (try? JSONSerialization.data(withJSONObject: cArray, options: []))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+            let cParam = cJson.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "[]"
+            let url = "https://music.163.com/api/v3/song/detail?c=\(cParam)"
+            fetchJSON(url: url, headers: ["Referer": "https://music.163.com/"]) { result in
+                switch result {
+                case .failure(let e):
+                    if firstError == nil { firstError = ImportError.network(e) }
+                    // 单批失败不立刻终止：尽力拼完，最后若全空才报错
+                    loadChunk(idx + 1)
+                case .success(let jsonAny):
+                    let chunkTracks = self.neTracks(from: jsonAny)
+                    accumulated.append(contentsOf: chunkTracks)
+                    loadChunk(idx + 1)
+                }
+            }
+        }
+        loadChunk(0)
     }
 
     private func fetchNeteaseSongs(

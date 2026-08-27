@@ -189,6 +189,11 @@ class LXSyncViewController: UIViewController {
         row.addArrangedSubview(stopSyncButton)
         syncCard.stack.addArrangedSubview(row)
 
+        let diagButton = makeButton("诊断 /ah 连通性", color: Theme.warning)
+        diagButton.addTarget(self, action: #selector(diagTapped), for: .touchUpInside)
+        syncCard.stack.addArrangedSubview(diagButton)
+        diagButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
         syncStatusLabel.font = Theme.bodyMedium
         syncStatusLabel.textColor = Theme.text
         syncStatusLabel.numberOfLines = 0
@@ -353,6 +358,16 @@ class LXSyncViewController: UIViewController {
     @objc private func stopSyncTapped() {
         LXSyncService.shared.stopSync()
         showToast("已断开连接")
+    }
+
+    @objc private func diagTapped() {
+        syncStatusLabel.text = "正在探测 /ah …（最多 20 秒）"
+        syncStatusLabel.textColor = Theme.warning
+        LXSyncService.shared.probeAH { [weak self] result in
+            DispatchQueue.main.async {
+                self?.syncStatusLabel.text = result
+            }
+        }
     }
 
     @objc private func modeChanged() {

@@ -59,6 +59,19 @@ final class LXSyncService {
     // WebSocket 相关
     private var wsTask: URLSessionWebSocketTask?
     private var wsSession: URLSession?
+
+    // 同步专用 HTTP 会话：独立 ephemeral 配置，避免与音乐搜索等共享 URLSession 的连接池互相挤占；
+    // 并显式关闭 waitsForConnectivity，防止系统把局域网请求误判为“等待联网”而静默挂起。
+    private lazy var syncHTTPSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 20
+        cfg.timeoutIntervalForResource = 60
+        cfg.waitsForConnectivity = false
+        cfg.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        cfg.httpMaximumConnectionsPerHost = 1
+        return URLSession(configuration: cfg)
+    }()
+
     private let syncQueue = DispatchQueue(label: "com.moshou.lxsync")
     private var pending: [String: (Result<Any?, Error>) -> Void] = [:]
     private var handlers: [String: Handler] = [:]
@@ -193,10 +206,11 @@ final class LXSyncService {
         }
 
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
-        req.timeoutInterval = 10
+        req.httpMethod = "GET"
+        req.timeoutInterval = 20
         req.setValue(m, forHTTPHeaderField: "m")
-        URLSession.shared.dataTask(with: req) { data, response, error in
-            if let error = error { completion(.failure(error)); return }
+        syncHTTPSession.dataTask(with: req) { data, response, error in
+            if let error = error { completion(.failure(self.classify(error))); return }
             guard let http = response as? HTTPURLResponse else {
                 completion(.failure(NSError(domain: "LXSync", code: 4,
                     userInfo: [NSLocalizedDescriptionKey: "认证无响应"]))); return
@@ -226,9 +240,10 @@ final class LXSyncService {
                 userInfo: [NSLocalizedDescriptionKey: "URL 非法"]))); return
         }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 10
-        URLSession.shared.dataTask(with: req) { data, _, error in
-            if let error = error { completion(.failure(error)); return }
+        req.httpMethod = "GET"
+        req.timeoutInterval = 20
+        syncHTTPSession.dataTask(with: req) { data, _, error in
+            if let error = error { completion(.failure(self.classify(error))); return }
             completion(.success(String(data: data ?? Data(), encoding: .utf8) ?? ""))
         }.resume()
     }
@@ -466,7 +481,7 @@ final class LXSyncService {
         status = .testing
         notify()
         let start = Date()
-        URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
+        syncHTTPSession.dataTask(with: req) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let error = error {
@@ -501,15 +516,60 @@ final class LXSyncService {
             completion(.failure(NSError(domain: "LXSync", code: 1, userInfo: [NSLocalizedDescriptionKey: "URL 不合法"])))
             return
         }
-        URLSession.shared.dataTask(with: req) { data, _, error in
+        syncHTTPSession.dataTask(with: req) { data, _, error in
             DispatchQueue.main.async {
-                if let e = error { completion(.failure(e)); return }
+                if let e = error { completion(.failure(self.classify(e))); return }
                 completion(.success(String(data: data ?? Data(), encoding: .utf8) ?? ""))
             }
         }.resume()
     }
 
     // MARK: - Helpers
+
+    /// 把底层 URLSession 错误翻译成对用户友好的中文说明，便于区分
+    /// “服务器不响应（网络/防火墙）” 与 “响应了但认证失败（同步码/协议）”。
+    private func classify(_ error: Error) -> Error {
+        let e = error as NSError
+        guard e.domain == NSURLErrorDomain else { return error }
+        switch e.code {
+        case NSURLErrorTimedOut:
+            return NSError(domain: "LXSync", code: 7, userInfo: [NSLocalizedDescriptionKey:
+                "请求超时：桌面同步服务 20 秒内无响应。几乎都是网络/防火墙问题——请确认：①手机与桌面在同一局域网；②桌面端「同步 → 服务端模式」正在运行；③系统防火墙/杀毒放行同步端口（默认 9527）；④手机未开启会把局域网请求转到公网的 VPN/代理。"])
+        case NSURLErrorCannotConnectToHost:
+            return NSError(domain: "LXSync", code: 7, userInfo: [NSLocalizedDescriptionKey:
+                "无法连接桌面同步服务（连接被拒绝/主机不可达）。请确认桌面端同步服务正在运行且地址端口正确。"])
+        case NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet:
+            return NSError(domain: "LXSync", code: 7, userInfo: [NSLocalizedDescriptionKey:
+                "网络连接中断或离线。请确认手机网络正常且与桌面在同一局域网。"])
+        default:
+            return error
+        }
+    }
+
+    /// 诊断：向 /ah 发一个带明显非法 m 的 GET，原样返回服务器状态码 / 响应体 / 底层错误。
+    /// 目的：让用户直接看到桌面端对 /ah 的真实响应，区分“服务器不响应（网络/防火墙）”还是“响应了但认证失败（码/协议）”。
+    func probeAH(completion: @escaping (String) -> Void) {
+        guard let hostPath = hostPathFromConfig() else {
+            completion("未配置同步服务地址（请先在上方填写并保存）。"); return
+        }
+        var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 20
+        req.setValue("__probe_invalid__", forHTTPHeaderField: "m")
+        syncHTTPSession.dataTask(with: req) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    let e = error as NSError
+                    completion("【/ah 无响应】\n错误：\(e.localizedDescription)\n(domain=\(e.domain) code=\(e.code))\n\n说明：code=\(e.code) 为超时(-1001)表示手机到桌面端的 /ah 请求没收到回包，几乎都是网络/防火墙问题。")
+                    return
+                }
+                let http = response as? HTTPURLResponse
+                let body = String(data: data ?? Data(), encoding: .utf8) ?? ""
+                let status = http?.statusCode ?? -1
+                completion("【/ah 响应】\nHTTP \(status)\n响应体：\(body.isEmpty ? "(空)" : body)\n\n说明：能收到响应说明网络通；401/Auth failed 表示需要正确的同步码；403/Blocked IP 表示被限流，稍后重试。")
+            }
+        }.resume()
+    }
 
     private func notify() {
         // 状态变化会驱动 UI 刷新（LXSyncViewController.lxStateChanged），
@@ -535,7 +595,7 @@ final class LXSyncService {
         let sep = extraPath.hasPrefix("/") ? "" : "/"
         guard let url = URL(string: urlString + sep + extraPath) else { return nil }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 8
+        req.timeoutInterval = 20
         req.setValue("MoshouMusic-iOS/1.0", forHTTPHeaderField: "User-Agent")
         return req
     }

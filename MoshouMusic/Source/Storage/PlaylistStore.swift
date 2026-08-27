@@ -162,6 +162,14 @@ class PlaylistStore {
         }
     }
 
+    /// LX 同步专用：在闭包内以可变形式访问歌单数组（自动保存并通知）
+    func withMutablePlaylists(_ block: (inout [Playlist]) -> Void) {
+        var copy = playlists
+        block(&copy)
+        playlists = copy
+        save()
+    }
+
     private func dedupe(_ songs: [Song]) -> [Song] {
         var seen = Set<String>()
         return songs.filter { seen.insert($0.id).inserted }

@@ -194,31 +194,31 @@ enum LXSyncModels {
     /// LX ListData -> 整体覆盖本机（default/love/user）
     static func applyRemoteListData(_ data: LXListData) {
         let store = PlaylistStore.shared
-        replaceOrCreate(id: LXListIDs.default, name: "默认列表",
-                        songs: data.defaultList.map { $0.toSong() }, in: store)
-        replaceOrCreate(id: LXListIDs.love, name: "我喜欢",
-                        songs: data.loveList.map { $0.toSong() }, in: store)
-        for ul in data.userList {
-            let songs = ul.list.map { $0.toSong() }
-            if let idx = store.playlists.firstIndex(where: { $0.id == ul.id }) {
-                store.playlists[idx].songs = songs
-                store.playlists[idx].updatedAt = Date()
-            } else {
-                let pl = Playlist(id: ul.id, name: ul.name, source: ul.source,
-                                 sourceListId: ul.sourceListId, songs: songs)
-                store.add(pl)
+        store.withMutablePlaylists { lists in
+            replaceOrCreate(id: LXListIDs.default, name: "默认列表",
+                            songs: data.defaultList.map { $0.toSong() }, in: &lists)
+            replaceOrCreate(id: LXListIDs.love, name: "我喜欢",
+                            songs: data.loveList.map { $0.toSong() }, in: &lists)
+            for ul in data.userList {
+                let songs = ul.list.map { $0.toSong() }
+                if let idx = lists.firstIndex(where: { $0.id == ul.id }) {
+                    lists[idx].songs = songs
+                    lists[idx].updatedAt = Date()
+                } else {
+                    lists.append(Playlist(id: ul.id, name: ul.name, source: ul.source,
+                                         sourceListId: ul.sourceListId, songs: songs))
+                }
             }
         }
-        store.save()
         NotificationCenter.default.post(name: PlaylistStore.didChangeNotification, object: nil)
     }
 
-    private static func replaceOrCreate(id: String, name: String, songs: [Song], in store: PlaylistStore) {
-        if let idx = store.playlists.firstIndex(where: { $0.id == id }) {
-            store.playlists[idx].songs = songs
-            store.playlists[idx].updatedAt = Date()
+    private static func replaceOrCreate(id: String, name: String, songs: [Song], in lists: inout [Playlist]) {
+        if let idx = lists.firstIndex(where: { $0.id == id }) {
+            lists[idx].songs = songs
+            lists[idx].updatedAt = Date()
         } else {
-            store.add(Playlist(id: id, name: name, songs: songs))
+            lists.append(Playlist(id: id, name: name, songs: songs))
         }
     }
 
@@ -232,13 +232,14 @@ enum LXSyncModels {
 
         case "list_create":
             if let d: LXListCreateData = decode(action.data) {
-                for info in d.listInfos {
-                    let pl = Playlist(id: info.id, name: info.name, source: info.source,
-                                     sourceListId: info.sourceListId,
-                                     songs: info.list.map { $0.toSong() })
-                    store.add(pl)
+                store.withMutablePlaylists { lists in
+                    for info in d.listInfos {
+                        let pl = Playlist(id: info.id, name: info.name, source: info.source,
+                                         sourceListId: info.sourceListId,
+                                         songs: info.list.map { $0.toSong() })
+                        lists.append(pl)
+                    }
                 }
-                store.save()
             }
 
         case "list_remove":
@@ -248,23 +249,25 @@ enum LXSyncModels {
 
         case "list_update":
             if let infos: [LXUserListInfoFull] = decode(action.data) {
-                for info in infos {
-                    if let idx = store.playlists.firstIndex(where: { $0.id == info.id }) {
-                        store.playlists[idx].name = info.name
-                        store.playlists[idx].source = info.source
-                        store.playlists[idx].sourceListId = info.sourceListId
-                        store.playlists[idx].updatedAt = Date()
+                store.withMutablePlaylists { lists in
+                    for info in infos {
+                        if let idx = lists.firstIndex(where: { $0.id == info.id }) {
+                            lists[idx].name = info.name
+                            lists[idx].source = info.source
+                            lists[idx].sourceListId = info.sourceListId
+                            lists[idx].updatedAt = Date()
+                        }
                     }
                 }
-                store.save()
             }
 
         case "list_music_overwrite":
             if let d: LXListMusicData = decode(action.data) {
-                if let idx = store.playlists.firstIndex(where: { $0.id == d.listId }) {
-                    store.playlists[idx].songs = d.musicInfos.map { $0.toSong() }
-                    store.playlists[idx].updatedAt = Date()
-                    store.save()
+                store.withMutablePlaylists { lists in
+                    if let idx = lists.firstIndex(where: { $0.id == d.listId }) {
+                        lists[idx].songs = d.musicInfos.map { $0.toSong() }
+                        lists[idx].updatedAt = Date()
+                    }
                 }
             }
 
@@ -284,38 +287,41 @@ enum LXSyncModels {
 
         case "list_music_update":
             if let infos: [LXMusicInfo] = decode(action.data) {
-                for info in infos {
-                    let song = info.toSong()
-                    for idx in store.playlists.indices {
-                        if let si = store.playlists[idx].songs.firstIndex(where: { $0.id == song.id }) {
-                            store.playlists[idx].songs[si] = song
+                store.withMutablePlaylists { lists in
+                    for info in infos {
+                        let song = info.toSong()
+                        for idx in lists.indices {
+                            if let si = lists[idx].songs.firstIndex(where: { $0.id == song.id }) {
+                                lists[idx].songs[si] = song
+                            }
                         }
                     }
                 }
-                store.save()
             }
 
         case "list_music_clear":
             if let ids = action.data as? [String] {
-                for id in ids {
-                    if let idx = store.playlists.firstIndex(where: { $0.id == id }) {
-                        store.playlists[idx].songs = []
-                        store.playlists[idx].updatedAt = Date()
+                store.withMutablePlaylists { lists in
+                    for id in ids {
+                        if let idx = lists.firstIndex(where: { $0.id == id }) {
+                            lists[idx].songs = []
+                            lists[idx].updatedAt = Date()
+                        }
                     }
                 }
-                store.save()
             }
 
         case "list_music_move":
             // {fromId, toId, musicInfos} —— 把歌曲合并进目标歌单
             if let d: LXListMusicMoveData = decode(action.data) {
-                if let idx = store.playlists.firstIndex(where: { $0.id == d.toId }) {
-                    for s in d.musicInfos.map({ $0.toSong() })
-                        where !store.playlists[idx].songs.contains(where: { $0.id == s.id }) {
-                        store.playlists[idx].songs.append(s)
+                store.withMutablePlaylists { lists in
+                    if let idx = lists.firstIndex(where: { $0.id == d.toId }) {
+                        for s in d.musicInfos.map({ $0.toSong() })
+                            where !lists[idx].songs.contains(where: { $0.id == s.id }) {
+                            lists[idx].songs.append(s)
+                        }
+                        lists[idx].updatedAt = Date()
                     }
-                    store.playlists[idx].updatedAt = Date()
-                    store.save()
                 }
             }
 

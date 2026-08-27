@@ -15,17 +15,20 @@ enum LXSyncCrypto {
             kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
             kSecAttrKeySizeInBits as String: 2048,
         ]
-        var err: Unmanaged<CFError>?
-        guard let privateKey = SecKeyGeneratePair(attrs as CFDictionary, &err) else {
-            Logger.error("LX RSA generate failed: \(err?.takeRetainedValue().localizedDescription ?? "")")
+        var publicKey: SecKey?
+        var privateKey: SecKey?
+        let status = SecKeyGeneratePair(attrs as CFDictionary, &publicKey, &privateKey)
+        guard status == errSecSuccess, let priv = privateKey else {
+            Logger.error("LX RSA generate failed: \(status)")
             return nil
         }
-        guard let publicKey = SecKeyCopyPublicKey(privateKey) else { return nil }
-        guard let pubData = SecKeyCopyExternalRepresentation(publicKey, &err) as Data? else { return nil }
+        let pub = publicKey ?? SecKeyCopyPublicKey(priv)
+        guard let pub = pub else { return nil }
+        guard let pubData = SecKeyCopyExternalRepresentation(pub, nil) as Data? else { return nil }
         // RSA 公钥导出为 SPKI DER -> base64 -> PEM（Node 为 spki/pem）
         let b64 = pubData.base64EncodedString()
         let pem = "-----BEGIN PUBLIC KEY-----\n" + wrapPEM(b64) + "-----END PUBLIC KEY-----"
-        return (pem, privateKey)
+        return (pem, priv)
     }
 
     private static func wrapPEM(_ b64: String) -> String {

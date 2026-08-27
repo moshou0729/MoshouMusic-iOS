@@ -422,7 +422,7 @@ extension SearchViewController {
     /// 点击搜索结果里的某个歌单：拉取整张 → 匹配本机音源 → 加入队列并播放
     private func importPlaylist(_ pl: SearchedPlaylist) {
         let hud = showHUD("正在拉取歌单「\(pl.name)」…")
-        PlaylistImporter.shared.importPlaylist(source: pl.source, listId: pl.sourceListId, hintName: pl.name) { result in
+        PlaylistImporter.shared.importPlaylist(source: pl.source, listId: pl.sourceListId, hintName: pl.name, progress: { _ in }) { result in
             DispatchQueue.main.async {
                 hud.dismiss(animated: true)
                 self.hud = nil

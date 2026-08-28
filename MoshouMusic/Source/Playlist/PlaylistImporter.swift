@@ -773,7 +773,11 @@ final class PlaylistImporter {
         }
         self.completePreview = { _, result in
             overallTimeoutItem.cancel()
-            completion(result)
+            // NetworkManager.request 的回调跑在 URLSession 后台队列（fetchJSON / fetchTracks
+            // 整条链路都不切线程），而调用方（歌单详情页）会在 completion 里 reloadData / 更新 label。
+            // 必须切回主线程，否则触发 "Modifications to the layout engine must not be performed
+            // from a background thread" 崩溃。
+            DispatchQueue.main.async { completion(result) }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 90, execute: overallTimeoutItem)
         fetchTracks(parsed, progress: { _ in }) { [weak self] result in

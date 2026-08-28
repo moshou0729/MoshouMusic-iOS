@@ -234,23 +234,30 @@ class SearchedPlaylistDetailViewController: UIViewController {
             source: searchedPlaylist.source,
             listId: searchedPlaylist.sourceListId
         ) { [weak self] result in
-            self?.isLoading = false
-            switch result {
-            case .failure(let e):
-                self?.loadError = e.localizedDescription
-                self?.trackCountLabel.text = "拉取失败：\(e.localizedDescription)"
-            case .success(let res):
-                let n = res.tracks.count
-                self?.tracks = res.tracks
-                self?.playlistName = res.name
-                self?.trackPlayability = Array(repeating: false, count: n)
-                if self?.titleLabel.text == nil || self?.titleLabel.text == self?.searchedPlaylist.name {
-                    self?.titleLabel.text = res.name
-                }
-                self?.trackCountLabel.text = "\(n) 首 · \(self?.searchedPlaylist.creator ?? "")"
-            }
-            self?.tableView.reloadData()
+            // 兜底：结果处理全是 UI（label / reloadData），强制回主线程
+            DispatchQueue.main.async { self?.handlePreviewResult(result) }
         }
+    }
+
+    private func handlePreviewResult(
+        _ result: Swift.Result<(name: String, tracks: [PlaylistImporter.Track], total: Int), Error>
+    ) {
+        isLoading = false
+        switch result {
+        case .failure(let e):
+            loadError = e.localizedDescription
+            trackCountLabel.text = "拉取失败：\(e.localizedDescription)"
+        case .success(let res):
+            let n = res.tracks.count
+            tracks = res.tracks
+            playlistName = res.name
+            trackPlayability = Array(repeating: false, count: n)
+            if titleLabel.text == nil || titleLabel.text == searchedPlaylist.name {
+                titleLabel.text = res.name
+            }
+            trackCountLabel.text = "\(n) 首 · \(searchedPlaylist.creator)"
+        }
+        tableView.reloadData()
     }
 
     // MARK: - Actions

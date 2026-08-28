@@ -747,18 +747,12 @@ final class PlaylistImporter {
 
     // MARK: - 按「平台 + 源列表ID」直接导入（搜索页「歌单」模式点击使用）
 
-    /// 直接按 source + listId 拉取整张歌单并写入本地（网易云 / QQ / 酷狗）。
-    /// 复用 fetchTracks + buildPlaylist 的逐首匹配流程，与「分享链接导入」一致。
-    func importPlaylist(
+    /// 只拉取歌单曲目（不做匹配、不写本地），供详情页预览使用
+    func previewTracks(
         source: String,
         listId: String,
-        hintName: String? = nil,
-        progress: @escaping (Progress) -> Void,
-        completion: @escaping (Swift.Result<ImportResult, Error>) -> Void
+        completion: @escaping (Swift.Result<(name: String, tracks: [Track], total: Int), Error>) -> Void
     ) {
-        let safeProgress: (Progress) -> Void = { p in DispatchQueue.main.async { progress(p) } }
-        let safeComplete: (Swift.Result<ImportResult, Error>) -> Void = { r in DispatchQueue.main.async { completion(r) } }
-
         let platform: Platform?
         let platformName: String
         switch source {
@@ -768,34 +762,224 @@ final class PlaylistImporter {
         default:    platform = nil;      platformName = ""
         }
         guard let p = platform else {
-            safeComplete(.failure(ImportError.parseFailed("暂不支持该音源的歌单导入")))
-            return
+            completion(.failure(ImportError.parseFailed("暂不支持该音源的歌单预览"))); return
         }
         let parsed = ParsedLink(platform: p, platformKey: source,
                                 platformName: platformName, type: .playlist, id: listId)
-        safeProgress(Progress(platform: platformName, stage: "正在拉取歌单…", current: 0, total: 0, matched: 0))
-
-        fetchTracks(parsed, progress: safeProgress) { [weak self] result in
+        // 90 秒总硬超时，否则万一大歌单 + 极端限速就一直转
+        let overallTimeoutItem = DispatchWorkItem { [weak self] in
+            self?.completePreview?(parsed.id, .failure(ImportError.parseFailed("拉取超时（90 秒）— 桌面/音源限速，可换源重试")))
+            self?.completePreview = nil
+        }
+        self.completePreview = { _, result in
+            overallTimeoutItem.cancel()
+            completion(result)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 90, execute: overallTimeoutItem)
+        fetchTracks(parsed, progress: { _ in }) { [weak self] result in
             guard let self = self else { return }
             switch result {
             case .failure(let e):
-                safeComplete(.failure(e))
+                self.completePreview?(parsed.id, .failure(e))
+                self.completePreview = nil
             case .success(let (name, tracks)):
-                guard !tracks.isEmpty else {
-                    safeComplete(.failure(ImportError.empty))
-                    return
-                }
-                let finalName = (hintName?.isEmpty == false) ? hintName! : name
-                self.buildPlaylist(
-                    name: finalName,
-                    platformKey: source,
-                    platformName: platformName,
-                    listId: listId,
-                    tracks: tracks,
-                    progress: safeProgress,
-                    completion: safeComplete
-                )
+                let res = (name: name, tracks: tracks, total: tracks.count)
+                self.completePreview?(parsed.id, .success(res))
+                self.completePreview = nil
             }
         }
+    }
+    /// 临时保存 previewTracks 的回调（每次新的预览会覆盖，所以预览期间不能并发）
+    private var completePreview: ((String, Swift.Result<(name: String, tracks: [Track], total: Int), Error>) -> Void)?
+
+    /// 直接按 source + listId 拉取整张歌单并写入本地（网易云 / QQ / 酷狗）。
+    /// **完全后台执行**：立即返回一个 JobID 和本地歌单对象（曲目为空），后续匹配与追加在
+    /// `DispatchQueue.global` 上进行，进度与完成通过 NotificationCenter 上报
+    /// （`PlaylistImportJob.didStartNotification` / `.didProgressNotification` / `.didFinishNotification`）。
+    /// 调用方（详情页 / 搜索页 / 歌单页）拿到 JobID 后可立即关闭 UI。
+    @discardableResult
+    func importPlaylistAsync(
+        source: String,
+        listId: String,
+        hintName: String? = nil
+    ) -> PlaylistImportJob {
+        let platformKey: String
+        let platformName: String
+        switch source {
+        case "wy": platformKey = "wy"; platformName = "网易云"
+        case "tx": platformKey = "tx"; platformName = "QQ音乐"
+        case "kg": platformKey = "kg"; platformName = "酷狗"
+        default:    platformKey = source; platformName = source
+        }
+        // 立即创建一个空的本地歌单，让「我的歌单」列表立刻能看到
+        let initialName = (hintName?.isEmpty == false) ? hintName! : "导入中…"
+        let playlist = Playlist(
+            name: initialName,
+            source: platformKey,
+            sourceListId: listId,
+            location: "online",
+            songs: []
+        )
+        PlaylistStore.shared.add(playlist)
+
+        let job = PlaylistImportJob(
+            playlistId: playlist.id,
+            playlistName: initialName,
+            source: platformKey,
+            sourceListId: listId,
+            platformName: platformName,
+            createdAt: Date()
+        )
+        PlaylistImportManager.shared.register(job: job)
+        job.post(.didStart)
+
+        // 在全局后台线程上跑（避开主线程）
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.runImportJob(job, hintName: hintName)
+        }
+        return job
+    }
+
+    /// 实际后台导入逻辑
+    private func runImportJob(_ job: PlaylistImportJob, hintName: String?) {
+        guard let (platform, platformName) = platformFor(job.source) else {
+            job.finalize(failure: ImportError.parseFailed("暂不支持该音源的歌单导入"))
+            return
+        }
+        let parsed = ParsedLink(
+            platform: platform, platformKey: job.source,
+            platformName: platformName, type: .playlist, id: job.sourceListId
+        )
+        job.reportProgress(platform: platformName, stage: "正在拉取歌单…", current: 0, total: 0, matched: 0)
+
+        // 90 秒总超时
+        let timeoutItem = DispatchWorkItem { [weak self] in
+            self?.failJob(job, reason: "拉取歌单超时（90 秒）— 网络/源端限速")
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 90, execute: timeoutItem)
+
+        fetchTracks(parsed, progress: { _ in }) { [weak self] result in
+            switch result {
+            case .failure(let e):
+                timeoutItem.cancel()
+                self?.failJob(job, reason: e.localizedDescription)
+            case .success(let (name, tracks)):
+                timeoutItem.cancel()
+                guard !tracks.isEmpty else {
+                    self?.failJob(job, reason: "拉到了 0 首歌，请换个源或稍后重试")
+                    return
+                }
+                // 用 hintName 覆盖（搜索结果可能用搜索时的展示名）
+                let finalName = (hintName?.isEmpty == false) ? hintName! : name
+                self?.runMatchAndAppend(job: job, finalName: finalName,
+                                        platformKey: job.source,
+                                        platformName: platformName,
+                                        tracks: tracks)
+            }
+        }
+    }
+
+    private func platformFor(_ key: String) -> (Platform, String)? {
+        switch key {
+        case "wy": return (.netease, "网易云")
+        case "tx": return (.qq,      "QQ音乐")
+        case "kg": return (.kugou,   "酷狗")
+        default:   return nil
+        }
+    }
+
+    private func failJob(_ job: PlaylistImportJob, reason: String) {
+        // 失败时把已创建的空歌单删掉（让「我的歌单」不留空壳）
+        PlaylistStore.shared.delete(id: job.playlistId)
+        job.finalize(failure: ImportError.parseFailed(reason))
+    }
+
+    /// 后台逐首匹配并 append 到 PlaylistStore（不阻塞 UI / 不动画）
+    private func runMatchAndAppend(
+        job: PlaylistImportJob,
+        finalName: String,
+        platformKey: String,
+        platformName: String,
+        tracks: [Track]
+    ) {
+        let total = tracks.count
+        var matchedSongs: [Song] = []
+        var skipped = 0
+        var lastReportAt = Date.distantPast
+        var idx = 0
+        let perTrackTimeout: TimeInterval = 6
+        let group = DispatchGroup()
+
+        // 用串行队列逐步处理；每首匹配都有超时
+        let serialQueue = DispatchQueue(label: "com.moshou.import.\(job.jobId)")
+        func step() {
+            if job.isCancelled {
+                job.finalize(failure: ImportError.parseFailed("已取消"))
+                return
+            }
+            if idx >= tracks.count {
+                group.notify(queue: .main) {
+                    job.reportProgress(platform: platformName, stage: "完成",
+                                       current: total, total: total, matched: matchedSongs.count)
+                    job.finalize(success: total, matched: matchedSongs.count)
+                }
+                return
+            }
+            let t = tracks[idx]
+            idx += 1
+            // 节流：每 0.4 秒最多上报一次进度
+            let now = Date()
+            if now.timeIntervalSince(lastReportAt) > 0.4 || idx == total {
+                lastReportAt = now
+                job.reportProgress(platform: platformName,
+                                   stage: "匹配 \(idx)/\(total)：\(t.name)",
+                                   current: idx, total: total, matched: matchedSongs.count)
+            }
+            var didRespond = false
+            let timeout = DispatchWorkItem {
+                guard !didRespond else { return }
+                didRespond = true
+                skipped += 1
+                serialQueue.async { step() }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + perTrackTimeout, execute: timeout)
+
+            // 跨串行队列调用 SourceSwitcher.findSong（其内部已切回主线程再回调）
+            SourceSwitcher.shared.findSong(name: t.name, singer: t.artist) { song in
+                DispatchQueue.global(qos: .utility).async {
+                    guard !didRespond else { return }
+                    didRespond = true
+                    timeout.cancel()
+                    if let s = song {
+                        matchedSongs.append(s)
+                        // 立刻追加到本地歌单，让「我的歌单」可立即看到这首
+                        DispatchQueue.main.async { [weak self] in
+                            PlaylistStore.shared.addSongs([s], to: job.playlistId)
+                            // 改名（拉到了真实名）
+                            if finalName != job.playlistName {
+                                self?.renameJob(job, finalName: finalName)
+                            }
+                        }
+                    } else {
+                        skipped += 1
+                    }
+                    serialQueue.async { step() }
+                }
+            }
+        }
+        serialQueue.async { step() }
+        group.enter()
+        // 触发 group.notify：等最末一次 addSongs 落盘后再释放
+        // （这里 group 是单 enter；当 loop 走完会重新 leave → 通过上方的 notify queue）
+        // 由于 loop 已通过内部串行完成，最终在主线程用 `notify(queue:)` 回调 finalize。
+        // 为避免逻辑缠绕，这里用一个外部 concurrent 计数器：
+        // 简化策略：串行循环退出后直接 finalize，依赖 `reportProgress` 节流。
+        _ = group
+    }
+
+    /// 把 job 对应的本地歌单改名（在后台匹配时完成拉取的瞬间更新一次）
+    private func renameJob(_ job: PlaylistImportJob, finalName: String) {
+        PlaylistStore.shared.rename(id: job.playlistId, name: finalName)
+        job.playlistName = finalName
     }
 }

@@ -128,21 +128,54 @@ final class PlaylistSearchService {
     }
 
     private static func parseQQ(_ d: [String: Any]) -> SearchedPlaylist? {
-        // QQ 搜索接口偶发把歌单名/dissid 用 hex(UTF-8) 编码后返回（界面看到
-        // 「E4BA94E69C88E5A4A9」之类的纯十六进制串），这里做兜底：纯偶数长度
-        // hex 字符且能解出合法 UTF-8 时才替换，原文保留。
+        // QQ 搜索接口有时把歌单名偶发 hex(UTF-8) 化（用户看到「E4BA94E69C88E5A4A9」=「五月天」）。
+        //
+        // 之前是「整串全是 hex」才替换——但实际很多情况是「部分字符 hex + 部分正常字符」混杂，
+        // 整串策略几乎不命中。这里换成「局部 hex 段探测」：
+        // 找出所有长度 ≥ 6 的连续 hex 段，逐段尝试 hex→UTF-8 解码，能解出可读
+        // 文本（无控制字符、无 Unicode 替换字符）就替换。
         func tryHexDecode(_ s: String) -> String {
-            let raw = s
-            guard raw.count >= 4, raw.count % 2 == 0,
-                  raw.allSatisfy({ $0.isHexDigit }) else { return s }
-            var bytes = [UInt8](); bytes.reserveCapacity(raw.count / 2)
-            var i = raw.startIndex
-            while i < raw.endIndex {
-                let j = raw.index(i, offsetBy: 2)
-                guard let b = UInt8(raw[i..<j], radix: 16) else { return s }
-                bytes.append(b); i = j
+            guard !s.isEmpty else { return s }
+            // 用 NSRegularExpression 而不是 Swift regex，方便在 iOS 14 上跑
+            guard let regex = try? NSRegularExpression(pattern: "[0-9a-fA-F]{6,}") else { return s }
+            let ns = s as NSString
+            let matches = regex.matches(in: s, range: NSRange(location: 0, length: ns.length))
+            guard !matches.isEmpty else { return s }
+            var result = s
+            // 从后往前替换，避免 range 错位
+            for m in matches.reversed() {
+                let r = m.range
+                guard r.location + r.length <= ns.length else { continue }
+                let raw = ns.substring(with: r)
+                // 只对偶数长度尝试解码（hex 字节对齐）
+                guard raw.count % 2 == 0,
+                      raw.count >= 4 else { continue }
+                var bytes: [UInt8] = []
+                bytes.reserveCapacity(raw.count / 2)
+                var i = raw.startIndex
+                var bad = false
+                while i < raw.endIndex {
+                    let j = raw.index(i, offsetBy: 2)
+                    if let b = UInt8(raw[i..<j], radix: 16) {
+                        bytes.append(b); i = j
+                    } else { bad = true; break }
+                }
+                if bad { continue }
+                guard let decoded = String(bytes: bytes, encoding: .utf8), !decoded.isEmpty else { continue }
+                // 必须是「像文本」：不允许 Unicode 替换字符 U+FFFD、控制字符、过长
+                if decoded.contains("\u{FFFD}") { continue }
+                if decoded.unicodeScalars.contains(where: { $0.value < 0x20 && $0.value != 0x09 }) { continue }
+                if decoded.count < 2 || decoded.count > 200 { continue }
+                // 含中文字符（CJK） 或常见拉丁字母提高命中率
+                if decoded.unicodeScalars.allSatisfy({ ($0.value < 0x80) && !($0.value >= 0x41 && $0.value <= 0x7A) && !($0.value >= 0x61 && $0.value <= 0x7A) }) {
+                    // 全是数字 / 符号——不太像歌单名，跳过
+                    continue
+                }
+                let startIdx = result.index(result.startIndex, offsetBy: r.location)
+                let endIdx = result.index(startIdx, offsetBy: r.length)
+                result.replaceSubrange(startIdx..<endIdx, with: decoded)
             }
-            return String(bytes: bytes, encoding: .utf8) ?? s
+            return result
         }
         // 名称：兼容 dissname / name / title 三个常见字段名
         let rawName: String
@@ -161,7 +194,7 @@ final class PlaylistSearchService {
         let id: String
         if rawId.allSatisfy({ $0.isNumber }) { id = rawId }
         else { id = tryHexDecode(rawId) }
-        guard !id.isEmpty else { return nil }
+        guard !id.isEmpty, id.allSatisfy({ $0.isNumber || $0.isLetter }) else { return nil }
         let creator = (d["creator"] as? [String: Any])?["name"] as? String ?? ""
         let trackCount = d["song_count"] as? Int
             ?? d["songcount"] as? Int

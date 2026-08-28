@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import Security
+import Network
 
 /// LX Music 桌面版同步服务客户端（原生 WebSocket + message2call RPC）
 ///
@@ -207,7 +208,8 @@ final class LXSyncService {
 
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
         req.httpMethod = "GET"
-        req.timeoutInterval = 20
+        // 12s（之前 20s）—— F6：便于更早反馈失败，但桌面 AES + RSA 解密仍有足够余量
+        req.timeoutInterval = 12
         req.setValue(m, forHTTPHeaderField: "m")
         syncHTTPSession.dataTask(with: req) { data, response, error in
             if let error = error { completion(.failure(self.classify(error))); return }
@@ -563,6 +565,9 @@ final class LXSyncService {
     /// 现在与 `startSync` 走同一套加密流程（AES-128-ECB(keyFromAuthCode(code)) 加密
     /// `lx-music auth::\n<pub>\n<deviceName>\nlx_music_desktop`），因此 401 现在**真实代表「同步码错误或已失效」**，
     /// 而不再是诊断按钮自身的假错误。
+    ///
+    /// F6：诊断开始前先用 Network framework 做一次 TCP 端口可达性探测，
+    /// 端口不可达立即报错（不再让用户以为是同步码错误）；`/ah` 超时缩短到 12 秒以便更快反馈。
     func probeAH(authCode: String, completion: @escaping (String) -> Void) {
         guard let hostPath = hostPathFromConfig() else {
             completion("未配置同步服务地址（请先在上方填写并保存）。"); return
@@ -573,6 +578,31 @@ final class LXSyncService {
         }
 
         var report = "诊断目标：\(hostPath)\n同步码：\(code)\n\n"
+
+        // ① 先做一次 TCP 端口可达性探测（如不可达直接返回，节省 /hello 12s+ 等待）
+        if let (host, port) = parseHostPort(hostPath) {
+            report += "预检：正在 TCP 探测 \(host):\(port)…\n\n"
+            let probeResult = probeTCP(host: host, port: port, timeout: 3.0)
+            switch probeResult {
+            case .reachable:
+                report += "预检：✓ TCP \(host):\(port) 可达\n\n"
+            case .unreachable(let reason):
+                report += "预检：✗ TCP \(host):\(port) 不可达（\(reason)）\n\n"
+                report += "结论：手机连不上桌面 \(host):\(port)。几乎都是网络/防火墙问题：\n" +
+                          "①手机与桌面在同一局域网\n" +
+                          "②桌面端「同步 → 服务端模式」正在运行\n" +
+                          "③系统防火墙/杀毒放行同步端口\n" +
+                          "④手机未开会把局域网请求转公网的 VPN/代理\n" +
+                          "这是网络问题，不是同步码问题，请先排查网络。"
+                completion(report); return
+            case .timedOut:
+                report += "预检：✗ TCP \(host):\(port) 3 秒内无响应（连接被防火墙丢弃/超时）\n\n"
+                report += "结论：网络层 3 秒内无任何响应，桌面端口被屏蔽或地址不可达。\n" +
+                          "请确认桌面同步服务已启动且手机与桌面在同一局域网，并检查系统防火墙。"
+                completion(report); return
+            }
+        }
+
         var steps: [String] = []
         let group = DispatchGroup()
         var helloOk = false
@@ -611,7 +641,8 @@ final class LXSyncService {
         let m = LXSyncCrypto.aesEncryptLX(plaintext: plaintext, keyBase64: aesKey)
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
         req.httpMethod = "GET"
-        req.timeoutInterval = 20
+        // F6：12 秒（原来 20 秒）—— 给桌面 AES + RSA 解密留够余量，但卡住也能更快反馈
+        req.timeoutInterval = 12
         req.setValue(m, forHTTPHeaderField: "m")
         syncHTTPSession.dataTask(with: req) { data, response, error in
             defer { group.leave() }
@@ -645,6 +676,64 @@ final class LXSyncService {
             }
             completion(summary)
         }
+    }
+
+    // MARK: - TCP 端口可达性探测（F6 新增）
+
+    private enum TCPProbeResult {
+        case reachable
+        case unreachable(String)   // 显式拒绝（如 Connection refused）
+        case timedOut               // 黑洞（防火墙丢包）
+    }
+
+    /// 用 Network framework 做一次 TCP 连接探测，超时立即结束不挂 UI
+    private func probeTCP(host: String, port: UInt16, timeout: TimeInterval) -> TCPProbeResult {
+        let endpoint = NWEndpoint.Host(host)
+        let nwPort = NWEndpoint.Port(rawValue: port) ?? 9527
+        let conn = NWConnection(host: endpoint, port: nwPort, using: .tcp)
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: TCPProbeResult = .timedOut
+
+        conn.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                result = .reachable
+                conn.cancel()
+                semaphore.signal()
+            case .failed(let err):
+                let code = (err as NSError).code
+                result = .unreachable(err.localizedDescription + " (NWError code=\(code))")
+                conn.cancel()
+                semaphore.signal()
+            case .cancelled:
+                semaphore.signal()
+            default:
+                break
+            }
+        }
+        conn.start(queue: DispatchQueue(label: "com.moshou.lxtcpprobe"))
+        // 限时等待，避免永远阻塞
+        _ = semaphore.wait(timeout: .now() + timeout)
+        if conn.state != .cancelled { conn.cancel() }
+        return result
+    }
+
+    /// 从 `http://192.168.3.2:12345` 或 `192.168.1.5:23332` 解析出 host + port
+    private func parseHostPort(_ hostPath: String) -> (host: String, port: UInt16)? {
+        // 去掉协议头与路径
+        var s = hostPath
+        if let r = s.range(of: "://") { s.removeSubrange(s.startIndex..<r.upperBound) }
+        if let r = s.range(of: "/") { s = String(s[..<r.lowerBound]) }
+        let parts = s.split(separator: ":", maxSplits: 1).map(String.init)
+        guard let host = parts.first, !host.isEmpty else { return nil }
+        let port: UInt16
+        if parts.count >= 2, let p = UInt16(parts[1]) {
+            port = p
+        } else {
+            port = 9527
+        }
+        return (host, port)
     }
 
     private func notify() {

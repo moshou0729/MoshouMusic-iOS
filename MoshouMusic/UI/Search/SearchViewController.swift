@@ -25,7 +25,6 @@ class SearchViewController: UIViewController {
     private var playlistResults: [SearchedPlaylist] = []
     private var currentKeyword: String = ""
     private var searchTask: DispatchWorkItem?
-    private var hud: UIAlertController?
 
     // MARK: - Lifecycle
 
@@ -353,8 +352,8 @@ extension SearchViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if searchMode == .playlist {
-            // 歌单模式：点击某一歌单 → 拉取整张并播放
-            importPlaylist(playlistResults[indexPath.row])
+            // 歌单模式：v1.0.38 P2 改为 push 详情页，让用户先看曲目再决定如何处理
+            openPlaylistDetail(playlistResults[indexPath.row])
         } else {
             // 歌曲模式：只播放这一首
             let song = searchResults[indexPath.row]
@@ -416,79 +415,14 @@ extension SearchViewController {
     }
 }
 
-// MARK: - 歌单导入（歌单搜索点击）
+// MARK: - 歌单导航（歌单搜索点击 → 进入详情页，由详情页决定是否导入）
 
 extension SearchViewController {
-    /// 点击搜索结果里的某个歌单：拉取整张 → 匹配本机音源 → 加入队列并播放
-    private func importPlaylist(_ pl: SearchedPlaylist) {
-        let hud = showHUD("正在拉取歌单「\(pl.name)」…")
-        // 总超时兜底：90 秒内 import 没完成则强 dismiss + 提示，
-        // 避免某首曲目匹配卡住导致 HUD 永远关不掉
-        var didComplete = false
-        let forceTimeout = DispatchWorkItem {
-            guard !didComplete else { return }
-            didComplete = true
-            hud.dismiss(animated: true) { self.hud = nil }
-            self.showAlert("导入超时",
-                           message: "拉取/匹配耗时过长（>90 秒），已自动取消。可能是某首歌曲的音源匹配卡住，建议稍后重试或切换其它音源。")
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 90, execute: forceTimeout)
-
-        PlaylistImporter.shared.importPlaylist(
-            source: pl.source, listId: pl.sourceListId, hintName: pl.name,
-            progress: { p in
-                // importPlaylist 内部 safeProgress 已 DispatchQueue.main.async，
-                // 这里直接更新 HUD 文本
-                if didComplete { return }
-                let stage = p.stage.isEmpty ? "" : p.stage
-                let tail = p.total > 0 ? "匹配 \(p.matched)/\(p.total)" : ""
-                let line2 = stage.isEmpty ? tail : (tail.isEmpty ? stage : "\(stage)\n\(tail)")
-                hud.message = line2.isEmpty
-                    ? "正在拉取歌单「\(pl.name)」…"
-                    : "正在拉取歌单「\(pl.name)」…\n\(line2)"
-            },
-            completion: { result in
-                didComplete = true
-                forceTimeout.cancel()
-                hud.dismiss(animated: true)
-                self.hud = nil
-                switch result {
-                case .failure(let e):
-                    self.showAlert("导入失败", message: e.localizedDescription)
-                case .success(let res):
-                    let songs = res.playlist.songs
-                    if let first = songs.first {
-                        PlayerManager.shared.play(song: first, queue: songs)
-                        self.showToast("已导入「\(res.playlistName)」：\(res.matched)/\(res.total) 首匹配，已加入播放队列")
-                    } else {
-                        // 拉到了曲目但本机音源一个都没匹配上 — 静默 toast 用户感知不到，
-                        // 改成显式 alert 提示换音源 / 装脚本。
-                        self.showAlert("导入完成但未匹配",
-                                       message: "已从「\(res.platform)」拉取「\(res.playlistName)」共 \(res.total) 首，但在本机已启用音源中没有匹配到任何可播放版本。\n\n建议：\n1. 切到含「\(res.platform)」的音源；\n2. 或在「设置 → 音源设置」中加载该平台的脚本后重试。")
-                    }
-                }
-            }
-        )
-    }
-
-    private func showHUD(_ msg: String) -> UIAlertController {
-        let a = UIAlertController(title: nil, message: msg, preferredStyle: .alert)
-        present(a, animated: true)
-        hud = a
-        return a
-    }
-
-    private func showAlert(_ title: String, message: String) {
-        let a = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        a.addAction(UIAlertAction(title: "确定", style: .default))
-        present(a, animated: true)
-    }
-
-    private func showToast(_ msg: String) {
-        let alert = UIAlertController(title: nil, message: msg, preferredStyle: .alert)
-        present(alert, animated: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-            alert.dismiss(animated: true)
-        }
+    /// 点击搜索结果里的某个歌单 → push 到详情页，让用户先看曲目再决定
+    /// （v1.0.38 P2 改进：详情页可"立即全部播放 / 加入队列 / 收藏到本地（后台）" 三种动作，
+    /// 不再强制触发"匹配 + 持久化 + 自动开播"的一站到底流程）
+    private func openPlaylistDetail(_ pl: SearchedPlaylist) {
+        let detail = PlaylistDetailViewController(searchedPlaylist: pl)
+        navigationController?.pushViewController(detail, animated: true)
     }
 }

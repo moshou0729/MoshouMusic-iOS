@@ -18,6 +18,9 @@ class MainTabBarController: UITabBarController {
             self, selector: #selector(playerStateChanged(_:)),
             name: .playerStateChanged, object: nil
         )
+
+        // v1.0.38 P2：全局导入进度 banner，挂在主 view 之上，永远可见
+        PlaylistImportProgressBannerController.shared.attach(to: view)
     }
 
     private func setupTabs() {

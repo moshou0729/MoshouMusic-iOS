@@ -65,9 +65,9 @@ class SearchedPlaylistDetailViewController: UIViewController {
         navigationItem.largeTitleDisplayMode = .never
 
         setupHeader()
+        setupSegmented()
         setupTable()
         setupFooter()
-        setupSegmented()
         loadTracks()
     }
 
@@ -153,6 +153,13 @@ class SearchedPlaylistDetailViewController: UIViewController {
         segmented.setTitleTextAttributes([.foregroundColor: Theme.primary], for: .normal)
         segmented.addTarget(self, action: #selector(segmentChanged(_:)), for: .valueChanged)
         view.addSubview(segmented)
+
+        NSLayoutConstraint.activate([
+            segmented.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            segmented.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            segmented.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 14),
+            segmented.heightAnchor.constraint(equalToConstant: 32),
+        ])
     }
 
     private func setupFooter() {
@@ -200,13 +207,8 @@ class SearchedPlaylistDetailViewController: UIViewController {
 
             stack.leadingAnchor.constraint(equalTo: footerContainer.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: footerContainer.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -68),
-            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-
-            segmented.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            segmented.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            segmented.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 14),
-            segmented.heightAnchor.constraint(equalToConstant: 32),
+            stack.topAnchor.constraint(equalTo: footerContainer.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: footerContainer.bottomAnchor, constant: -8),
 
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),

@@ -422,7 +422,7 @@ extension SearchViewController {
     /// （v1.0.38 P2 改进：详情页可"立即全部播放 / 加入队列 / 收藏到本地（后台）" 三种动作，
     /// 不再强制触发"匹配 + 持久化 + 自动开播"的一站到底流程）
     private func openPlaylistDetail(_ pl: SearchedPlaylist) {
-        let detail = PlaylistDetailViewController(searchedPlaylist: pl)
+        let detail = SearchedPlaylistDetailViewController(searchedPlaylist: pl)
         navigationController?.pushViewController(detail, animated: true)
     }
 }

@@ -15,7 +15,7 @@ import UIKit
 /// - 进入页面立刻看曲目列表，不需要等匹配 / 导入
 /// - 头部展示曲目数 + 平台来源，没有"未知/解析中"全屏遮罩
 /// - 后台导入不再"全屏遮罩卡片+永不消失"——已发现的卡死问题不再可能发生
-class PlaylistDetailViewController: UIViewController {
+class SearchedPlaylistDetailViewController: UIViewController {
 
     // MARK: - Data
 
@@ -95,7 +95,7 @@ class PlaylistDetailViewController: UIViewController {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(subtitleLabel)
 
-        trackCountLabel.font = Theme.labelSmall
+        trackCountLabel.font = Theme.bodySmall
         trackCountLabel.textColor = Theme.subtext
         trackCountLabel.numberOfLines = 0
         trackCountLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -376,7 +376,7 @@ class PlaylistDetailViewController: UIViewController {
 
 // MARK: - UITableViewDataSource
 
-extension PlaylistDetailViewController: UITableViewDataSource, UITableViewDelegate {
+extension SearchedPlaylistDetailViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         if isLoading { return 0 }
         if loadError != nil { return 1 }
@@ -442,7 +442,7 @@ final class PlaylistTrackCell: UITableViewCell {
         artistLabel.numberOfLines = 1
         contentView.addSubview(artistLabel)
 
-        badgeLabel.font = Theme.labelSmall
+        badgeLabel.font = Theme.bodySmall
         badgeLabel.textColor = .white
         badgeLabel.textAlignment = .center
         badgeLabel.translatesAutoresizingMaskIntoConstraints = false

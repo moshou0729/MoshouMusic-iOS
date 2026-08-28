@@ -15,7 +15,7 @@ final class PlaylistImportJob {
 
     let jobId: String
     let playlistId: String
-    private(set) var playlistName: String
+    var playlistName: String
     let source: String                // wy / tx / kg
     let sourceListId: String
     private(set) var platformName: String

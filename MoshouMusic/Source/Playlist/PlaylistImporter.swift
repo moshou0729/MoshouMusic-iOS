@@ -908,7 +908,6 @@ final class PlaylistImporter {
         var lastReportAt = Date.distantPast
         var idx = 0
         let perTrackTimeout: TimeInterval = 6
-        let group = DispatchGroup()
 
         // 用串行队列逐步处理；每首匹配都有超时
         let serialQueue = DispatchQueue(label: "com.moshou.import.\(job.jobId)")
@@ -918,11 +917,9 @@ final class PlaylistImporter {
                 return
             }
             if idx >= tracks.count {
-                group.notify(queue: .main) {
-                    job.reportProgress(platform: platformName, stage: "完成",
-                                       current: total, total: total, matched: matchedSongs.count)
-                    job.finalize(success: total, matched: matchedSongs.count)
-                }
+                job.reportProgress(platform: platformName, stage: "完成",
+                                   current: total, total: total, matched: matchedSongs.count)
+                job.finalize(success: total, matched: matchedSongs.count)
                 return
             }
             let t = tracks[idx]
@@ -968,13 +965,6 @@ final class PlaylistImporter {
             }
         }
         serialQueue.async { step() }
-        group.enter()
-        // 触发 group.notify：等最末一次 addSongs 落盘后再释放
-        // （这里 group 是单 enter；当 loop 走完会重新 leave → 通过上方的 notify queue）
-        // 由于 loop 已通过内部串行完成，最终在主线程用 `notify(queue:)` 回调 finalize。
-        // 为避免逻辑缠绕，这里用一个外部 concurrent 计数器：
-        // 简化策略：串行循环退出后直接 finalize，依赖 `reportProgress` 节流。
-        _ = group
     }
 
     /// 把 job 对应的本地歌单改名（在后台匹配时完成拉取的瞬间更新一次）

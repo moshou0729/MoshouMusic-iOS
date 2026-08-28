@@ -128,8 +128,40 @@ final class PlaylistSearchService {
     }
 
     private static func parseQQ(_ d: [String: Any]) -> SearchedPlaylist? {
-        guard let id = d["dissid"] as? String, !id.isEmpty else { return nil }
-        guard let name = d["dissname"] as? String, !name.isEmpty else { return nil }
+        // QQ 搜索接口偶发把歌单名/dissid 用 hex(UTF-8) 编码后返回（界面看到
+        // 「E4BA94E69C88E5A4A9」之类的纯十六进制串），这里做兜底：纯偶数长度
+        // hex 字符且能解出合法 UTF-8 时才替换，原文保留。
+        func tryHexDecode(_ s: String) -> String {
+            let raw = s
+            guard raw.count >= 4, raw.count % 2 == 0,
+                  raw.allSatisfy({ $0.isHexDigit }) else { return s }
+            var bytes = [UInt8](); bytes.reserveCapacity(raw.count / 2)
+            var i = raw.startIndex
+            while i < raw.endIndex {
+                let j = raw.index(i, offsetBy: 2)
+                guard let b = UInt8(raw[i..<j], radix: 16) else { return s }
+                bytes.append(b); i = j
+            }
+            return String(bytes: bytes, encoding: .utf8) ?? s
+        }
+        // 名称：兼容 dissname / name / title 三个常见字段名
+        let rawName: String
+        if let s = d["dissname"] as? String, !s.isEmpty { rawName = s }
+        else if let s = d["name"] as? String, !s.isEmpty { rawName = s }
+        else if let s = d["title"] as? String, !s.isEmpty { rawName = s }
+        else { return nil }
+        let name = tryHexDecode(rawName)
+        guard !name.isEmpty else { return nil }
+        // ID：dissid 偶发是 hex（decoded 之后是乱码），只接受纯十进制数字串；其它情况
+        // 也尝试 hex-decode 拿到能用的整数字符串。
+        let rawId: String
+        if let s = d["dissid"] as? String, !s.isEmpty { rawId = s }
+        else if let i = d["dissid"] as? Int { rawId = "\(i)" }
+        else { return nil }
+        let id: String
+        if rawId.allSatisfy({ $0.isNumber }) { id = rawId }
+        else { id = tryHexDecode(rawId) }
+        guard !id.isEmpty else { return nil }
         let creator = (d["creator"] as? [String: Any])?["name"] as? String ?? ""
         let trackCount = d["song_count"] as? Int
             ?? d["songcount"] as? Int

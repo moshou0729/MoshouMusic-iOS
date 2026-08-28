@@ -422,8 +422,34 @@ extension SearchViewController {
     /// 点击搜索结果里的某个歌单：拉取整张 → 匹配本机音源 → 加入队列并播放
     private func importPlaylist(_ pl: SearchedPlaylist) {
         let hud = showHUD("正在拉取歌单「\(pl.name)」…")
-        PlaylistImporter.shared.importPlaylist(source: pl.source, listId: pl.sourceListId, hintName: pl.name, progress: { _ in }) { result in
-            DispatchQueue.main.async {
+        // 总超时兜底：90 秒内 import 没完成则强 dismiss + 提示，
+        // 避免某首曲目匹配卡住导致 HUD 永远关不掉
+        var didComplete = false
+        let forceTimeout = DispatchWorkItem {
+            guard !didComplete else { return }
+            didComplete = true
+            hud.dismiss(animated: true) { self.hud = nil }
+            self.showAlert("导入超时",
+                           message: "拉取/匹配耗时过长（>90 秒），已自动取消。可能是某首歌曲的音源匹配卡住，建议稍后重试或切换其它音源。")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 90, execute: forceTimeout)
+
+        PlaylistImporter.shared.importPlaylist(
+            source: pl.source, listId: pl.sourceListId, hintName: pl.name,
+            progress: { p in
+                // importPlaylist 内部 safeProgress 已 DispatchQueue.main.async，
+                // 这里直接更新 HUD 文本
+                if didComplete { return }
+                let stage = p.stage.isEmpty ? "" : p.stage
+                let tail = p.total > 0 ? "匹配 \(p.matched)/\(p.total)" : ""
+                let line2 = stage.isEmpty ? tail : (tail.isEmpty ? stage : "\(stage)\n\(tail)")
+                hud.message = line2.isEmpty
+                    ? "正在拉取歌单「\(pl.name)」…"
+                    : "正在拉取歌单「\(pl.name)」…\n\(line2)"
+            },
+            completion: { result in
+                didComplete = true
+                forceTimeout.cancel()
                 hud.dismiss(animated: true)
                 self.hud = nil
                 switch result {
@@ -442,7 +468,7 @@ extension SearchViewController {
                     }
                 }
             }
-        }
+        )
     }
 
     private func showHUD(_ msg: String) -> UIAlertController {

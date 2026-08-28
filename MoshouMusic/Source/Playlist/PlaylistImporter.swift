@@ -701,6 +701,9 @@ final class PlaylistImporter {
         var matchedSongs: [Song] = []
         var skipped: [Track] = []
         var idx = 0
+        // 单首匹配的超时阈值（秒）。某些音源对个别曲目取不到播放 URL，
+        // 若不设上限会一直挂住导致整个歌单 import 卡死。
+        let perTrackTimeout: TimeInterval = 8
 
         func step() {
             if idx >= tracks.count {
@@ -717,7 +720,20 @@ final class PlaylistImporter {
                 total: tracks.count,
                 matched: matchedSongs.count
             ))
+            // findSong 无内置超时：用 didRespond 旗标 + DispatchWorkItem 兜底
+            var didRespond = false
+            let timeoutItem = DispatchWorkItem {
+                guard !didRespond else { return }
+                didRespond = true
+                skipped.append(t)
+                step()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + perTrackTimeout, execute: timeoutItem)
+
             SourceSwitcher.shared.findSong(name: t.name, singer: t.artist) { song in
+                guard !didRespond else { return }
+                didRespond = true
+                timeoutItem.cancel()
                 if let song = song {
                     matchedSongs.append(song)
                 } else {

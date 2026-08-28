@@ -481,7 +481,18 @@ final class LXSyncService {
         status = .testing
         notify()
         let start = Date()
+        // 兜底：URLSession 在 iOS 14 上偶发对局域网 IP 不回调，强加 25s 强制超时
+        // 避免界面永远卡在「正在测试…」
+        let forceTimeout = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            if case .testing = self.status {
+                self.status = .failed(reason: "请求超时（25 秒内桌面端未响应 /hello）。\n请确认：\n①手机与桌面在同一局域网\n②桌面端「同步 → 服务端模式」已开启\n③系统防火墙/杀毒放行同步端口（默认 23332）\n④手机未开 VPN/代理把局域网请求转公网")
+                self.notify()
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25, execute: forceTimeout)
         syncHTTPSession.dataTask(with: req) { [weak self] data, response, error in
+            forceTimeout.cancel()
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let error = error {

@@ -292,7 +292,7 @@ class LXSyncViewController: UIViewController {
             detail = "点「测试连接」可立即验证网络可达性"
         case .testing:
             color = Theme.warning
-            detail = "向 /hello 发起 HTTP 请求，最多 8 秒超时"
+            detail = "向 /hello 发起 HTTP 请求，最多 25 秒超时"
         case .ok(let h, _):
             color = Theme.success
             let parts = h.split(separator: "\n").map(String.init)

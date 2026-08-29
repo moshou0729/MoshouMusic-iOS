@@ -506,12 +506,25 @@ final class LXSyncService {
         URLSession.shared.dataTask(with: req) { [weak self] _, response, err in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let http = response as? HTTPURLResponse
+                let code = http?.statusCode ?? -1
                 let errStr = err?.localizedDescription ?? ""
+                // v1.0.54：把 101 响应的关键 headers 打印出来。
+                // iOS 的 URLSessionWebSocketTask 收到 101 后会验证 Sec-WebSocket-Accept，
+                // 如果服务端 101 响应里没这个 header，URLSession 会直接关 socket → "Socket is not connected"。
+                let h = http?.allHeaderFields ?? [:]
+                let swa = h["Sec-WebSocket-Accept"] as? String ?? "(missing)"
+                let conn = h["Connection"] as? String ?? "(missing)"
+                let upg = h["Upgrade"] as? String ?? "(missing)"
+                let summary = "HTTP \(code); Sec-WebSocket-Accept=\(swa.prefix(40)); Connection=\(conn); Upgrade=\(upg)"
                 let hint: String
                 switch code {
                 case 101:
-                    hint = "（服务端接受了真实凭证 —— iOS 端 URLSessionWebSocketTask 本身有 bug，问题在客户端握手）"
+                    if swa == "(missing)" {
+                        hint = "（服务端 101 但缺 Sec-WebSocket-Accept —— 这是 iOS URLSession 拒接并关 socket 的直接原因；服务端 LX 桌面端 ws 库配置 bug）"
+                    } else {
+                        hint = "（101 且 Sec-WebSocket-Accept 存在 —— iOS URLSessionWebSocketTask 自身 bug，需要换实现，如 Starscream）"
+                    }
                 case 401:
                     hint = "（服务端拒绝了真实凭证 —— iOS 端 i 或 t 生成有问题：要么 aesEncrypt 不对、要么 key 解析错）"
                 case -1:
@@ -519,9 +532,9 @@ final class LXSyncService {
                 default:
                     hint = ""
                 }
-                self.status = .failed(reason: "用真实凭证模拟 WS upgrade：HTTP \(code)\(hint)")
+                self.status = .failed(reason: "\(summary)\n\(hint)")
                 self.notify()
-                Logger.error("LX probe upgrade result: HTTP \(code) err=\(errStr)")
+                Logger.error("LX probe upgrade result: HTTP \(code) swa=\(swa.prefix(40)) err=\(errStr)")
             }
         }.resume()
     }

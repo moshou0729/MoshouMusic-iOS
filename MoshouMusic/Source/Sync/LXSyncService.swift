@@ -413,7 +413,9 @@ final class LXSyncService {
             if case .synced = self.status {
                 // 已同步过，保持标记
             } else {
-                self.status = .disconnected
+                // v1.0.50：把 WS 失败原因显示在状态文字里（不只 .disconnected），
+                // 方便用户截图发我看具体错误（之前 .disconnected 没 reason 字段、UI 不显示原因）
+                self.status = .failed(reason: "WebSocket 升级失败：\(reason)。请完全退出桌面端 LX Music（不是最小化）后重开再试。")
             }
             // 断开时清掉 currentStep，否则 UI 会同时显示"连接已断开"和"正在拉取桌面端歌单…"
             self.currentStep = nil

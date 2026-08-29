@@ -63,6 +63,12 @@ final class LXSyncService {
     // WebSocket 相关
     private var wsTask: URLSessionWebSocketTask?
     private var wsSession: URLSession?
+    /// WS 握手失败自动重试相关（v1.0.51）：服务端在 /ah 返回后才 saveClientKeyInfo，
+    /// 若那步是异步的，紧跟着建 WS 会 getClientKeyInfo 取不到 → 401。
+    private var wsRetryCount = 0
+    private var lastHostPath: String?
+    private var lastKeyInfo: LXClientKeyInfo?
+    private var userDidStop = false
 
     // 同步专用 HTTP 会话：独立 ephemeral 配置，避免与音乐搜索等共享 URLSession 的连接池互相挤占；
     // 并显式关闭 waitsForConnectivity，防止系统把局域网请求误判为“等待联网”而静默挂起。
@@ -100,6 +106,9 @@ final class LXSyncService {
     /// 启动一次完整同步：输入桌面端显示的 6 位同步码
     func startSync(authCode: String) {
         stopSync()
+        // 重置 WS 重试状态（stopSync 会把 userDidStop 置 true，这里要清掉）
+        userDidStop = false
+        wsRetryCount = 0
         let code = authCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             status = .failed(reason: "请输入桌面端显示的 6 位同步码"); currentStep = nil; notify(); return
@@ -148,7 +157,14 @@ final class LXSyncService {
                                 }
                                 self.status = .failed(reason: "认证失败：\(hint)"); self.currentStep = nil; self.notify()
                             case .success(let keyInfo):
-                                self.connectWebSocket(hostPath: hostPath, keyInfo: keyInfo)
+                                // 服务端在 /ah 响应之后才 saveClientKeyInfo（可能是异步的）。
+                                // 立刻建 WS 时 getClientKeyInfo(clientId) 可能还没存好 → 401。
+                                // 延迟 0.8s 再建连，并配合 handleDisconnect 的自动重试兜底。
+                                self.currentStep = "认证成功，正在建立 WebSocket 连接…"
+                                self.notify()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                                    self?.connectWebSocket(hostPath: hostPath, keyInfo: keyInfo)
+                                }
                             }
                         }
                     }
@@ -159,6 +175,7 @@ final class LXSyncService {
 
     /// 停止同步并关闭 WebSocket
     func stopSync() {
+        userDidStop = true   // 用户主动停止，不再自动重试
         wsTask?.cancel(with: .normalClosure, reason: nil)
         wsTask = nil
         wsSession?.invalidateAndCancel()
@@ -280,6 +297,10 @@ final class LXSyncService {
     // MARK: - WebSocket 连接
 
     private func connectWebSocket(hostPath: String, keyInfo: LXClientKeyInfo) {
+        // 记住参数，供握手失败自动重试使用
+        self.lastHostPath = hostPath
+        self.lastKeyInfo = keyInfo
+
         let wsURLString = hostPath
             .replacingOccurrences(of: "http", with: "ws", options: [.anchored])
             + "/socket"
@@ -412,17 +433,35 @@ final class LXSyncService {
             guard let self = self else { return }
             if case .synced = self.status {
                 // 已同步过，保持标记
-            } else {
-                // v1.0.50：把 WS 失败原因显示在状态文字里（不只 .disconnected），
-                // 方便用户截图发我看具体错误（之前 .disconnected 没 reason 字段、UI 不显示原因）
-                self.status = .failed(reason: "WebSocket 升级失败：\(reason)。请完全退出桌面端 LX Music（不是最小化）后重开再试。")
+                self.currentStep = nil
+                self.notify()
+                return
             }
-            // 断开时清掉 currentStep，否则 UI 会同时显示"连接已断开"和"正在拉取桌面端歌单…"
+            // v1.0.51：WS 握手失败自动重试。
+            // 服务端在 /ah 返回之后才 saveClientKeyInfo，若那步是异步的，
+            // 紧跟在 /ah 后面建 WS 会 getClientKeyInfo(clientId) 取不到 → 401。
+            // 实测 curl 用假 i/t 会稳定回 401（服务端 upgrade handler 工作正常），
+            // 所以真实凭证被拒更可能是时序问题而不是凭证本身错。
+            if !self.userDidStop, self.wsRetryCount < 2,
+               let host = self.lastHostPath, let ki = self.lastKeyInfo {
+                self.wsRetryCount += 1
+                let n = self.wsRetryCount
+                let delay = Double(n) * 1.5
+                self.status = .syncing
+                self.currentStep = "第 \(n) 次连接失败，\(Int(delay)) 秒后重试…"
+                self.notify()
+                Logger.error("LX WS retry #\(n) reason=\(reason)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self = self, !self.userDidStop else { return }
+                    self.connectWebSocket(hostPath: host, keyInfo: ki)
+                }
+                return
+            }
+            // 重试耗尽：把失败原因显示在状态文字里（.disconnected 没有 reason 字段）
+            self.status = .failed(reason: "WebSocket 升级失败（已重试 2 次）：\(reason)")
             self.currentStep = nil
             self.notify()
         }
-        // 调试日志（v1.0.49）：把 WS 失败原因、URL 一起打出来，便于排查是 401（authConnect 失败）
-        // 还是网络层（连接被 RST 等）
         Logger.error("LX 同步连接断开：\(reason) | url=\(self.wsTask?.originalRequest?.url?.absoluteString ?? "?")")
     }
 

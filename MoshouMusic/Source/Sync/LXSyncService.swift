@@ -472,8 +472,58 @@ final class LXSyncService {
             self.status = .failed(reason: diag)
             self.currentStep = nil
             self.notify()
+            // v1.0.53：iOS 自己用 URLSession.dataTask 模拟同一请求（带 Upgrade 头），
+            // 服务端会走 authConnection → 401 或 101。这是不依赖用户电脑 curl 的诊断方式。
+            // 状态文字会在 probe 完成后被覆盖。
+            if let host = self.lastHostPath, let ki = self.lastKeyInfo, let t = self.lastTEnc {
+                self.probeServerWithRealCredentials(host: host, clientId: ki.clientId, t: t)
+            }
         }
         Logger.error("LX 同步连接断开：\(reason) | url=\(self.wsTask?.originalRequest?.url?.absoluteString ?? "?")")
+    }
+
+    // MARK: - 真实凭证探测（v1.0.53）
+    //
+    // 用真实的 i 和 t 模拟一次 WS upgrade 请求，看服务端返回什么 HTTP 状态码：
+    //  - 101 = 服务端接受了（iOS 端 URLSessionWebSocketTask 本身有 bug，问题在客户端握手）
+    //  - 401 = 服务端拒绝了真实凭证（aesEncrypt / key 解析有问题，问题在 iOS 端 i/t 生成）
+    //  - 立即断 / 超时 = 服务端在 upgrade handler 中抛异常（不太可能，因为假 i/t 也能稳回 401）
+    //
+    // 这样不用依赖用户在自己电脑跑 curl 也能确诊服务端对真实 i/t 的行为。
+    private func probeServerWithRealCredentials(host: String, clientId: String, t: String) {
+        let safeChars = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        guard let iEnc = clientId.addingPercentEncoding(withAllowedCharacters: safeChars) else { return }
+        let urlString = "\(host)/socket?i=\(iEnc)&t=\(t)"
+        guard let url = URL(string: urlString) else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("Upgrade", forHTTPHeaderField: "Connection")
+        req.setValue("websocket", forHTTPHeaderField: "Upgrade")
+        req.setValue("dGhlIHNhbXBsZSBub25jZQ==", forHTTPHeaderField: "Sec-WebSocket-Key")
+        req.setValue("13", forHTTPHeaderField: "Sec-WebSocket-Version")
+        req.timeoutInterval = 10
+        Logger.error("LX probe upgrade → \(url.absoluteString)")
+        URLSession.shared.dataTask(with: req) { [weak self] _, response, err in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let errStr = err?.localizedDescription ?? ""
+                let hint: String
+                switch code {
+                case 101:
+                    hint = "（服务端接受了真实凭证 —— iOS 端 URLSessionWebSocketTask 本身有 bug，问题在客户端握手）"
+                case 401:
+                    hint = "（服务端拒绝了真实凭证 —— iOS 端 i 或 t 生成有问题：要么 aesEncrypt 不对、要么 key 解析错）"
+                case -1:
+                    hint = "（无 HTTP 响应/连接被重置：\(errStr)）"
+                default:
+                    hint = ""
+                }
+                self.status = .failed(reason: "用真实凭证模拟 WS upgrade：HTTP \(code)\(hint)")
+                self.notify()
+                Logger.error("LX probe upgrade result: HTTP \(code) err=\(errStr)")
+            }
+        }.resume()
     }
 
     // MARK: - 报文处理

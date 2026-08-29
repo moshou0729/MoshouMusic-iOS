@@ -68,6 +68,8 @@ final class LXSyncService {
     private var wsRetryCount = 0
     private var lastHostPath: String?
     private var lastKeyInfo: LXClientKeyInfo?
+    /// 保存 percent-encode 后的 t（用于 v1.0.52 诊断输出 + 让用户用真实 i/t 在电脑 curl 测）
+    private var lastTEnc: String?
     private var userDidStop = false
 
     // 同步专用 HTTP 会话：独立 ephemeral 配置，避免与音乐搜索等共享 URLSession 的连接池互相挤占；
@@ -316,6 +318,8 @@ final class LXSyncService {
               let url = URL(string: "\(wsURLString)?i=\(i)&t=\(tEnc)") else {
             status = .failed(reason: "构造 WebSocket 地址失败"); notify(); return
         }
+        // 记住 percent-encoded t（v1.0.52：失败时显示给用户便于电脑 curl 复现）
+        self.lastTEnc = tEnc
 
         let session = URLSession(configuration: .default)
         let task = session.webSocketTask(with: url)
@@ -457,8 +461,15 @@ final class LXSyncService {
                 }
                 return
             }
-            // 重试耗尽：把失败原因显示在状态文字里（.disconnected 没有 reason 字段）
-            self.status = .failed(reason: "WebSocket 升级失败（已重试 2 次）：\(reason)")
+            // 重试耗尽：把失败原因显示在状态文字里（.disconnected 没有 reason 字段），
+            // 并把真实 i 和 t 一并输出 —— 用户截图发我，我就能直接在电脑用真实凭证 curl
+            // 服务端的 /socket upgrade，从而一锤定音是服务端拒绝还是 iOS URLSession 握手 bug。
+            var diag = "WebSocket 升级失败（已重试 2 次）：\(reason)。"
+            if let ki = self.lastKeyInfo {
+                diag += "  i=\(ki.clientId)"
+                if let t = self.lastTEnc { diag += "  t=\(t)" }
+            }
+            self.status = .failed(reason: diag)
             self.currentStep = nil
             self.notify()
         }

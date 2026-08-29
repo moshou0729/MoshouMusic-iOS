@@ -25,10 +25,50 @@ enum LXSyncCrypto {
         let pub = publicKey ?? SecKeyCopyPublicKey(priv)
         guard let pub = pub else { return nil }
         guard let pubData = SecKeyCopyExternalRepresentation(pub, nil) as Data? else { return nil }
-        // RSA 公钥导出为 SPKI DER -> base64 -> PEM（Node 为 spki/pem）
-        let b64 = pubData.base64EncodedString()
+        // ⚠️ 关键：SecKeyCopyExternalRepresentation 对 RSA 公钥返回的是 **PKCS#1** DER
+        // （RSAPublicKey: SEQUENCE { modulus, publicExponent }），
+        // 而 PEM 头 "-----BEGIN PUBLIC KEY-----" 表示的是 **SPKI**（SubjectPublicKeyInfo）。
+        // 以前这里直接把 PKCS#1 套上 SPKI 的头发出去，桌面端 Node 的
+        // crypto.createPublicKey() 解析失败 → rsaEncrypt() 抛异常 → /ah 请求被挂起不响应，
+        // 客户端表现为「认证超时」。这是 LX 同步一直连不上的根本原因。
+        // 安卓版 codeAuth 不发送公钥（走 AES 响应），所以从不触发这条路径。
+        guard let spki = Self.pkcs1ToSPKI(pkcs1: pubData) else { return nil }
+        let b64 = spki.base64EncodedString()
         let pem = "-----BEGIN PUBLIC KEY-----\n" + wrapPEM(b64) + "-----END PUBLIC KEY-----"
         return (pem, priv)
+    }
+
+    /// PKCS#1 (RSAPublicKey) DER → SPKI (SubjectPublicKeyInfo) DER
+    ///
+    /// SPKI 结构：SEQUENCE { AlgorithmIdentifier, BIT STRING { PKCS#1 } }
+    /// AlgorithmIdentifier for rsaEncryption = 30 0D 06 09 2A 86 48 86 F7 0D 01 01 01 05 00
+    private static func pkcs1ToSPKI(pkcs1: Data) -> Data? {
+        let algId: [UInt8] = [
+            0x30, 0x0D,
+            0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01,  // rsaEncryption OID
+            0x05, 0x00,                                                        // NULL
+        ]
+        let pkcs1Bytes = [UInt8](pkcs1)
+        // BIT STRING 内容 = 1 字节「未使用位数」(0x00) + PKCS#1 DER
+        let bitStringContentLen = pkcs1Bytes.count + 1
+        var bitString: [UInt8] = [0x03]
+        bitString.append(contentsOf: derLength(bitStringContentLen))
+        bitString.append(0x00)
+        bitString.append(contentsOf: pkcs1Bytes)
+
+        let inner = algId + bitString
+        var spki: [UInt8] = [0x30]
+        spki.append(contentsOf: derLength(inner.count))
+        spki.append(contentsOf: inner)
+        return Data(spki)
+    }
+
+    /// DER 长度字段编码（短格式 / 长格式）
+    private static func derLength(_ n: Int) -> [UInt8] {
+        if n < 0x80 { return [UInt8(n)] }
+        if n < 0x100 { return [0x81, UInt8(n)] }
+        if n < 0x10000 { return [0x82, UInt8(n >> 8), UInt8(n & 0xff)] }
+        return [0x83, UInt8((n >> 16) & 0xff), UInt8((n >> 8) & 0xff), UInt8(n & 0xff)]
     }
 
     private static func wrapPEM(_ b64: String) -> String {

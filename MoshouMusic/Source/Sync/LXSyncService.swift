@@ -220,8 +220,12 @@ final class LXSyncService {
             .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
             .replacingOccurrences(of: "\n", with: "")
         let deviceName = UIDevice.current.name
-        // 对齐 client/auth.ts：lx-music auth::\n<pubKey>\n<deviceName>\nlx_music_desktop
-        let plaintext = "lx-music auth::\n\(pubB64)\n\(deviceName)\nlx_music_desktop"
+        // 对齐 server/auth.ts 的 verifyByCode：
+        //   text.split('\n') -> [0]=authMsg [1]=公钥base64 [2]=设备名 [3]=客户端类型
+        //   isMobile = (data[3] == 'lx_music_mobile')
+        // 我们是手机端，标 lx_music_mobile，让服务端按移动端处理（会下发应用层 'ping'，
+        // handleMessage 里已忽略该文本帧）。
+        let plaintext = "lx-music auth::\n\(pubB64)\n\(deviceName)\nlx_music_mobile"
         let m = LXSyncCrypto.aesEncryptLX(plaintext: plaintext, keyBase64: aesKey)
         guard !m.isEmpty else {
             completion(.failure(NSError(domain: "LXSync", code: 3,
@@ -747,7 +751,8 @@ final class LXSyncService {
             .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
             .replacingOccurrences(of: "\n", with: "")
         let deviceName = UIDevice.current.name
-        let plaintext = "lx-music auth::\n\(pubB64)\n\(deviceName)\nlx_music_desktop"
+        // 与 authWithCode 保持一致：客户端类型标 lx_music_mobile（服务端据此判断 isMobile）
+        let plaintext = "lx-music auth::\n\(pubB64)\n\(deviceName)\nlx_music_mobile"
         let m = LXSyncCrypto.aesEncryptLX(plaintext: plaintext, keyBase64: aesKey)
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
         req.httpMethod = "GET"

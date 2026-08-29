@@ -81,7 +81,7 @@ final class LXWebSocketClient: NSObject {
     }
 
     private func readHttpResponse() {
-        streamTask.readData(ofMinLength: 1, maxLength: 4096, timeout: 10) { [weak self] data, _, _, error in
+        streamTask.readData(ofMinLength: 1, maxLength: 4096, timeout: 10) { [weak self] data, _, error in
             guard let self = self else { return }
             if let error = error {
                 self.fail(.streamFailed("read http: \(error.localizedDescription)"))
@@ -111,7 +111,7 @@ final class LXWebSocketClient: NSObject {
         }
         let lines = s.split(separator: "\r\n")
         guard let first = lines.first, first.contains("101") else {
-            fail(.handshakeFailed("status not 101: \(String(first ?? ""))"))
+            fail(.handshakeFailed("status not 101: \(String(first))"))
             return
         }
         // 验证 Sec-WebSocket-Accept
@@ -130,7 +130,7 @@ final class LXWebSocketClient: NSObject {
     // MARK: - 读 WebSocket 帧
 
     private func readNextFrames() {
-        streamTask.readData(ofMinLength: 1, maxLength: 65536, timeout: -1) { [weak self] data, _, _, error in
+        streamTask.readData(ofMinLength: 1, maxLength: 65536, timeout: -1) { [weak self] data, _, error in
             guard let self = self else { return }
             if let error = error {
                 self.fail(.streamFailed("read ws: \(error.localizedDescription)"))

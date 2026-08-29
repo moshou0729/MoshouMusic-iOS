@@ -455,12 +455,6 @@ final class LXSyncService {
             self.status = .failed(reason: diag)
             self.currentStep = nil
             self.notify()
-            // v1.0.53：iOS 自己用 URLSession.dataTask 模拟同一请求（带 Upgrade 头），
-            // 服务端会走 authConnection → 401 或 101。这是不依赖用户电脑 curl 的诊断方式。
-            // 状态文字会在 probe 完成后被覆盖。
-            if let host = self.lastHostPath, let ki = self.lastKeyInfo, let t = self.lastTEnc {
-                self.probeServerWithRealCredentials(host: host, clientId: ki.clientId, t: t)
-            }
         }
         Logger.error("LX 同步连接断开：\(reason)")
     }

@@ -34,8 +34,8 @@ final class PlaylistSearchService {
         // 网易云/酷狗偶有漏网。一并过滤能显著提升「点了像搜的那个」的命中率。
         let wrapped: (Result<[SearchedPlaylist], Error>) -> Void = { res in
             switch res {
-            case .failure:
-                completion(.failure)
+            case .failure(let e):
+                completion(.failure(e))
             case .success(let lists):
                 completion(.success(self.filterRelevant(lists, keyword: keyword)))
             }

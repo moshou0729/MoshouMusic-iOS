@@ -44,9 +44,15 @@ class SearchedPlaylistDetailViewController: UIViewController {
     private enum FilterMode: Int { case all = 0, playable = 1, unmatched = 2 }
     private var currentFilter: FilterMode = .all
 
-    /// 当前已"信号化"哪些 Track 是可播的（局部预检）—— 真正的源解析留给「立即播放」时
-    private var trackPlayability: [Bool] = []
-    /// 已经在后台尝试过"预检匹配"的 Track 数量（用来逐步增加数字）
+    /// 每首曲目的可播预检结果（三态）：
+    /// - `nil`  = 还没检测
+    /// - `true` = 已在本机启用音源里找到可播版本
+    /// - `false`= 检测过但没找到
+    /// 用三态是为了让「无匹配」只放**真正检测过且没找到**的，还在检测中的不算无匹配
+    /// （v1.0.41 之前是全 false 且从不更新，导致「可播」恒空、「无匹配」包含全部）。
+    private var trackPlayability: [Bool?] = []
+    /// 预检是否还在进行
+    private var isProbing = false
 
     // MARK: - Init
 
@@ -203,12 +209,14 @@ class SearchedPlaylistDetailViewController: UIViewController {
             footerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             footerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             footerContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            footerContainer.heightAnchor.constraint(equalToConstant: 84),
+            footerContainer.heightAnchor.constraint(equalToConstant: 92),
 
             stack.leadingAnchor.constraint(equalTo: footerContainer.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: footerContainer.trailingAnchor, constant: -16),
             stack.topAnchor.constraint(equalTo: footerContainer.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: footerContainer.bottomAnchor, constant: -8),
+            // 底部贴安全区而不是容器底边：否则 iPhone 的 home indicator 会盖住按钮下半部分，
+            // 看起来就像「没有收藏按钮」。背景（footerContainer）仍延伸到底。
+            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
 
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -251,13 +259,82 @@ class SearchedPlaylistDetailViewController: UIViewController {
             let n = res.tracks.count
             tracks = res.tracks
             playlistName = res.name
-            trackPlayability = Array(repeating: false, count: n)
+            // 初始为「未检测」，由后台预检逐首填 true/false
+            trackPlayability = Array(repeating: nil, count: n)
             if titleLabel.text == nil || titleLabel.text == searchedPlaylist.name {
                 titleLabel.text = res.name
             }
             trackCountLabel.text = "\(n) 首 · \(searchedPlaylist.creator)"
         }
         tableView.reloadData()
+        refreshSegmentTitles()
+        startPlayabilityProbe()
+    }
+
+    // MARK: - 可播预检
+
+    /// 后台串行逐首探测：哪些曲目能在本机已启用音源里找到可播版本。
+    /// 一次只探测一首，避免把音源打爆；结果节流回主线程刷新列表。
+    private func startPlayabilityProbe() {
+        guard !tracks.isEmpty else { return }
+        isProbing = true
+        let total = tracks.count
+        var idx = 0
+        var lastFlush = Date()
+
+        func step() {
+            // 页面已离屏就停止，避免无谓请求
+            guard self.view.window != nil else {
+                DispatchQueue.main.async { [weak self] in self?.isProbing = false }
+                return
+            }
+            guard idx < total else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.isProbing = false
+                    self?.refreshSegmentTitles()
+                    self?.tableView.reloadData()
+                }
+                return
+            }
+            let i = idx
+            let t = tracks[i]
+            idx += 1
+            SourceSwitcher.shared.findSong(name: t.name, singer: t.artist) { [weak self] song in
+                guard let self = self else { return }
+                DispatchQueue.main.async {
+                    guard i < self.trackPlayability.count else { step(); return }
+                    self.trackPlayability[i] = (song != nil)
+                    // 节流刷新：0.6 秒最多一次，避免逐首 reload 造成卡顿
+                    let now = Date()
+                    if now.timeIntervalSince(lastFlush) > 0.6 || idx >= total {
+                        lastFlush = now
+                        self.refreshSegmentTitles()
+                        self.tableView.reloadData()
+                    }
+                    step()
+                }
+            }
+        }
+        step()
+    }
+
+    /// 刷新分段标题与副标题，让「可播/无匹配」数量和检测进度可见
+    private func refreshSegmentTitles() {
+        let playable = trackPlayability.filter { $0 == true }.count
+        let unmatched = trackPlayability.filter { $0 == false }.count
+        let pending = trackPlayability.filter { $0 == nil }.count
+        segmented.setTitle("全部(\(tracks.count))", forSegmentAt: 0)
+        segmented.setTitle(pending > 0 ? "可播(\(playable)) 检测中\(pending)" : "可播(\(playable))",
+                           forSegmentAt: 1)
+        segmented.setTitle("无匹配(\(unmatched))", forSegmentAt: 2)
+
+        if !tracks.isEmpty {
+            if isProbing && pending > 0 {
+                trackCountLabel.text = "\(tracks.count) 首 · 已检测 \(playable + unmatched)/\(tracks.count)"
+            } else {
+                trackCountLabel.text = "\(tracks.count) 首 · 可播 \(playable) · 无匹配 \(unmatched)"
+            }
+        }
     }
 
     // MARK: - Actions
@@ -313,14 +390,17 @@ class SearchedPlaylistDetailViewController: UIViewController {
                     DispatchQueue.main.async { next() }
                     return
                 }
+                // 匹配到的可能是 Live/翻唱/重制版，名字与列表里的原曲不一致。
+                // 这里沿用列表的歌名歌手来显示，播放链接仍用匹配到的版本。
+                let playSong = song.withDisplay(name: t.name, singer: t.artist)
                 DispatchQueue.main.async {
                     if startFirst && !firstPlayed {
-                        PlayerManager.shared.play(song: song, queue: [song])
+                        PlayerManager.shared.play(song: playSong, queue: [playSong])
                         firstPlayed = true
-                        self.showToast("正在播放：\(song.name) - \(song.singer)")
+                        self.showToast("正在播放：\(playSong.name) - \(playSong.singer)")
                         self.title = title
                     } else {
-                        PlayerManager.shared.addToQueue(song)
+                        PlayerManager.shared.addToQueue(playSong)
                         queueAdded += 1
                     }
                     if startFirst && !firstPlayed {
@@ -376,9 +456,16 @@ class SearchedPlaylistDetailViewController: UIViewController {
         switch currentFilter {
         case .all: return tracks
         case .playable:
-            return tracks.enumerated().compactMap { trackPlayability.indices.contains($0.offset) && trackPlayability[$0.offset] ? $0.element : nil }
+            return tracks.enumerated().compactMap {
+                trackPlayability.indices.contains($0.offset) && trackPlayability[$0.offset] == true
+                    ? $0.element : nil
+            }
         case .unmatched:
-            return tracks.enumerated().compactMap { trackPlayability.indices.contains($0.offset) && !trackPlayability[$0.offset] ? $0.element : nil }
+            // 只放「检测过且确实没找到」的；还在检测中的（nil）留在「全部」里
+            return tracks.enumerated().compactMap {
+                trackPlayability.indices.contains($0.offset) && trackPlayability[$0.offset] == false
+                    ? $0.element : nil
+            }
         }
     }
 }
@@ -413,7 +500,9 @@ extension SearchedPlaylistDetailViewController: UITableViewDataSource, UITableVi
                     self.showAlert("暂无可播放版本", message: "已尝试在所有已启用音源中匹配，但未找到「\(track.name)」的可播放版本。\n可切到「收藏到本地」让匹配在后台找，或换其他搜索关键字。")
                     return
                 }
-                PlayerManager.shared.play(song: song, queue: [song])
+                // 沿用列表里的歌名歌手显示，避免匹配到 Live/翻唱版时显示与原曲不符
+                let playSong = song.withDisplay(name: track.name, singer: track.artist)
+                PlayerManager.shared.play(song: playSong, queue: [playSong])
             }
         }
     }

@@ -177,13 +177,24 @@ final class PlaylistSearchService {
             }
             return result
         }
+        // QQ 偶发「双重 hex」：对 hex 串再 hex 编码一次，单趟解码后仍是一长串字符
+        // （用户看到的就是这种）。循环解码直到结果稳定（最多 3 层）。
+        func tryHexDecodeRepeated(_ s: String) -> String {
+            var cur = s
+            for _ in 0..<3 {
+                let next = tryHexDecode(cur)
+                if next == cur { break }
+                cur = next
+            }
+            return cur
+        }
         // 名称：兼容 dissname / name / title 三个常见字段名
         let rawName: String
         if let s = d["dissname"] as? String, !s.isEmpty { rawName = s }
         else if let s = d["name"] as? String, !s.isEmpty { rawName = s }
         else if let s = d["title"] as? String, !s.isEmpty { rawName = s }
         else { return nil }
-        let name = tryHexDecode(rawName)
+        let name = tryHexDecodeRepeated(rawName)
         guard !name.isEmpty else { return nil }
         // ID：dissid 偶发是 hex（decoded 之后是乱码），只接受纯十进制数字串；其它情况
         // 也尝试 hex-decode 拿到能用的整数字符串。
@@ -191,10 +202,11 @@ final class PlaylistSearchService {
         if let s = d["dissid"] as? String, !s.isEmpty { rawId = s }
         else if let i = d["dissid"] as? Int { rawId = "\(i)" }
         else { return nil }
-        let id: String
-        if rawId.allSatisfy({ $0.isNumber }) { id = rawId }
-        else { id = tryHexDecode(rawId) }
-        guard !id.isEmpty, id.allSatisfy({ $0.isNumber || $0.isLetter }) else { return nil }
+        // ⚠️ dissid 绝不能做 hex 解码：QQ 的歌单 ID 本身就可能含字母/前导零，
+        // 一旦被当成 hex 解成别的值，拉取到的就是另一张歌单
+        // （表现为「点开的内容跟搜索结果不是同一个」）。
+        let id = rawId
+        guard !id.isEmpty else { return nil }
         let creator = (d["creator"] as? [String: Any])?["name"] as? String ?? ""
         let trackCount = d["song_count"] as? Int
             ?? d["songcount"] as? Int

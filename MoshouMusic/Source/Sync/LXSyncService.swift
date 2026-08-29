@@ -272,6 +272,65 @@ final class LXSyncService {
         status = .syncing
         notify()
         receiveLoop()
+
+        // 主动发起一次同步。
+        // 原实现接入 WebSocket 后只是被动等桌面端调用本端 handler，桌面端若不主动发起，
+        // 本端就一直停在 .syncing —— 用户看到的就是「点了同步没反应」。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.performActiveSync()
+        }
+    }
+
+    // MARK: - 主动同步
+
+    /// 连上后主动向桌面端拉取歌单：先比 MD5，不同再拉全量并落地。
+    private func performActiveSync() {
+        guard case .syncing = status else { return }
+
+        callServer(function: "list_sync_get_md5", arguments: [], timeout: 12) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .failure:
+                // 桌面端不接受本端主动调用 → 明确告知，而不是无限等待
+                self.status = .failed(reason: "已连上桌面端，但无法主动拉取歌单。请确认桌面端「同步」已开启，并在桌面端 LX Music 上点一次同步。")
+                self.notify()
+            case .success(let any):
+                let remoteMD5 = (any as? String) ?? ""
+                let localMD5 = LXSyncModels.localListDataMD5()
+                if !remoteMD5.isEmpty && remoteMD5 == localMD5 {
+                    self.didSync = true
+                    self.status = .synced(playlistCount: PlaylistStore.shared.playlists.count)
+                    self.notify()
+                    return
+                }
+                self.pullRemoteListData()
+            }
+        }
+    }
+
+    /// 拉取桌面端的完整歌单数据并写入本地
+    private func pullRemoteListData() {
+        callServer(function: "list_sync_get_list_data", arguments: [], timeout: 25) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .failure(let e):
+                self.status = .failed(reason: "拉取桌面歌单失败：\(e.localizedDescription)")
+                self.notify()
+            case .success(let any):
+                guard let ld: LXListData = self.decodeCodable(any) else {
+                    self.status = .failed(reason: "桌面歌单数据解析失败")
+                    self.notify()
+                    return
+                }
+                // 写库必须在主线程（PlaylistStore 不是线程安全的）
+                DispatchQueue.main.async {
+                    LXSyncModels.applyRemoteListData(ld)
+                    self.didSync = true
+                    self.status = .synced(playlistCount: PlaylistStore.shared.playlists.count)
+                    self.notify()
+                }
+            }
+        }
     }
 
     private func receiveLoop() {
@@ -389,10 +448,23 @@ final class LXSyncService {
     }
 
     /// 本端主动调用服务端函数（预留：实时把手机端变更推送到桌面端）
-    func callServer(function: String, arguments: [Any], completion: @escaping (Result<Any?, Error>) -> Void) {
+    func callServer(function: String, arguments: [Any], timeout: TimeInterval = 20,
+                    completion: @escaping (Result<Any?, Error>) -> Void) {
         let name = "\(function).__\(UUID().uuidString)"
         syncQueue.async { self.pending[name] = completion }
         send(obj: ["name": name, "path": [function], "data": arguments])
+
+        // 超时兜底：桌面端若不响应该调用，pending 会一直挂着，UI 就永远得不到反馈
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self = self else { return }
+            self.syncQueue.async {
+                guard let cb = self.pending.removeValue(forKey: name) else { return }
+                DispatchQueue.main.async {
+                    cb(.failure(NSError(domain: "LXSync", code: 408,
+                        userInfo: [NSLocalizedDescriptionKey: "\(function) 超时（\(Int(timeout)) 秒无响应）"])))
+                }
+            }
+        }
     }
 
     // MARK: - 被调函数注册（服务端会调用这些）
@@ -416,7 +488,14 @@ final class LXSyncService {
         handlers["list_sync_set_list_data"] = { [weak self] args, completion in
             if let any = args.first, let strongSelf = self,
                let ld: LXListData = strongSelf.decodeCodable(any) {
-                LXSyncModels.applyRemoteListData(ld)
+                // 写库与状态更新回到主线程：本 handler 跑在 syncQueue 上，
+                // 而 PlaylistStore 不是线程安全的
+                DispatchQueue.main.async {
+                    LXSyncModels.applyRemoteListData(ld)
+                    strongSelf.didSync = true
+                    strongSelf.status = .synced(playlistCount: PlaylistStore.shared.playlists.count)
+                    strongSelf.notify()
+                }
             } else {
                 Logger.error("LX set_list_data 解码失败")
             }

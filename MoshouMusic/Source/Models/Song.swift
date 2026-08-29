@@ -63,6 +63,25 @@ struct Song: Codable, Equatable {
         return "\(source)_\(songmid)"
     }
 
+    /// 返回「沿用指定显示名（歌名/歌手）」的副本，其余字段（播放链接/音源/封面等）不变。
+    ///
+    /// 用于歌单详情页：列表里展示的是原平台的曲目信息，播放时用的是匹配到的音源版本。
+    /// 两者常因版本差异（Live / 翻唱 / 重制）而不同名，直接播匹配结果会让用户觉得
+    /// 「播的不是我点的那首」。这里让播放沿用列表里的歌名歌手，链接仍用匹配到的版本。
+    func withDisplay(name displayName: String, singer displaySinger: String) -> Song {
+        Song(id: id,
+             name: displayName,
+             singer: displaySinger,
+             source: source,
+             songmid: songmid,
+             albumName: albumName,
+             albumId: albumId,
+             imgUrl: imgUrl,
+             quality: quality,
+             interval: interval,
+             meta: meta)
+    }
+
     // Equatable
     static func == (lhs: Song, rhs: Song) -> Bool {
         return lhs.id == rhs.id

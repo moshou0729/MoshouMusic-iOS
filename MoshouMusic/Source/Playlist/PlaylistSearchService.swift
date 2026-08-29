@@ -29,14 +29,42 @@ final class PlaylistSearchService {
         completion: @escaping (Result<[SearchedPlaylist], Error>) -> Void
     ) {
         let kw = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
+        // 包一层：拿到结果后做客户端相关性过滤。
+        // QQ 公开 API 经常返回与搜索词无关的歌单（用户报告「搜的和出来的不匹配」就是这个原因）；
+        // 网易云/酷狗偶有漏网。一并过滤能显著提升「点了像搜的那个」的命中率。
+        let wrapped: (Result<[SearchedPlaylist], Error>) -> Void = { res in
+            switch res {
+            case .failure:
+                completion(.failure)
+            case .success(let lists):
+                completion(.success(self.filterRelevant(lists, keyword: keyword)))
+            }
+        }
         switch source {
-        case "wy": searchNetease(kw: kw, page: page, completion: completion)
-        case "tx": searchQQ(kw: kw, page: page, completion: completion)
-        case "kg": searchKugou(kw: kw, page: page, completion: completion)
+        case "wy": searchNetease(kw: kw, page: page, completion: wrapped)
+        case "tx": searchQQ(kw: kw, page: page, completion: wrapped)
+        case "kg": searchKugou(kw: kw, page: page, completion: wrapped)
         default:
             // 其余音源（kw / mg / 自定义脚本）脚本未实现歌单搜索，返回空（不算错误）
             completion(.success([]))
         }
+    }
+
+    // MARK: - 相关性过滤
+
+    /// 客户端相关性过滤：保留 name 与搜索词「有关」的歌单
+    private func filterRelevant(_ lists: [SearchedPlaylist], keyword: String) -> [SearchedPlaylist] {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return lists }
+        return lists.filter { Self.isNameRelevant($0.name, keyword: trimmed) }
+    }
+
+    /// 名称与搜索词相关：包含整个搜索词，或至少有一个搜索词字符出现在名称中
+    /// （避免误杀语义相关但无整词匹配的歌单，如搜「周杰伦」时保留「jay 精选」）
+    private static func isNameRelevant(_ name: String, keyword: String) -> Bool {
+        if name.contains(keyword) { return true }
+        for ch in keyword where name.contains(ch) { return true }
+        return false
     }
 
     // MARK: - 网易云

@@ -318,7 +318,14 @@ class LXSyncViewController: UIViewController {
         }
         statusBadge.textColor = color
         detailLabel.text = detail
-        syncStatusLabel.text = status.displayText
+        // 拼接当前阶段文字（service 在 .connecting / .syncing 期间会更新 currentStep，
+        // 让用户清楚看到正在 /ah 认证 / 拉歌单，而不是「一闪而过就变 ✗」以为没反应）
+        let main = status.displayText
+        if let step = LXSyncService.shared.currentStep, !step.isEmpty {
+            syncStatusLabel.text = "\(main)\n⏳ \(step)"
+        } else {
+            syncStatusLabel.text = main
+        }
         syncStatusLabel.textColor = color
     }
 

@@ -54,6 +54,9 @@ final class LXSyncService {
     static let shared = LXSyncService()
 
     private(set) var status: Status = .notConfigured
+    /// 当前阶段文字（用于 UI 在 .connecting 期间显示具体进度，
+    /// 避免「正在认证」一闪而过就变 .failed 而让用户以为没反应）
+    private(set) var currentStep: String?
 
     static let stateChangedNotification = Notification.Name("LXSyncStateChanged")
 
@@ -97,34 +100,42 @@ final class LXSyncService {
         stopSync()
         let code = authCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
-            status = .failed(reason: "请输入桌面端显示的 6 位同步码"); notify(); return
+            status = .failed(reason: "请输入桌面端显示的 6 位同步码"); currentStep = nil; notify(); return
         }
         guard let hostPath = hostPathFromConfig() else {
-            status = .failed(reason: "请先在上方填写同步服务地址"); notify(); return
+            status = .failed(reason: "请先在上方填写同步服务地址"); currentStep = nil; notify(); return
         }
         didSync = false
         status = .connecting
+        currentStep = "正在 /hello 握手…"
         notify()
 
         getHello(hostPath) { [weak self] result in
             guard let self = self else { return }
             switch result {
             case .failure(let e):
-                self.status = .failed(reason: "握手失败：\(e.localizedDescription)"); self.notify()
+                self.status = .failed(reason: "握手失败：\(e.localizedDescription)"); self.currentStep = nil; self.notify()
             case .success:
+                self.currentStep = "正在 /id 验证服务端…"
+                self.notify()
                 self.getServerId(hostPath) { serverIdResult in
                     switch serverIdResult {
                     case .failure(let e):
-                        self.status = .failed(reason: "获取服务 ID 失败：\(e.localizedDescription)"); self.notify()
+                        self.status = .failed(reason: "获取服务 ID 失败：\(e.localizedDescription)"); self.currentStep = nil; self.notify()
                     case .success:
+                        self.currentStep = "正在 /ah 认证（请确保桌面码 60 秒内有效，最长 20 秒）"
+                        self.notify()
                         guard let (pub, priv) = LXSyncCrypto.generateRSAKeyPair() else {
-                            self.status = .failed(reason: "RSA 密钥生成失败"); self.notify(); return
+                            self.status = .failed(reason: "RSA 密钥生成失败"); self.currentStep = nil; self.notify(); return
                         }
                         self.authWithCode(hostPath: hostPath, authCode: code,
                                          publicPEM: pub, privateKey: priv) { authResult in
                             switch authResult {
                             case .failure(let e):
-                                self.status = .failed(reason: "认证失败：\(e.localizedDescription)"); self.notify()
+                                let hint = e.localizedDescription.contains("超时") || e.localizedDescription.contains("timed out")
+                                    ? "\(e.localizedDescription)（同步码可能已过期，请立即在桌面端重新生成）"
+                                    : e.localizedDescription
+                                self.status = .failed(reason: "认证失败：\(hint)"); self.currentStep = nil; self.notify()
                             case .success(let keyInfo):
                                 self.connectWebSocket(hostPath: hostPath, keyInfo: keyInfo)
                             }
@@ -209,7 +220,8 @@ final class LXSyncService {
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
         req.httpMethod = "GET"
         // 12s（之前 20s）—— F6：便于更早反馈失败，但桌面 AES + RSA 解密仍有足够余量
-        req.timeoutInterval = 12
+        // 12s → 20s：留足桌面端 RSA + AES 解密时间，避免局域网慢时 401 与超时分不清
+        req.timeoutInterval = 20
         req.setValue(m, forHTTPHeaderField: "m")
         syncHTTPSession.dataTask(with: req) { data, response, error in
             if let error = error { completion(.failure(self.classify(error))); return }
@@ -270,6 +282,7 @@ final class LXSyncService {
         task.resume()
 
         status = .syncing
+        currentStep = "正在拉取桌面端歌单…"
         notify()
         receiveLoop()
 
@@ -293,6 +306,7 @@ final class LXSyncService {
             case .failure:
                 // 桌面端不接受本端主动调用 → 明确告知，而不是无限等待
                 self.status = .failed(reason: "已连上桌面端，但无法主动拉取歌单。请确认桌面端「同步」已开启，并在桌面端 LX Music 上点一次同步。")
+                self.currentStep = nil
                 self.notify()
             case .success(let any):
                 let remoteMD5 = (any as? String) ?? ""
@@ -300,9 +314,12 @@ final class LXSyncService {
                 if !remoteMD5.isEmpty && remoteMD5 == localMD5 {
                     self.didSync = true
                     self.status = .synced(playlistCount: PlaylistStore.shared.playlists.count)
+                    self.currentStep = nil
                     self.notify()
                     return
                 }
+                self.currentStep = "MD5 不同，正在拉取完整歌单数据…"
+                self.notify()
                 self.pullRemoteListData()
             }
         }
@@ -315,6 +332,7 @@ final class LXSyncService {
             switch result {
             case .failure(let e):
                 self.status = .failed(reason: "拉取桌面歌单失败：\(e.localizedDescription)")
+                self.currentStep = nil
                 self.notify()
             case .success(let any):
                 guard let ld: LXListData = self.decodeCodable(any) else {
@@ -327,6 +345,7 @@ final class LXSyncService {
                     LXSyncModels.applyRemoteListData(ld)
                     self.didSync = true
                     self.status = .synced(playlistCount: PlaylistStore.shared.playlists.count)
+                    self.currentStep = nil
                     self.notify()
                 }
             }
@@ -494,6 +513,7 @@ final class LXSyncService {
                     LXSyncModels.applyRemoteListData(ld)
                     strongSelf.didSync = true
                     strongSelf.status = .synced(playlistCount: PlaylistStore.shared.playlists.count)
+                    strongSelf.currentStep = nil
                     strongSelf.notify()
                 }
             } else {
@@ -721,7 +741,8 @@ final class LXSyncService {
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
         req.httpMethod = "GET"
         // F6：12 秒（原来 20 秒）—— 给桌面 AES + RSA 解密留够余量，但卡住也能更快反馈
-        req.timeoutInterval = 12
+        // 12s → 20s：留足桌面端 RSA + AES 解密时间，避免局域网慢时 401 与超时分不清
+        req.timeoutInterval = 20
         req.setValue(m, forHTTPHeaderField: "m")
         syncHTTPSession.dataTask(with: req) { data, response, error in
             defer { group.leave() }

@@ -92,12 +92,16 @@ class SearchedPlaylistDetailViewController: UIViewController {
 
         titleLabel.font = Theme.titleLarge
         titleLabel.textColor = Theme.text
-        titleLabel.numberOfLines = 2
+        // 长歌单名常 30+ 字，2 行会被截断；3 行基本能放下大多数长标题。
+        // 高度由内容决定（headerView 不再被 artworkView 强制 100pt 高度）。
+        titleLabel.numberOfLines = 3
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(titleLabel)
 
         subtitleLabel.font = Theme.bodyMedium
         subtitleLabel.textColor = Theme.subtext
+        // 「网易云 · 某长 creator」经常比较长，放 2 行避免被截成「...」
+        subtitleLabel.numberOfLines = 2
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(subtitleLabel)
 
@@ -114,7 +118,8 @@ class SearchedPlaylistDetailViewController: UIViewController {
 
             artworkView.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
             artworkView.topAnchor.constraint(equalTo: headerView.topAnchor),
-            artworkView.bottomAnchor.constraint(equalTo: headerView.bottomAnchor),
+            // 不再锚到 headerView.bottom —— 让 header 高度由文字内容（title + subtitle + trackCount）决定，
+            // 否则长标题/长 creator 时 header 固定 100pt 会把内容截断
             artworkView.widthAnchor.constraint(equalToConstant: 100),
             artworkView.heightAnchor.constraint(equalToConstant: 100),
 
@@ -209,13 +214,17 @@ class SearchedPlaylistDetailViewController: UIViewController {
             footerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             footerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             footerContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            footerContainer.heightAnchor.constraint(equalToConstant: 92),
+            // 顶部锚在 safeArea.bottom 上方 66pt（≈ 8pt 顶 padding + 50pt 按钮 + 8pt 底 padding）
+            // —— 关键：之前用 height=92 + stack.bottom=safeArea.bottom-8，会导致
+            // stack 高度被压扁成 -7pt（footer 高度不够覆盖 tab bar + home indicator），
+            // 表现为按钮被 tab bar 盖住、只露一点点。
+            // 现在 footer 背景仍延伸到底（视觉衔接 tab bar），但 stack 完整落在 tab bar 之上的安全区。
+            footerContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -66),
 
             stack.leadingAnchor.constraint(equalTo: footerContainer.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: footerContainer.trailingAnchor, constant: -16),
             stack.topAnchor.constraint(equalTo: footerContainer.topAnchor, constant: 8),
-            // 底部贴安全区而不是容器底边：否则 iPhone 的 home indicator 会盖住按钮下半部分，
-            // 看起来就像「没有收藏按钮」。背景（footerContainer）仍延伸到底。
+            // 底部贴安全区上 8pt，确保三个按钮（全部播放/加入队列/收藏到本地）完全可点
             stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
 
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),

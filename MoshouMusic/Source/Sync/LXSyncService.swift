@@ -284,8 +284,14 @@ final class LXSyncService {
             .replacingOccurrences(of: "http", with: "ws", options: [.anchored])
             + "/socket"
         let t = LXSyncCrypto.aesEncryptLX(plaintext: "lx-music connect", keyBase64: keyInfo.key)
-        guard let i = keyInfo.clientId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let tEnc = t.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+        // ⚠️ 必须用 RFC 3986 unreserved 字符集（不含 '+' '/' '=' '&' '?'），
+        // 不能用 .urlQueryAllowed —— 那个集合**包含 '+'**，不会 percent-encode。
+        // base64 密文常含 '+' '/' '='；Node 的 querystring.parse 会把 '+' 解码成空格，
+        // base64 就会被破坏，服务端 AES 解密必然失败 → /socket 升级被 401 + destroy。
+        // v1.0.47 的 "连接已断开 + 拉取中" 就是这个原因。
+        let safeChars = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        guard let i = keyInfo.clientId.addingPercentEncoding(withAllowedCharacters: safeChars),
+              let tEnc = t.addingPercentEncoding(withAllowedCharacters: safeChars),
               let url = URL(string: "\(wsURLString)?i=\(i)&t=\(tEnc)") else {
             status = .failed(reason: "构造 WebSocket 地址失败"); notify(); return
         }
@@ -405,6 +411,8 @@ final class LXSyncService {
             } else {
                 self.status = .disconnected
             }
+            // 断开时清掉 currentStep，否则 UI 会同时显示"连接已断开"和"正在拉取桌面端歌单…"
+            self.currentStep = nil
             self.notify()
         }
         Logger.error("LX 同步连接断开：\(reason)")

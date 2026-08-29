@@ -300,6 +300,10 @@ final class LXSyncService {
         let task = session.webSocketTask(with: url)
         self.wsSession = session
         self.wsTask = task
+        // 调试日志（v1.0.49）：打印 WebSocket URL、clientId、t 前 32 字符（base64），
+        // 这样能在桌面端 LX Music DevTools Console 里对照 v=xxxx 的 t 是否一致
+        Logger.error("LX WS connect → \(url.absoluteString)")
+        Logger.error("LX WS connect → clientId=\(keyInfo.clientId.prefix(8))... t=\(t.prefix(32))...")
         task.resume()
 
         status = .syncing
@@ -415,7 +419,9 @@ final class LXSyncService {
             self.currentStep = nil
             self.notify()
         }
-        Logger.error("LX 同步连接断开：\(reason)")
+        // 调试日志（v1.0.49）：把 WS 失败原因、URL 一起打出来，便于排查是 401（authConnect 失败）
+        // 还是网络层（连接被 RST 等）
+        Logger.error("LX 同步连接断开：\(reason) | url=\(self.wsTask?.originalRequest?.url?.absoluteString ?? "?")")
     }
 
     // MARK: - 报文处理

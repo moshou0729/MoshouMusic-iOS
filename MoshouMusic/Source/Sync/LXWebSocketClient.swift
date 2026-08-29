@@ -110,8 +110,12 @@ final class LXWebSocketClient: NSObject {
             return
         }
         let lines = s.split(separator: "\r\n")
-        guard let first = lines.first, first.contains("101") else {
-            fail(.handshakeFailed("status not 101: \(String(first))"))
+        guard let first = lines.first else {
+            fail(.handshakeFailed("no response line"))
+            return
+        }
+        guard first.contains("101") else {
+            fail(.handshakeFailed("status not 101: \(first)"))
             return
         }
         // 验证 Sec-WebSocket-Accept

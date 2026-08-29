@@ -329,11 +329,16 @@ final class LXSyncService {
             guard let self = self else { return }
             Logger.info("LX WS handshake ok")
             self.status = .syncing
-            self.currentStep = "已建立 WebSocket，正在拉取桌面端歌单…"
+            // v1.0.58：这里**不再**主动调 list_sync_get_md5 —— 方向是反的。
+            // 桌面端 callObj 只暴露 onListSyncAction 给客户端调用；
+            // list_sync_get_md5 / list_sync_get_list_data / list_sync_set_list_data /
+            // list_sync_finished 全都是**服务端调用客户端**的函数（见
+            // server/modules/list/sync/handler.ts 与 sync/sync.ts）。
+            // 同步由桌面端主动编排：getEnabledFeatures → list_sync_get_list_data
+            // →（需要时桌面端弹窗让用户选合并/覆盖方式）→ list_sync_set_list_data
+            // → list_sync_finished。本端只需正确响应这些调用（见 registerHandlers）。
+            self.currentStep = "已连接桌面端，等待桌面端下发歌单…\n若桌面端弹出「选择同步方式」，请选一种并确定"
             self.notify()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                self?.performActiveSync()
-            }
         }
         client.onText = { [weak self] text in
             self?.syncQueue.async { self?.processInbound(text) }
@@ -357,62 +362,6 @@ final class LXSyncService {
     // MARK: - 主动同步    }
 
     // MARK: - 主动同步
-
-    /// 连上后主动向桌面端拉取歌单：先比 MD5，不同再拉全量并落地。
-    private func performActiveSync() {
-        guard case .syncing = status else { return }
-
-        callServer(function: "list_sync_get_md5", arguments: [], timeout: 12) { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .failure:
-                // 桌面端不接受本端主动调用 → 明确告知，而不是无限等待
-                self.status = .failed(reason: "已连上桌面端，但无法主动拉取歌单。请确认桌面端「同步」已开启，并在桌面端 LX Music 上点一次同步。")
-                self.currentStep = nil
-                self.notify()
-            case .success(let any):
-                let remoteMD5 = (any as? String) ?? ""
-                let localMD5 = LXSyncModels.localListDataMD5()
-                if !remoteMD5.isEmpty && remoteMD5 == localMD5 {
-                    self.didSync = true
-                    self.status = .synced(playlistCount: PlaylistStore.shared.playlists.count)
-                    self.currentStep = nil
-                    self.notify()
-                    return
-                }
-                self.currentStep = "MD5 不同，正在拉取完整歌单数据…"
-                self.notify()
-                self.pullRemoteListData()
-            }
-        }
-    }
-
-    /// 拉取桌面端的完整歌单数据并写入本地
-    private func pullRemoteListData() {
-        callServer(function: "list_sync_get_list_data", arguments: [], timeout: 25) { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .failure(let e):
-                self.status = .failed(reason: "拉取桌面歌单失败：\(e.localizedDescription)")
-                self.currentStep = nil
-                self.notify()
-            case .success(let any):
-                guard let ld: LXListData = self.decodeCodable(any) else {
-                    self.status = .failed(reason: "桌面歌单数据解析失败")
-                    self.notify()
-                    return
-                }
-                // 写库必须在主线程（PlaylistStore 不是线程安全的）
-                DispatchQueue.main.async {
-                    LXSyncModels.applyRemoteListData(ld)
-                    self.didSync = true
-                    self.status = .synced(playlistCount: PlaylistStore.shared.playlists.count)
-                    self.currentStep = nil
-                    self.notify()
-                }
-            }
-        }
-    }
 
     private func handleDisconnect(reason: String) {
         syncQueue.async { self.pending.removeAll() }
@@ -461,24 +410,39 @@ final class LXSyncService {
 
 // MARK: - 报文处理
 
+    /// v1.0.58：message2call 收发的都是 **JSON 数组**，不是对象。
+    /// 形如 [type, name, ...]，按 type 分派（0=被调用 / 1=我方调用的返回）。
     private func processInbound(_ text: String) {
+        // 服务端对 isMobile 客户端会周期性发文本 'ping'，不是 message2call 报文
+        guard text != "ping" else { wsClient?.send(text: "pong"); return }
+
         let jsonString = LXSyncCrypto.decodeData(text)
         guard let data = jsonString.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            Logger.error("LX 消息解析失败"); return
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              arr.count >= 3,
+              let type = arr[0] as? Int,
+              let name = arr[1] as? String else {
+            Logger.error("LX 消息解析失败（非 message2call 数组）：\(text.prefix(120))"); return
         }
-        // message2call：有非空 path 是被调（CALL），否则是对本端调用的响应（RESPONSE）
-        if let path = obj["path"] as? [String], !path.isEmpty {
-            handleCall(obj, path: path)
-        } else {
-            handleResponse(obj)
+        switch type {
+        case callTypeRequest:            // [0, name, path, args, callbacks] 服务端调用本端
+            guard arr.count >= 4, let path = arr[2] as? [String] else { return }
+            let args = arr[3] as? [Any] ?? []
+            handleCall(name: name, path: path, args: args)
+        case callTypeResponse:           // [1, name, null, data] 或 [1, name, {message}]
+            // 有第 4 个元素且第 3 个为 null → 成功
+            let err = arr[2] as? [String: Any]
+            let result: Any? = arr.count >= 4 ? arr[3] : nil
+            handleResponse(name: name, error: err, data: result)
+        default:
+            break                        // CALLBACK_REQUEST / CALLBACK_RESPONSE 暂未用到
         }
     }
 
-    private func handleCall(_ obj: [String: Any], path: [String]) {
-        guard let name = obj["name"] as? String,
-              let fnName = path.last else { return }
-        let args = obj["data"] as? [Any] ?? []
+    private func handleCall(name: String, path: [String], args: [Any]) {
+        // local.handleRequest 语义：path.pop() 取最后一个作函数名，前面的是嵌套对象路径。
+        // 服务端调的是 remoteQueueList.list_sync_get_md5()，path 形如 ["list_sync_get_md5"]。
+        guard let fnName = path.last else { return }
         guard let handler = handlers[fnName] else {
             respondError(name: name, message: "unknown function: \(fnName)")
             return
@@ -491,16 +455,13 @@ final class LXSyncService {
         }
     }
 
-    private func handleResponse(_ obj: [String: Any]) {
-        guard let name = obj["name"] as? String else { return }
-        let errorVal = obj["error"]
-        let data = obj["data"]
+    private func handleResponse(name: String, error: [String: Any]?, data: Any?) {
         syncQueue.async { [weak self] in
             guard let self = self else { return }
             guard let cb = self.pending.removeValue(forKey: name) else { return }
-            if let errStr = errorVal as? String, !errStr.isEmpty {
+            if let err = error, let msg = err["message"] as? String, !msg.isEmpty {
                 cb(.failure(NSError(domain: "LXSync", code: 0,
-                    userInfo: [NSLocalizedDescriptionKey: errStr])))
+                    userInfo: [NSLocalizedDescriptionKey: msg])))
             } else {
                 cb(.success(data))
             }
@@ -509,18 +470,37 @@ final class LXSyncService {
 
     // MARK: - 发送
 
+    // MARK: - message2call 线格式（v1.0.58 修正：数组，不是对象）
+    //
+    // ⚠️ 这是 v1.0.39～v1.0.57 一直卡在「已连上桌面端，但无法主动拉取歌单」的根本原因。
+    // 服务端 m2c.message() 第一行就是 `if (!Array.isArray(message)) throw new Error('message is not array')`。
+    // 我们之前发的是 `{"name":..,"path":..,"data":..}` **对象** → 服务端直接抛异常；而 server.ts
+    // 的 message listener 在 catch 里**只打日志、不关 socket**，于是连接看着是通的却永远不响应
+    // → 本端 callServer 超时，UI 显示「无法主动拉取歌单」。
+    //
+    // 正确格式（message2call/src/shared.ts、local.ts、remote.ts）：
+    //   enum CALL_TYPES { REQUEST = 0, RESPONSE = 1, CALLBACK_REQUEST = 2, CALLBACK_RESPONSE = 3 }
+    //   发起调用  [0, eventName, path: [String], args: [Any], callbacks: [Int]]
+    //   返回结果  [1, eventName, null, data]   失败则 [1, eventName, {message, stack}]
+    //
+    // 另：group 名（'list'）**不进 path**（remote.ts 的 createProxy 只累积属性名），
+    // 所以服务端 `remoteQueueList.list_sync_get_md5()` 的 path 就是 ["list_sync_get_md5"]。
+    private let callTypeRequest: Int = 0
+    private let callTypeResponse: Int = 1
+
+    /// 成功响应：[1, name, null, data]
     private func respond(name: String, data: Any?) {
-        var msg: [String: Any] = ["name": name, "error": NSNull()]
-        msg["data"] = data ?? NSNull()
-        send(obj: msg)
+        sendArray([callTypeResponse, name, NSNull(), data ?? NSNull()])
     }
 
+    /// 失败响应：[1, name, {message: ...}]
     private func respondError(name: String, message: String) {
-        send(obj: ["name": name, "error": message])
+        sendArray([callTypeResponse, name, ["message": message]])
     }
 
-    private func send(obj: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+    private func sendArray(_ payload: [Any]) {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else {
             Logger.error("LX 发送报文序列化失败"); return
         }
@@ -533,7 +513,9 @@ final class LXSyncService {
                     completion: @escaping (Result<Any?, Error>) -> Void) {
         let name = "\(function).__\(UUID().uuidString)"
         syncQueue.async { self.pending[name] = completion }
-        send(obj: ["name": name, "path": [function], "data": arguments])
+        // v1.0.58：message2call 是**数组**协议 → [0, name, path, args, callbacks]
+        // 之前发的对象会被服务端 `Array.isArray` 判否直接丢弃。
+        sendArray([callTypeRequest, name, [function], arguments, []])
 
         // 超时兜底：桌面端若不响应该调用，pending 会一直挂着，UI 就永远得不到反馈
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in

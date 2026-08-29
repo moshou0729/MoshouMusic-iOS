@@ -68,7 +68,9 @@ final class LXSyncService {
     // 并显式关闭 waitsForConnectivity，防止系统把局域网请求误判为“等待联网”而静默挂起。
     private lazy var syncHTTPSession: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 20
+        // 20s → 30s：与 /ah 的 req.timeoutInterval 一致，
+        // 否则 session 级会先于 request 级超时截断
+        cfg.timeoutIntervalForRequest = 30
         cfg.timeoutIntervalForResource = 60
         cfg.waitsForConnectivity = false
         cfg.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -136,9 +138,14 @@ final class LXSyncService {
                                 // 只在明确是「码错误」类失败时才追加码过期提示；
                                 // 网络/防火墙超时（-1001 之类）不要再误导用户「码可能过期」
                                 let isCodeProblem = desc.contains("同步码") || desc.contains("Auth failed") || desc.contains("auth")
-                                let hint = isCodeProblem
-                                    ? "\(desc)（同步码可能已过期，请立即在桌面端 LX Music 上重新生成后输入）"
-                                    : desc
+                                let hint: String
+                                if isCodeProblem {
+                                    hint = "\(desc)（同步码可能已过期，请立即在桌面端 LX Music 上重新生成后输入）"
+                                } else {
+                                    // 能走到这一步说明 /hello 与 /id 都已成功 —— 手机到桌面的 HTTP 是通的，
+                                    // 只有 /ah 认证不响应，基本是桌面端同步服务本身没真正启动。
+                                    hint = "\(desc)\n\n注意：/hello 与 /id 都成功了，说明手机到桌面的网络是通的，只有 /ah 无响应。\n通常意味着桌面端同步服务没真正启动。请：\n① 完全退出并重启桌面端 LX Music；\n② 确认「设置 → 同步 → 服务端模式」已开启且显示服务已启动；\n③ 临时关闭电脑防火墙 / 第三方安全软件后重试。"
+                                }
                                 self.status = .failed(reason: "认证失败：\(hint)"); self.currentStep = nil; self.notify()
                             case .success(let keyInfo):
                                 self.connectWebSocket(hostPath: hostPath, keyInfo: keyInfo)
@@ -224,8 +231,8 @@ final class LXSyncService {
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
         req.httpMethod = "GET"
         // 12s（之前 20s）—— F6：便于更早反馈失败，但桌面 AES + RSA 解密仍有足够余量
-        // 12s → 20s：留足桌面端 RSA + AES 解密时间，避免局域网慢时 401 与超时分不清
-        req.timeoutInterval = 20
+        // 12s → 30s：桌面端要做 RSA 解密，慢机器/首次连接可能要更久
+        req.timeoutInterval = 30
         req.setValue(m, forHTTPHeaderField: "m")
         syncHTTPSession.dataTask(with: req) { data, response, error in
             if let error = error { completion(.failure(self.classify(error))); return }
@@ -650,7 +657,7 @@ final class LXSyncService {
         switch e.code {
         case NSURLErrorTimedOut:
             return NSError(domain: "LXSync", code: 7, userInfo: [NSLocalizedDescriptionKey:
-                "请求超时：桌面同步服务 20 秒内无响应。几乎都是网络/防火墙问题——请确认：①手机与桌面在同一局域网；②桌面端「同步 → 服务端模式」正在运行；③系统防火墙/杀毒放行同步端口（默认 9527）；④手机未开启会把局域网请求转到公网的 VPN/代理。"])
+                "请求超时：桌面同步服务 30 秒内无响应。请确认：①手机与桌面在同一局域网；②桌面端「同步 → 服务端模式」正在运行；③系统防火墙/杀毒放行同步端口（默认 9527）；④手机未开启会把局域网请求转到公网的 VPN/代理。"])
         case NSURLErrorCannotConnectToHost:
             return NSError(domain: "LXSync", code: 7, userInfo: [NSLocalizedDescriptionKey:
                 "无法连接桌面同步服务（连接被拒绝/主机不可达）。请确认桌面端同步服务正在运行且地址端口正确。"])
@@ -745,8 +752,8 @@ final class LXSyncService {
         var req = URLRequest(url: URL(string: "\(hostPath)/ah")!)
         req.httpMethod = "GET"
         // F6：12 秒（原来 20 秒）—— 给桌面 AES + RSA 解密留够余量，但卡住也能更快反馈
-        // 12s → 20s：留足桌面端 RSA + AES 解密时间，避免局域网慢时 401 与超时分不清
-        req.timeoutInterval = 20
+        // 12s → 30s：桌面端要做 RSA 解密，慢机器/首次连接可能要更久
+        req.timeoutInterval = 30
         req.setValue(m, forHTTPHeaderField: "m")
         syncHTTPSession.dataTask(with: req) { data, response, error in
             defer { group.leave() }

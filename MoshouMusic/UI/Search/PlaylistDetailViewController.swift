@@ -71,8 +71,12 @@ class SearchedPlaylistDetailViewController: UIViewController {
 
         setupHeader()
         setupSegmented()
-        setupToolbar()
+        // ⚠️ 顺序不能变：setupTable 负责 view.addSubview(tableView)，
+        // 而 setupToolbar 里会激活 tableView 的约束（引用 stack.bottom / view）。
+        // 若 setupTable 排在 setupToolbar 之后，tableView 还没进视图层级就被约束，
+        // 会抛 NSGenericException "no common ancestor"（v1.0.45 真机崩溃）。
         setupTable()
+        setupToolbar()
         loadTracks()
     }
 
@@ -181,6 +185,10 @@ class SearchedPlaylistDetailViewController: UIViewController {
     // 顶部工具栏：3 个按钮（全部播放 / 加入队列 / 收藏到本地），
     // 把原来底部 footer 的功能提到 segmented 下方，tableView 占据剩余到底部
     private func setupToolbar() {
+        // 防御：下面要给 tableView 激活约束，若它还没进视图层级会抛
+        // NSGenericException "no common ancestor"。这里幂等补一次 addSubview。
+        if tableView.superview == nil { view.addSubview(tableView) }
+
         let stack = UIStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal

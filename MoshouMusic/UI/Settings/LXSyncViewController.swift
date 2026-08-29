@@ -369,7 +369,7 @@ class LXSyncViewController: UIViewController {
 
     @objc private func diagTapped() {
         let code = (codeField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        syncStatusLabel.text = "正在用同步码做真实 /ah 认证…（最多 20 秒）"
+        syncStatusLabel.text = "正在用同步码做真实 /ah 认证…（最多 30 秒）"
         syncStatusLabel.textColor = Theme.warning
         LXSyncService.shared.probeAH(authCode: code) { [weak self] result in
             DispatchQueue.main.async {

@@ -60,9 +60,8 @@ final class LXSyncService {
 
     static let stateChangedNotification = Notification.Name("LXSyncStateChanged")
 
-    // WebSocket 相关
-    private var wsTask: URLSessionWebSocketTask?
-    private var wsSession: URLSession?
+    // WebSocket 相关（v1.0.55：用自实现 LXWebSocketClient 替代 URLSessionWebSocketTask）
+    private var wsClient: LXWebSocketClient?
     /// WS 握手失败自动重试相关（v1.0.51）：服务端在 /ah 返回后才 saveClientKeyInfo，
     /// 若那步是异步的，紧跟着建 WS 会 getClientKeyInfo 取不到 → 401。
     private var wsRetryCount = 0
@@ -178,10 +177,8 @@ final class LXSyncService {
     /// 停止同步并关闭 WebSocket
     func stopSync() {
         userDidStop = true   // 用户主动停止，不再自动重试
-        wsTask?.cancel(with: .normalClosure, reason: nil)
-        wsTask = nil
-        wsSession?.invalidateAndCancel()
-        wsSession = nil
+        wsClient?.close()
+        wsClient = nil
         syncQueue.async { self.pending.removeAll() }
         if case .synced = status {
             // 保留“已同步”标记，仅断开底层连接
@@ -321,28 +318,43 @@ final class LXSyncService {
         // 记住 percent-encoded t（v1.0.52：失败时显示给用户便于电脑 curl 复现）
         self.lastTEnc = tEnc
 
-        let session = URLSession(configuration: .default)
-        let task = session.webSocketTask(with: url)
-        self.wsSession = session
-        self.wsTask = task
-        // 调试日志（v1.0.49）：打印 WebSocket URL、clientId、t 前 32 字符（base64），
-        // 这样能在桌面端 LX Music DevTools Console 里对照 v=xxxx 的 t 是否一致
-        Logger.error("LX WS connect → \(url.absoluteString)")
-        Logger.error("LX WS connect → clientId=\(keyInfo.clientId.prefix(8))... t=\(t.prefix(32))...")
-        task.resume()
-
-        status = .syncing
-        currentStep = "正在拉取桌面端歌单…"
-        notify()
-        receiveLoop()
-
-        // 主动发起一次同步。
-        // 原实现接入 WebSocket 后只是被动等桌面端调用本端 handler，桌面端若不主动发起，
-        // 本端就一直停在 .syncing —— 用户看到的就是「点了同步没反应」。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            self?.performActiveSync()
+        // v1.0.55：用自实现 LXWebSocketClient 替代 URLSessionWebSocketTask。
+        // iOS 14.7.1 的 URLSessionWebSocketTask 在收到 LX 桌面端 ws 库的 101
+        // 响应后拒绝完成握手（即使 Sec-WebSocket-Accept 正确），报 "Socket is not connected"。
+        // v1.0.54 已用 dataTask 模拟 upgrade 拿到 HTTP 101 + 全部正确 headers，
+        // 确诊为 iOS 端 URLSessionWebSocketTask 与 ws 库握手兼容性问题。
+        // LXWebSocketClient 用 URLSessionStreamTask 拿 TCP 字节流自己完成 RFC 6455 握手与帧收发。
+        let client = LXWebSocketClient(url: url)
+        client.onOpen = { [weak self] in
+            guard let self = self else { return }
+            Logger.info("LX WS handshake ok")
+            self.status = .syncing
+            self.currentStep = "已建立 WebSocket，正在拉取桌面端歌单…"
+            self.notify()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.performActiveSync()
+            }
         }
+        client.onText = { [weak self] text in
+            self?.syncQueue.async { self?.processInbound(text) }
+        }
+        client.onClose = { [weak self] code, reason in
+            self?.handleDisconnect(reason: "close code=\(code ?? -1) reason=\(reason ?? "?")")
+        }
+        client.onError = { [weak self] err in
+            let why: String
+            if let e = err as? LXWebSocketClient.WSError {
+                why = "\(e)"
+            } else {
+                why = err.localizedDescription
+            }
+            self?.handleDisconnect(reason: "WS: \(why)")
+        }
+        self.wsClient = client
+        client.connect()
     }
+
+    // MARK: - 主动同步    }
 
     // MARK: - 主动同步
 
@@ -402,35 +414,6 @@ final class LXSyncService {
         }
     }
 
-    private func receiveLoop() {
-        wsTask?.receive { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .failure(let err):
-                self.handleDisconnect(reason: err.localizedDescription)
-            case .success(let msg):
-                self.handleMessage(msg)
-                self.receiveLoop()
-            }
-        }
-    }
-
-    private func handleMessage(_ msg: URLSessionWebSocketTask.Message) {
-        switch msg {
-        case .string(let text):
-            if text == "ping" { return }   // 应用层心跳（仅 lx_music_mobile 客户端才会收到，本端一般收不到），忽略
-            syncQueue.async { self.processInbound(text) }
-        case .data(let d):
-            // 极少数情况下服务端可能以二进制帧下发，按 UTF-8 文本解析
-            if let text = String(data: d, encoding: .utf8) {
-                syncQueue.async { self.processInbound(text) }
-            }
-        @unknown default:
-            break
-        }
-        // 说明：服务端发来的 WebSocket ping 帧由 URLSession 自动回 pong，无需手动处理（.ping/.pong 用例为 iOS15+）
-    }
-
     private func handleDisconnect(reason: String) {
         syncQueue.async { self.pending.removeAll() }
         DispatchQueue.main.async { [weak self] in
@@ -479,67 +462,10 @@ final class LXSyncService {
                 self.probeServerWithRealCredentials(host: host, clientId: ki.clientId, t: t)
             }
         }
-        Logger.error("LX 同步连接断开：\(reason) | url=\(self.wsTask?.originalRequest?.url?.absoluteString ?? "?")")
+        Logger.error("LX 同步连接断开：\(reason)")
     }
 
-    // MARK: - 真实凭证探测（v1.0.53）
-    //
-    // 用真实的 i 和 t 模拟一次 WS upgrade 请求，看服务端返回什么 HTTP 状态码：
-    //  - 101 = 服务端接受了（iOS 端 URLSessionWebSocketTask 本身有 bug，问题在客户端握手）
-    //  - 401 = 服务端拒绝了真实凭证（aesEncrypt / key 解析有问题，问题在 iOS 端 i/t 生成）
-    //  - 立即断 / 超时 = 服务端在 upgrade handler 中抛异常（不太可能，因为假 i/t 也能稳回 401）
-    //
-    // 这样不用依赖用户在自己电脑跑 curl 也能确诊服务端对真实 i/t 的行为。
-    private func probeServerWithRealCredentials(host: String, clientId: String, t: String) {
-        let safeChars = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-        guard let iEnc = clientId.addingPercentEncoding(withAllowedCharacters: safeChars) else { return }
-        let urlString = "\(host)/socket?i=\(iEnc)&t=\(t)"
-        guard let url = URL(string: urlString) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.setValue("Upgrade", forHTTPHeaderField: "Connection")
-        req.setValue("websocket", forHTTPHeaderField: "Upgrade")
-        req.setValue("dGhlIHNhbXBsZSBub25jZQ==", forHTTPHeaderField: "Sec-WebSocket-Key")
-        req.setValue("13", forHTTPHeaderField: "Sec-WebSocket-Version")
-        req.timeoutInterval = 10
-        Logger.error("LX probe upgrade → \(url.absoluteString)")
-        URLSession.shared.dataTask(with: req) { [weak self] _, response, err in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                let http = response as? HTTPURLResponse
-                let code = http?.statusCode ?? -1
-                let errStr = err?.localizedDescription ?? ""
-                // v1.0.54：把 101 响应的关键 headers 打印出来。
-                // iOS 的 URLSessionWebSocketTask 收到 101 后会验证 Sec-WebSocket-Accept，
-                // 如果服务端 101 响应里没这个 header，URLSession 会直接关 socket → "Socket is not connected"。
-                let h = http?.allHeaderFields ?? [:]
-                let swa = h["Sec-WebSocket-Accept"] as? String ?? "(missing)"
-                let conn = h["Connection"] as? String ?? "(missing)"
-                let upg = h["Upgrade"] as? String ?? "(missing)"
-                let summary = "HTTP \(code); Sec-WebSocket-Accept=\(swa.prefix(40)); Connection=\(conn); Upgrade=\(upg)"
-                let hint: String
-                switch code {
-                case 101:
-                    if swa == "(missing)" {
-                        hint = "（服务端 101 但缺 Sec-WebSocket-Accept —— 这是 iOS URLSession 拒接并关 socket 的直接原因；服务端 LX 桌面端 ws 库配置 bug）"
-                    } else {
-                        hint = "（101 且 Sec-WebSocket-Accept 存在 —— iOS URLSessionWebSocketTask 自身 bug，需要换实现，如 Starscream）"
-                    }
-                case 401:
-                    hint = "（服务端拒绝了真实凭证 —— iOS 端 i 或 t 生成有问题：要么 aesEncrypt 不对、要么 key 解析错）"
-                case -1:
-                    hint = "（无 HTTP 响应/连接被重置：\(errStr)）"
-                default:
-                    hint = ""
-                }
-                self.status = .failed(reason: "\(summary)\n\(hint)")
-                self.notify()
-                Logger.error("LX probe upgrade result: HTTP \(code) swa=\(swa.prefix(40)) err=\(errStr)")
-            }
-        }.resume()
-    }
-
-    // MARK: - 报文处理
+// MARK: - 报文处理
 
     private func processInbound(_ text: String) {
         let jsonString = LXSyncCrypto.decodeData(text)
@@ -605,9 +531,7 @@ final class LXSyncService {
             Logger.error("LX 发送报文序列化失败"); return
         }
         let frame = LXSyncCrypto.encodeData(json)
-        wsTask?.send(.string(frame)) { [weak self] error in
-            if let error = error { Logger.error("LX 发送失败：\(error.localizedDescription)") }
-        }
+        wsClient?.send(text: frame)
     }
 
     /// 本端主动调用服务端函数（预留：实时把手机端变更推送到桌面端）

@@ -731,7 +731,20 @@ class PlayerManager: NSObject {
     }
 
     func addToQueue(_ song: Song) {
+        // 去重：同一首歌（按 id）已在队列里就跳过，
+        // 避免详情页重复点「加入队列」或「全部播放」时队列被反复加长
+        if playQueue.contains(where: { $0.id == song.id }) {
+            return
+        }
         playQueue.append(song)
+        postQueueChanged()
+    }
+
+    /// 清空当前播放队列（不停止当前播放）。详情页点「全部播放」时调用，
+    /// 确保旧队列被清掉，只播放这个歌单的曲目。
+    func clearQueue() {
+        playQueue.removeAll()
+        queueIndex = 0
         postQueueChanged()
     }
 

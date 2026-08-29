@@ -132,9 +132,13 @@ final class LXSyncService {
                                          publicPEM: pub, privateKey: priv) { authResult in
                             switch authResult {
                             case .failure(let e):
-                                let hint = e.localizedDescription.contains("超时") || e.localizedDescription.contains("timed out")
-                                    ? "\(e.localizedDescription)（同步码可能已过期，请立即在桌面端重新生成）"
-                                    : e.localizedDescription
+                                let desc = e.localizedDescription
+                                // 只在明确是「码错误」类失败时才追加码过期提示；
+                                // 网络/防火墙超时（-1001 之类）不要再误导用户「码可能过期」
+                                let isCodeProblem = desc.contains("同步码") || desc.contains("Auth failed") || desc.contains("auth")
+                                let hint = isCodeProblem
+                                    ? "\(desc)（同步码可能已过期，请立即在桌面端 LX Music 上重新生成后输入）"
+                                    : desc
                                 self.status = .failed(reason: "认证失败：\(hint)"); self.currentStep = nil; self.notify()
                             case .success(let keyInfo):
                                 self.connectWebSocket(hostPath: hostPath, keyInfo: keyInfo)

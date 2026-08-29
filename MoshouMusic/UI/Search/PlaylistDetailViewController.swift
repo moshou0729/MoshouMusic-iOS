@@ -36,7 +36,6 @@ class SearchedPlaylistDetailViewController: UIViewController {
     private let segmented = UISegmentedControl(items: ["全部", "可播", "无匹配"])
 
     private let tableView = UITableView()
-    private let footerContainer = UIView()
     private let playAllButton = UIButton(type: .system)
     private let addQueueButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
@@ -72,8 +71,8 @@ class SearchedPlaylistDetailViewController: UIViewController {
 
         setupHeader()
         setupSegmented()
+        setupToolbar()
         setupTable()
-        setupFooter()
         loadTracks()
     }
 
@@ -92,22 +91,23 @@ class SearchedPlaylistDetailViewController: UIViewController {
 
         titleLabel.font = Theme.titleLarge
         titleLabel.textColor = Theme.text
-        // 长歌单名常 30+ 字，2 行会被截断；3 行基本能放下大多数长标题。
-        // 高度由内容决定（headerView 不再被 artworkView 强制 100pt 高度）。
-        titleLabel.numberOfLines = 3
+        // 限制 2 行 + 字号自动缩放：长标题缩到 60% 也能放下，固定 3 行会撑大 header 把 tableView 挤掉
+        titleLabel.numberOfLines = 2
+        titleLabel.adjustsFontSizeToFitWidth = true
+        titleLabel.minimumScaleFactor = 0.6
+        titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(titleLabel)
 
         subtitleLabel.font = Theme.bodyMedium
         subtitleLabel.textColor = Theme.subtext
-        // 「网易云 · 某长 creator」经常比较长，放 2 行避免被截成「...」
-        subtitleLabel.numberOfLines = 2
+        subtitleLabel.numberOfLines = 1
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(subtitleLabel)
 
         trackCountLabel.font = Theme.bodySmall
         trackCountLabel.textColor = Theme.subtext
-        trackCountLabel.numberOfLines = 0
+        trackCountLabel.numberOfLines = 1
         trackCountLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(trackCountLabel)
 
@@ -115,11 +115,12 @@ class SearchedPlaylistDetailViewController: UIViewController {
             headerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             headerView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             headerView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            // 固定 130pt：title 2 行 (~44) + subtitle 1 行 (~18) + trackCount 1 行 (~16) + spacing 12 + padding 12 = ~102
+            // 留 28pt 余量避免长字符撑大
+            headerView.heightAnchor.constraint(equalToConstant: 130),
 
             artworkView.leadingAnchor.constraint(equalTo: headerView.leadingAnchor),
             artworkView.topAnchor.constraint(equalTo: headerView.topAnchor),
-            // 不再锚到 headerView.bottom —— 让 header 高度由文字内容（title + subtitle + trackCount）决定，
-            // 否则长标题/长 creator 时 header 固定 100pt 会把内容截断
             artworkView.widthAnchor.constraint(equalToConstant: 100),
             artworkView.heightAnchor.constraint(equalToConstant: 100),
 
@@ -129,12 +130,11 @@ class SearchedPlaylistDetailViewController: UIViewController {
 
             subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
 
             trackCountLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             trackCountLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
             trackCountLabel.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 4),
-            trackCountLabel.bottomAnchor.constraint(lessThanOrEqualTo: headerView.bottomAnchor),
         ])
 
         artworkView.layer.shadowColor = UIColor.black.cgColor
@@ -162,28 +162,31 @@ class SearchedPlaylistDetailViewController: UIViewController {
         segmented.selectedSegmentTintColor = Theme.primary
         segmented.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
         segmented.setTitleTextAttributes([.foregroundColor: Theme.primary], for: .normal)
+        // 按内容分配宽度（iOS 14+）：「可播(122) 检测中 22」宽、「无匹配(0)」窄
+        // user 期望可播加宽、无匹配缩短
+        if #available(iOS 14.0, *) {
+            segmented.apportionsSegmentWidthsByContent = true
+        }
         segmented.addTarget(self, action: #selector(segmentChanged(_:)), for: .valueChanged)
         view.addSubview(segmented)
 
         NSLayoutConstraint.activate([
             segmented.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             segmented.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            segmented.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 14),
+            segmented.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 8),
             segmented.heightAnchor.constraint(equalToConstant: 32),
         ])
     }
 
-    private func setupFooter() {
-        footerContainer.translatesAutoresizingMaskIntoConstraints = false
-        footerContainer.backgroundColor = Theme.cardBg
-        view.addSubview(footerContainer)
-
+    // 顶部工具栏：3 个按钮（全部播放 / 加入队列 / 收藏到本地），
+    // 把原来底部 footer 的功能提到 segmented 下方，tableView 占据剩余到底部
+    private func setupToolbar() {
         let stack = UIStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal
         stack.distribution = .fillEqually
         stack.spacing = 8
-        footerContainer.addSubview(stack)
+        view.addSubview(stack)
 
         playAllButton.setTitle("全部播放", for: .normal)
         playAllButton.setTitleColor(.white, for: .normal)
@@ -211,26 +214,19 @@ class SearchedPlaylistDetailViewController: UIViewController {
         stack.addArrangedSubview(saveButton)
 
         NSLayoutConstraint.activate([
-            footerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            footerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            footerContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            // 顶部锚在 safeArea.bottom 上方 66pt（≈ 8pt 顶 padding + 50pt 按钮 + 8pt 底 padding）
-            // —— 关键：之前用 height=92 + stack.bottom=safeArea.bottom-8，会导致
-            // stack 高度被压扁成 -7pt（footer 高度不够覆盖 tab bar + home indicator），
-            // 表现为按钮被 tab bar 盖住、只露一点点。
-            // 现在 footer 背景仍延伸到底（视觉衔接 tab bar），但 stack 完整落在 tab bar 之上的安全区。
-            footerContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -66),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: segmented.bottomAnchor, constant: 12),
+            stack.heightAnchor.constraint(equalToConstant: 44),
+        ])
 
-            stack.leadingAnchor.constraint(equalTo: footerContainer.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: footerContainer.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: footerContainer.topAnchor, constant: 8),
-            // 底部贴安全区上 8pt，确保三个按钮（全部播放/加入队列/收藏到本地）完全可点
-            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-
+        // tableView 在 toolbar 下方、到 safeArea.bottom（tab bar 之上的安全区底部）
+        // —— 占据下半部分所有空间，让歌名列表完整显示
+        NSLayoutConstraint.activate([
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.topAnchor.constraint(equalTo: segmented.bottomAnchor, constant: 10),
-            tableView.bottomAnchor.constraint(equalTo: footerContainer.topAnchor),
+            tableView.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: 8),
+            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
         ])
     }
 
@@ -355,6 +351,8 @@ class SearchedPlaylistDetailViewController: UIViewController {
 
     @objc private func playAllTapped() {
         guard !tracks.isEmpty else { return }
+        // 先清空当前播放队列（user 期望：点全部播放就只听这个歌单，不跟旧队列混）
+        PlayerManager.shared.clearQueue()
         runStreamingPlay(startFirst: true, fallBackHeader: "正在拉取可播放版本…")
     }
     @objc private func addQueueTapped() {

@@ -71,6 +71,12 @@ final class LXSyncService {
     private var lastTEnc: String?
     private var userDidStop = false
 
+    // v1.0.61：同步等待看门狗——WS 连上后每 1s 检查一次状态，如果还停在 .syncing
+    // 就更新 currentStep 显示「已等待 N 秒」，让用户看清到底是连接成功还是真卡住
+    private var syncWatchdog: Timer?
+    private var syncWaitSeconds: Int = 0
+    private var lastInboundSummary: String?    // 最近一次收到的服务端调用摘要，append 到 currentStep
+
     // 同步专用 HTTP 会话：独立 ephemeral 配置，避免与音乐搜索等共享 URLSession 的连接池互相挤占；
     // 并显式关闭 waitsForConnectivity，防止系统把局域网请求误判为“等待联网”而静默挂起。
     private lazy var syncHTTPSession: URLSession = {
@@ -174,9 +180,38 @@ final class LXSyncService {
         }
     }
 
-    /// 停止同步并关闭 WebSocket
+    // v1.0.61：每秒更新 currentStep 让用户看到"等待时长" + 最近一次收到的服务端调用
+    private func startSyncWatchdog() {
+        stopSyncWatchdog()
+        syncWaitSeconds = 0
+        lastInboundSummary = nil
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            guard case .syncing = self.status else { self.stopSyncWatchdog(); return }
+            self.syncWaitSeconds += 1
+            var line = "已连接桌面端，等待服务端编排…"
+            if let s = self.lastInboundSummary { line += "\n收到：\(s)" }
+            line += "\n已等待 \(self.syncWaitSeconds) 秒"
+            // 8s 没收到任何服务端调用 → 提示用户桌面端可能未启动或版本不兼容
+            if self.syncWaitSeconds >= 8 && self.lastInboundSummary == nil {
+                line += "\n⚠️ 还没收到桌面端任何调用——确认桌面 LX Music 主窗口「同步 → 服务端模式」已开启并显示服务已启动"
+            }
+            self.currentStep = line
+            self.notify()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        syncWatchdog = t
+    }
+
+    private func stopSyncWatchdog() {
+        syncWatchdog?.invalidate()
+        syncWatchdog = nil
+    }
+
+    // MARK: - HTTP 握手 / 认证
     func stopSync() {
         userDidStop = true   // 用户主动停止，不再自动重试
+        stopSyncWatchdog()    // v1.0.61
         wsClient?.close()
         wsClient = nil
         syncQueue.async { self.pending.removeAll() }
@@ -337,13 +372,15 @@ final class LXSyncService {
             // 同步由桌面端主动编排：getEnabledFeatures → list_sync_get_list_data
             // →（需要时桌面端弹窗让用户选合并/覆盖方式）→ list_sync_set_list_data
             // → list_sync_finished。本端只需正确响应这些调用（见 registerHandlers）。
-            self.currentStep = "已连接桌面端，等待桌面端下发歌单…\n若桌面端弹出「选择同步方式」，请选一种并确定"
+            self.startSyncWatchdog()                 // v1.0.61：每秒更新等待秒数
+            self.currentStep = "已连接桌面端，等待桌面端下发歌单…"
             self.notify()
         }
         client.onText = { [weak self] text in
             self?.syncQueue.async { self?.processInbound(text) }
         }
         client.onClose = { [weak self] code, reason in
+            self?.stopSyncWatchdog()   // v1.0.61
             self?.handleDisconnect(reason: "close code=\(code ?? -1) reason=\(reason ?? "?")")
         }
         client.onError = { [weak self] err in
@@ -415,28 +452,45 @@ final class LXSyncService {
     private func processInbound(_ text: String) {
         // 服务端对 isMobile 客户端会周期性发**明文** 'ping'（server.ts 的 30s interval），
         // 不走加密，所以要在解密前拦掉
-        guard text != "ping" else { wsClient?.send(text: "pong"); return }
-
+        if text == "ping" { wsClient?.send(text: "pong"); return }
         // v1.0.60：服务端 encryptMsg = encodeData(aesEncrypt(json))，这里对称解密
         guard let key = lastKeyInfo?.key else {
-            Logger.error("LX 无 AES key，无法解密报文"); return
+            Logger.error("LX 无 AES key，无法解密报文")
+            DispatchQueue.main.async {
+                self.currentStep = "⚠️ 无 AES key（认证未成功？）"
+                self.notify()
+            }
+            return
         }
         let jsonString = LXSyncCrypto.aesDecryptLX(
             cipherBase64: LXSyncCrypto.decodeData(text), keyBase64: key)
         guard !jsonString.isEmpty else {
-            Logger.error("LX 报文解密失败（前缀：\(text.prefix(40))）"); return
+            Logger.error("LX 报文解密失败（前缀：\(text.prefix(40))）")
+            DispatchQueue.main.async {
+                self.currentStep = "⚠️ 报文 AES 解密失败——v1.0.60 加密层可能与服务端不匹配（key 长度/算法）。前缀：\(text.prefix(20))"
+                self.notify()
+            }
+            return
         }
         guard let data = jsonString.data(using: .utf8),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [Any],
               arr.count >= 3,
               let type = arr[0] as? Int,
               let name = arr[1] as? String else {
-            Logger.error("LX 消息解析失败（非 message2call 数组）：\(text.prefix(120))"); return
+            Logger.error("LX 消息解析失败（非 message2call 数组）：\(text.prefix(120))")
+            DispatchQueue.main.async {
+                self.currentStep = "⚠️ 报文格式异常：\(jsonString.prefix(80))"
+                self.notify()
+            }
+            return
         }
         switch type {
         case callTypeRequest:            // [0, name, path, args, callbacks] 服务端调用本端
             guard arr.count >= 4, let path = arr[2] as? [String] else { return }
             let args = arr[3] as? [Any] ?? []
+            DispatchQueue.main.async {
+                self.lastInboundSummary = path.joined(separator: ".")
+            }
             handleCall(name: name, path: path, args: args)
         case callTypeResponse:           // [1, name, null, data] 或 [1, name, {message}]
             // 有第 4 个元素且第 3 个为 null → 成功
@@ -455,6 +509,11 @@ final class LXSyncService {
         guard let handler = handlers[fnName] else {
             respondError(name: name, message: "unknown function: \(fnName)")
             return
+        }
+        // v1.0.61：把"被调"实时反映到 currentStep，让用户看见桌面端编排进度
+        DispatchQueue.main.async {
+            self.currentStep = "桌面端调用：\(fnName)（已收到 \(args.count) 个参数）"
+            self.notify()
         }
         handler(args) { [weak self] result in
             switch result {

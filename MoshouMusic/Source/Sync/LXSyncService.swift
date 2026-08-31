@@ -413,10 +413,19 @@ final class LXSyncService {
     /// v1.0.58：message2call 收发的都是 **JSON 数组**，不是对象。
     /// 形如 [type, name, ...]，按 type 分派（0=被调用 / 1=我方调用的返回）。
     private func processInbound(_ text: String) {
-        // 服务端对 isMobile 客户端会周期性发文本 'ping'，不是 message2call 报文
+        // 服务端对 isMobile 客户端会周期性发**明文** 'ping'（server.ts 的 30s interval），
+        // 不走加密，所以要在解密前拦掉
         guard text != "ping" else { wsClient?.send(text: "pong"); return }
 
-        let jsonString = LXSyncCrypto.decodeData(text)
+        // v1.0.60：服务端 encryptMsg = encodeData(aesEncrypt(json))，这里对称解密
+        guard let key = lastKeyInfo?.key else {
+            Logger.error("LX 无 AES key，无法解密报文"); return
+        }
+        let jsonString = LXSyncCrypto.aesDecryptLX(
+            cipherBase64: LXSyncCrypto.decodeData(text), keyBase64: key)
+        guard !jsonString.isEmpty else {
+            Logger.error("LX 报文解密失败（前缀：\(text.prefix(40))）"); return
+        }
         guard let data = jsonString.data(using: .utf8),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [Any],
               arr.count >= 3,
@@ -504,7 +513,18 @@ final class LXSyncService {
               let json = String(data: data, encoding: .utf8) else {
             Logger.error("LX 发送报文序列化失败"); return
         }
-        let frame = LXSyncCrypto.encodeData(json)
+        // v1.0.60：WS 报文**必须 AES 加密**。
+        // 服务端收发都是加密的（server/utils/tools.ts）：
+        //   发 encryptMsg = encodeData(aesEncrypt(json, keyInfo.key))
+        //   收 decryptMsg = aesDecrypt(decodeData(x), keyInfo.key)
+        // 我们之前只做 encodeData 没加密 → 服务端 aesDecrypt 明文失败
+        // → catch → socket.close(SYNC_CLOSE_CODE.failed)，同步永远走不下去。
+        guard let key = lastKeyInfo?.key else {
+            Logger.error("LX 无 AES key（未认证），放弃发送"); return
+        }
+        let cipher = LXSyncCrypto.aesEncryptLX(plaintext: json, keyBase64: key)
+        guard !cipher.isEmpty else { Logger.error("LX 报文加密失败"); return }
+        let frame = LXSyncCrypto.encodeData(cipher)
         wsClient?.send(text: frame)
     }
 

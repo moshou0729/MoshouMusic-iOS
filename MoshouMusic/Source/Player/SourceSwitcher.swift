@@ -285,6 +285,16 @@ final class SourceSwitcher {
             }
         }
 
+        // ⚠️ v1.0.59：用户要求「当前显示的是谁，那就播谁的版本；都不是就跳下一首」
+        // 之前如果 targetSinger 非空但**没有**任何候选歌手能匹配上（hasSingerMatch=false），
+        // 旧逻辑会"退而求其次"扣 70 分后返回——结果就是：搜出 5 个同名翻唱、1 个原唱也没有，
+        // bestMatch 仍会挑第一个翻唱返回，播放出来歌手跟列表对不上。
+        // 现在硬约束：hasSingerMatch=false 且 targetSinger 非空 → 直接返回 nil，
+        // 上层 PlaylistDetailViewController.runStreamingPlay 看到 nil 会自动 next() 跳下一首。
+        if !targetSinger.isEmpty && !hasSingerMatch {
+            return nil
+        }
+
         var best: (song: Song, score: Int)?
 
         for song in songs {
@@ -299,20 +309,9 @@ final class SourceSwitcher {
             if !targetSinger.isEmpty {
                 if s == targetSinger { score += 50 }
                 else if s.contains(targetSinger) || targetSinger.contains(s) { score += 25 }
-                else if s.isEmpty {
-                    // 候选无歌手信息：中性，不加分也不重罚（避免误杀）
-                    score += 0
-                } else {
-                    // 候选歌手与目标明显不符
-                    if hasSingerMatch {
-                        // 已有更对的候选，直接排除这首错的
-                        continue
-                    } else {
-                        // 实在没有对的，只能退而求其次，但显著扣分
-                        score -= 70
-                    }
-                }
+                // 走到这里 s 一定是 hasSingerMatch 的（s == targetSinger 或 contains 任一）
             }
+            // else: targetSinger 为空，按歌名+时长打分即可
 
             // 有时长信息的更可信
             if song.interval > 0 { score += 5 }

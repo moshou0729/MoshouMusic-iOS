@@ -538,9 +538,13 @@ final class LXSyncService {
             completion(.success(["list": ["skipSnapshot": false]]))
         }
         handlers["list_sync_get_list_data"] = { [weak self] _, completion in
-            guard let self = self else { completion(.success(NSNull())); return }
-            let data = LXSyncModels.getLocalListData()
-            completion(.success(self.encodableToAny(data) ?? NSNull()))
+            // v1.0.59：手机端**永远返回空歌单**，让服务端走「桌面有 + 手机空」单向分支
+            // （server/modules/list/sync/sync.ts::handleSyncList 的 else 分支），
+            // 服务端会直接把桌面端歌单 list_sync_set_list_data 推给我们 → 自动同步、**不弹窗**。
+            // 这正好对应用户在 App「以桌面为准」的预选 —— 不再走 getSyncMode 弹窗。
+            // 代价：手机端本地手动收藏的歌单会被桌面覆盖；这是「以桌面为准」的本意。
+            let empty = LXListData(defaultList: [], loveList: [], userList: [])
+            completion(.success(self?.encodableToAny(empty) ?? NSNull()))
         }
         handlers["list_sync_get_md5"] = { _, completion in
             completion(.success(LXSyncModels.localListDataMD5()))

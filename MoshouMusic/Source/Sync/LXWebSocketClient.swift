@@ -81,17 +81,21 @@ final class LXWebSocketClient: NSObject {
     }
 
     private func readHttpResponse() {
+        // v1.0.62：和 readNextFrames 同样的修复——URLSessionStreamTask.readData 是非阻塞
+        // I/O，data 为空不代表流结束（只是 TCP 数据还没到）。data=空也要继续发起下一次 read。
         streamTask.readData(ofMinLength: 1, maxLength: 4096, timeout: 10) { [weak self] data, _, error in
             guard let self = self else { return }
             if let error = error {
                 self.fail(.streamFailed("read http: \(error.localizedDescription)"))
                 return
             }
-            guard let data = data, !data.isEmpty else { return }
-            self.queue.async {
-                self.readBuffer.append(data)
-                self.tryParseHttpResponse()
+            if let data = data, !data.isEmpty {
+                self.queue.async {
+                    self.readBuffer.append(data)
+                    self.tryParseHttpResponse()
+                }
             }
+            self.readHttpResponse()
         }
     }
 
@@ -134,17 +138,26 @@ final class LXWebSocketClient: NSObject {
     // MARK: - 读 WebSocket 帧
 
     private func readNextFrames() {
+        // ⚠️ v1.0.62：URLSessionStreamTask.readData 是**非阻塞 I/O**，
+        // data 可能是空（TCP 暂时没数据）就立即回调。**不能**在 data.isEmpty 时 return，
+        // 否则服务端发来的所有 ws 帧永远不被读取——这正是 v1.0.55~v1.0.61 一直
+        // "已等待 N 秒还没收到任何调用"的根因（服务端发了 getEnabledFeatures，
+        // 但客户端收到 101 后第一次 readNextFrames 回调 data 为空就提前退出）。
         streamTask.readData(ofMinLength: 1, maxLength: 65536, timeout: -1) { [weak self] data, _, error in
             guard let self = self else { return }
             if let error = error {
                 self.fail(.streamFailed("read ws: \(error.localizedDescription)"))
                 return
             }
-            guard let data = data, !data.isEmpty else { return }
-            self.queue.async {
-                self.readBuffer.append(data)
-                self.parseFrames(self.readBuffer)
+            if let data = data, !data.isEmpty {
+                self.queue.async {
+                    self.readBuffer.append(data)
+                    self.parseFrames(self.readBuffer)
+                }
             }
+            // 不管 data 是否为空都继续发起下一次 readData（等下一波 TCP 数据）。
+            // 退出条件只能由 close 帧或 error 触发——见 handleFrame/case 0x8 和 fail。
+            self.readNextFrames()
         }
     }
 

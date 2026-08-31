@@ -77,6 +77,11 @@ final class LXSyncService {
     private var syncWaitSeconds: Int = 0
     private var lastInboundSummary: String?    // 最近一次收到的服务端调用摘要，append 到 currentStep
 
+    // v1.0.63：本连接实际使用的线格式（由收到的第一条报文自动探测得出）。
+    // 不同桌面端构建差异很大，必须照着服务端实际使用的格式回包，否则它对不上。
+    private var wireEncrypted: Bool?   // true=报文经过 AES；false=明文
+    private var wireIsArray: Bool?     // true=message2call 数组；false=老版对象
+
     // 同步专用 HTTP 会话：独立 ephemeral 配置，避免与音乐搜索等共享 URLSession 的连接池互相挤占；
     // 并显式关闭 waitsForConnectivity，防止系统把局域网请求误判为“等待联网”而静默挂起。
     private lazy var syncHTTPSession: URLSession = {
@@ -334,6 +339,9 @@ final class LXSyncService {
         // 记住参数，供握手失败自动重试使用
         self.lastHostPath = hostPath
         self.lastKeyInfo = keyInfo
+        // v1.0.63：每条新连接都要重新探测线格式，别沿用上一条连接的结论
+        self.wireEncrypted = nil
+        self.wireIsArray = nil
 
         let wsURLString = hostPath
             .replacingOccurrences(of: "http", with: "ws", options: [.anchored])
@@ -453,53 +461,92 @@ final class LXSyncService {
         // 服务端对 isMobile 客户端会周期性发**明文** 'ping'（server.ts 的 30s interval），
         // 不走加密，所以要在解密前拦掉
         if text == "ping" { wsClient?.send(text: "pong"); return }
-        // v1.0.60：服务端 encryptMsg = encodeData(aesEncrypt(json))，这里对称解密
-        guard let key = lastKeyInfo?.key else {
-            Logger.error("LX 无 AES key，无法解密报文")
+
+        // v1.0.63：**协议自动探测**。
+        // 不同版本/不同构建的桌面端 LX Music 实际跑的线格式并不一致，实测见过：
+        //   ① 加密 + 数组  [0, name, path, args, callbacks]   (v2.12.2 源码：encryptMsg(JSON.stringify(数组)))
+        //   ② 明文 + 对象  {"name":..,"path":[..],"data":[..]} (用户真机实测就是这种)
+        // 所以这里不预设格式，而是依次尝试「解密 → 解析」，能解析出 JSON 就用哪种。
+        let candidates = Self.decodeCandidates(text, key: lastKeyInfo?.key)
+        var parsed: (Any, Bool)?          // (json对象, 是否走的加密通道)
+        for (str, encrypted) in candidates {
+            guard let d = str.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: d) else { continue }
+            parsed = (obj, encrypted)
+            break
+        }
+        guard let (obj, encrypted) = parsed else {
+            Logger.error("LX 报文无法解析（前缀：\(text.prefix(60))）")
             DispatchQueue.main.async {
-                self.currentStep = "⚠️ 无 AES key（认证未成功？）"
+                self.currentStep = "⚠️ 报文无法解析（试过加密/明文两种通道）。前缀：\(text.prefix(30))"
                 self.notify()
             }
             return
         }
-        let jsonString = LXSyncCrypto.aesDecryptLX(
-            cipherBase64: LXSyncCrypto.decodeData(text), keyBase64: key)
-        guard !jsonString.isEmpty else {
-            Logger.error("LX 报文解密失败（前缀：\(text.prefix(40))）")
+        // 记住本连接实际用的通道，之后 send 时对称使用
+        let isArray = (obj as? [Any]) != nil
+        if wireEncrypted == nil || wireIsArray == nil {
+            wireEncrypted = encrypted
+            wireIsArray = isArray
             DispatchQueue.main.async {
-                self.currentStep = "⚠️ 报文 AES 解密失败——v1.0.60 加密层可能与服务端不匹配（key 长度/算法）。前缀：\(text.prefix(20))"
+                self.lastInboundSummary = "协议探测：\(encrypted ? "加密" : "明文") + \(isArray ? "数组" : "对象")"
                 self.notify()
+            }
+        }
+        Logger.info("LX 报文解析成功（\(encrypted ? "加密" : "明文") + \(isArray ? "数组" : "对象")）")
+
+        // ---- 分支 A：message2call **数组** 协议 ----
+        if let arr = obj as? [Any], arr.count >= 3,
+           let type = arr[0] as? Int, let name = arr[1] as? String {
+            switch type {
+            case callTypeRequest:        // [0, name, path, args, callbacks]
+                guard arr.count >= 4, let path = arr[2] as? [String] else { return }
+                let args = arr[3] as? [Any] ?? []
+                DispatchQueue.main.async { self.lastInboundSummary = path.joined(separator: ".") }
+                handleCall(name: name, path: path, args: args)
+            case callTypeResponse:       // [1, name, null, data] / [1, name, {message}]
+                let err = arr[2] as? [String: Any]
+                let result: Any? = arr.count >= 4 ? arr[3] : nil
+                handleResponse(name: name, error: err, data: result)
+            default:
+                break
             }
             return
         }
-        guard let data = jsonString.data(using: .utf8),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [Any],
-              arr.count >= 3,
-              let type = arr[0] as? Int,
-              let name = arr[1] as? String else {
-            Logger.error("LX 消息解析失败（非 message2call 数组）：\(text.prefix(120))")
-            DispatchQueue.main.async {
-                self.currentStep = "⚠️ 报文格式异常：\(jsonString.prefix(80))"
-                self.notify()
+
+        // ---- 分支 B：老版 **对象** 协议 {name, path?, data?} / {name, error, data} ----
+        if let dict = obj as? [String: Any], let name = dict["name"] as? String {
+            if let path = dict["path"] as? [String], !path.isEmpty {
+                // 服务端调用本端
+                let args = dict["data"] as? [Any] ?? []
+                DispatchQueue.main.async { self.lastInboundSummary = path.joined(separator: ".") }
+                handleCall(name: name, path: path, args: args)
+            } else {
+                // 本端调用的返回
+                let err: [String: Any]? = {
+                    if let s = dict["error"] as? String, !s.isEmpty { return ["message": s] }
+                    return dict["error"] as? [String: Any]
+                }()
+                handleResponse(name: name, error: err, data: dict["data"])
             }
             return
         }
-        switch type {
-        case callTypeRequest:            // [0, name, path, args, callbacks] 服务端调用本端
-            guard arr.count >= 4, let path = arr[2] as? [String] else { return }
-            let args = arr[3] as? [Any] ?? []
-            DispatchQueue.main.async {
-                self.lastInboundSummary = path.joined(separator: ".")
-            }
-            handleCall(name: name, path: path, args: args)
-        case callTypeResponse:           // [1, name, null, data] 或 [1, name, {message}]
-            // 有第 4 个元素且第 3 个为 null → 成功
-            let err = arr[2] as? [String: Any]
-            let result: Any? = arr.count >= 4 ? arr[3] : nil
-            handleResponse(name: name, error: err, data: result)
-        default:
-            break                        // CALLBACK_REQUEST / CALLBACK_RESPONSE 暂未用到
+
+        Logger.error("LX 报文结构不识别：\(text.prefix(80))")
+    }
+
+    /// 依次产出「可能的明文 JSON」候选：先试加密通道（decodeData + AES 解密），再试原文。
+    /// 这样不管桌面端是否加密、是否 gzip（cg_ 前缀），都能解析。
+    private static func decodeCandidates(_ text: String, key: String?) -> [(String, Bool)] {
+        var out: [(String, Bool)] = []
+        if let k = key, !k.isEmpty {
+            let decoded = LXSyncCrypto.decodeData(text)          // 处理 cg_ gzip
+            let plain = LXSyncCrypto.aesDecryptLX(cipherBase64: decoded, keyBase64: k)
+            if !plain.isEmpty { out.append((plain, true)) }
         }
+        out.append((LXSyncCrypto.decodeData(text), false))       // 明文（也试一次 decodeData）
+        if text != LXSyncCrypto.decodeData(text) { out.append((text, false)) }
+        return out
     }
 
     private func handleCall(name: String, path: [String], args: [Any]) {
@@ -556,14 +603,33 @@ final class LXSyncService {
     private let callTypeRequest: Int = 0
     private let callTypeResponse: Int = 1
 
-    /// 成功响应：[1, name, null, data]
+    /// 成功响应。格式照服务端实际使用的来（v1.0.63 协议探测）：
+    /// 数组协议 → `[1, name, null, data]`；对象协议 → `{"name":..,"error":null,"data":..}`
     private func respond(name: String, data: Any?) {
-        sendArray([callTypeResponse, name, NSNull(), data ?? NSNull()])
+        if wireIsArray == false {
+            send(obj: ["name": name, "error": NSNull(), "data": data ?? NSNull()])
+        } else {
+            sendArray([callTypeResponse, name, NSNull(), data ?? NSNull()])
+        }
     }
 
-    /// 失败响应：[1, name, {message: ...}]
+    /// 失败响应。数组协议 → `[1, name, {message}]`；对象协议 → `{"name":..,"error":msg}`
     private func respondError(name: String, message: String) {
-        sendArray([callTypeResponse, name, ["message": message]])
+        if wireIsArray == false {
+            send(obj: ["name": name, "error": message])
+        } else {
+            sendArray([callTypeResponse, name, ["message": message]])
+        }
+    }
+
+    /// 统一出口：按本连接探测到的通道决定「是否 AES 加密」后发出
+    private func send(obj: [String: Any]) {
+        guard JSONSerialization.isValidJSONObject(obj),
+              let data = try? JSONSerialization.data(withJSONObject: obj),
+              let json = String(data: data, encoding: .utf8) else {
+            Logger.error("LX 发送报文序列化失败"); return
+        }
+        emitWire(json)
     }
 
     private func sendArray(_ payload: [Any]) {
@@ -572,19 +638,23 @@ final class LXSyncService {
               let json = String(data: data, encoding: .utf8) else {
             Logger.error("LX 发送报文序列化失败"); return
         }
-        // v1.0.60：WS 报文**必须 AES 加密**。
-        // 服务端收发都是加密的（server/utils/tools.ts）：
-        //   发 encryptMsg = encodeData(aesEncrypt(json, keyInfo.key))
-        //   收 decryptMsg = aesDecrypt(decodeData(x), keyInfo.key)
-        // 我们之前只做 encodeData 没加密 → 服务端 aesDecrypt 明文失败
-        // → catch → socket.close(SYNC_CLOSE_CODE.failed)，同步永远走不下去。
-        guard let key = lastKeyInfo?.key else {
-            Logger.error("LX 无 AES key（未认证），放弃发送"); return
+        emitWire(json)
+    }
+
+    /// v1.0.63：探测前（wireEncrypted == nil）默认按「加密」发（v2.12.2 源码协议）；
+    /// 一旦收到服务端报文探测出通道，就严格照它的来。
+    private func emitWire(_ json: String) {
+        let shouldEncrypt = wireEncrypted ?? true
+        if shouldEncrypt {
+            guard let key = lastKeyInfo?.key else {
+                Logger.error("LX 无 AES key（未认证），放弃发送"); return
+            }
+            let cipher = LXSyncCrypto.aesEncryptLX(plaintext: json, keyBase64: key)
+            guard !cipher.isEmpty else { Logger.error("LX 报文加密失败"); return }
+            wsClient?.send(text: LXSyncCrypto.encodeData(cipher))
+        } else {
+            wsClient?.send(text: json)
         }
-        let cipher = LXSyncCrypto.aesEncryptLX(plaintext: json, keyBase64: key)
-        guard !cipher.isEmpty else { Logger.error("LX 报文加密失败"); return }
-        let frame = LXSyncCrypto.encodeData(cipher)
-        wsClient?.send(text: frame)
     }
 
     /// 本端主动调用服务端函数（预留：实时把手机端变更推送到桌面端）

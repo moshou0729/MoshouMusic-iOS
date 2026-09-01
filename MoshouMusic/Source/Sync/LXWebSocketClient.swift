@@ -272,7 +272,12 @@ final class LXWebSocketClient: NSObject {
         }
         f.append(contentsOf: mk)
         f.append(masked)
-        streamTask.write(f, timeout: 10) { _ in }
+        streamTask.write(f, timeout: 10) { [weak self] error in
+            if let error = error {
+                Logger.error("LX WS write failed: \(error.localizedDescription) — 桌面端可能已 close，服务端异常会传到此处")
+                DispatchQueue.main.async { [weak self] in self?.onError?(error) }
+            }
+        }
     }
 
     private func fail(_ error: WSError) {

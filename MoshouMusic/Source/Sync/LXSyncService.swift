@@ -644,17 +644,18 @@ final class LXSyncService {
     /// v1.0.63：探测前（wireEncrypted == nil）默认按「加密」发（v2.12.2 源码协议）；
     /// 一旦收到服务端报文探测出通道，就严格照它的来。
     private func emitWire(_ json: String) {
-        let shouldEncrypt = wireEncrypted ?? true
-        if shouldEncrypt {
-            guard let key = lastKeyInfo?.key else {
-                Logger.error("LX 无 AES key（未认证），放弃发送"); return
-            }
-            let cipher = LXSyncCrypto.aesEncryptLX(plaintext: json, keyBase64: key)
-            guard !cipher.isEmpty else { Logger.error("LX 报文加密失败"); return }
-            wsClient?.send(text: LXSyncCrypto.encodeData(cipher))
-        } else {
-            wsClient?.send(text: json)
+        // v1.0.65：永远按 v2.12.2 源码协议发送——AES-128-ECB + 数组格式。
+        // 之前按探测结果（wireEncrypted/wireIsArray）发的"明文对象"是死锁源：
+        // 服务端 receive 路径写死调 decryptMsg，对明文会失败 → 抛错 → catch 只 log 不 close →
+        // sync 函数 120s 后 reject 但 socket 仍开着 → 客户端永远卡在 .syncing。
+        // 用户真机收到的明文对象是服务端 sendMessage 路径的乱实现，
+        // 但 receive 路径仍按源码（解密 + 解析数组），所以必须按 receive 路径发。
+        guard let key = lastKeyInfo?.key, !key.isEmpty else {
+            Logger.error("LX 无 AES key（未认证），放弃发送"); return
         }
+        let cipher = LXSyncCrypto.aesEncryptLX(plaintext: json, keyBase64: key)
+        guard !cipher.isEmpty else { Logger.error("LX 报文加密失败"); return }
+        wsClient?.send(text: LXSyncCrypto.encodeData(cipher))
     }
 
     /// 本端主动调用服务端函数（预留：实时把手机端变更推送到桌面端）

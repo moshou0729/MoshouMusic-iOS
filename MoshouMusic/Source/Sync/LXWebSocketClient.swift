@@ -24,6 +24,10 @@ final class LXWebSocketClient: NSObject {
     private let streamTask: URLSessionStreamTask
     private let queue = DispatchQueue(label: "LXWS")
     private var readBuffer = Data()
+    /// v1.0.64：readHttpResponse 还在循环调 readData 吗？tryParseHttpResponse 解析到 101 后
+    /// 会立刻切到 readNextFrames，此时 readHttpResponse 必须停止递归（否则两个 readData
+    /// 链并存，iOS 会 cancel 前一个、前一个回调立即拿到 NSURLErrorCancelled -999）。
+    private var isReadingHttp = true
     private let secWebSocketKey: String
     private let expectedAccept: String
     private let upgradeRequest: Data
@@ -69,6 +73,8 @@ final class LXWebSocketClient: NSObject {
     // MARK: - 连接
 
     func connect() {
+        // v1.0.64：重置 isReadingHttp（万一复用实例重连）
+        self.isReadingHttp = true
         streamTask.write(upgradeRequest, timeout: 10) { [weak self] error in
             guard let self = self else { return }
             if let error = error {
@@ -83,8 +89,12 @@ final class LXWebSocketClient: NSObject {
     private func readHttpResponse() {
         // v1.0.62：和 readNextFrames 同样的修复——URLSessionStreamTask.readData 是非阻塞
         // I/O，data 为空不代表流结束（只是 TCP 数据还没到）。data=空也要继续发起下一次 read。
+        // v1.0.64：但读完数据并 tryParseHttpResponse 成功（切到 readNextFrames）后必须立刻停，
+        // 否则 readHttpResponse 与 readNextFrames 两套 readData 同时存在，iOS 会 cancel
+        // 前一个，前一个回调立即拿到 NSURLErrorCancelled (-999) → fail() 误判为「升级失败」。
         streamTask.readData(ofMinLength: 1, maxLength: 4096, timeout: 10) { [weak self] data, _, error in
             guard let self = self else { return }
+            if !self.isReadingHttp { return }
             if let error = error {
                 self.fail(.streamFailed("read http: \(error.localizedDescription)"))
                 return
@@ -95,7 +105,7 @@ final class LXWebSocketClient: NSObject {
                     self.tryParseHttpResponse()
                 }
             }
-            self.readHttpResponse()
+            if self.isReadingHttp { self.readHttpResponse() }
         }
     }
 
@@ -130,6 +140,9 @@ final class LXWebSocketClient: NSObject {
             return
         }
         Logger.info("LX WS handshake ok: \(s.prefix(120))")
+        // v1.0.64：握手成功，立刻把 isReadingHttp 关掉——否则 readHttpResponse 的
+        // readData 回调还会再发起 readData，跟 readNextFrames 的 readData 并存。
+        isReadingHttp = false
         DispatchQueue.main.async { [weak self] in self?.onOpen?() }
         if !after.isEmpty { parseFrames(after) }
         readNextFrames()

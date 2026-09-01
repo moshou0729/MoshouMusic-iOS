@@ -76,11 +76,12 @@ final class LXSyncService {
     private var syncWatchdog: Timer?
     private var syncWaitSeconds: Int = 0
     private var lastInboundSummary: String?    // 最近一次收到的服务端调用摘要，append 到 currentStep
+    private var lastSentSummary: String?      // v1.0.66：本端最近一次回包摘要
 
-    // v1.0.63：本连接实际使用的线格式（由收到的第一条报文自动探测得出）。
-    // 不同桌面端构建差异很大，必须照着服务端实际使用的格式回包，否则它对不上。
-    private var wireEncrypted: Bool?   // true=报文经过 AES；false=明文
-    private var wireIsArray: Bool?     // true=message2call 数组；false=老版对象
+    // v1.0.63：本连接实际使用的对象/数组形态（由收到的第一条报文自动探测得出）。
+    // 不同桌面端构建 message2call 的线格式 (v0.x={name,path,error,data} 对象 vs
+    // v1+=[type,name,...] 数组) 差异很大，必须照着服务端实际使用的格式回包。
+    private var wireIsArray: Bool?
 
     // 同步专用 HTTP 会话：独立 ephemeral 配置，避免与音乐搜索等共享 URLSession 的连接池互相挤占；
     // 并显式关闭 waitsForConnectivity，防止系统把局域网请求误判为“等待联网”而静默挂起。
@@ -190,12 +191,14 @@ final class LXSyncService {
         stopSyncWatchdog()
         syncWaitSeconds = 0
         lastInboundSummary = nil
+        lastSentSummary = nil   // v1.0.66
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard case .syncing = self.status else { self.stopSyncWatchdog(); return }
             self.syncWaitSeconds += 1
             var line = "已连接桌面端，等待服务端编排…"
             if let s = self.lastInboundSummary { line += "\n收到：\(s)" }
+            if let s = self.lastSentSummary { line += "\n已发送：\(s)" }
             line += "\n已等待 \(self.syncWaitSeconds) 秒"
             // 8s 没收到任何服务端调用 → 提示用户桌面端可能未启动或版本不兼容
             if self.syncWaitSeconds >= 8 && self.lastInboundSummary == nil {
@@ -339,8 +342,7 @@ final class LXSyncService {
         // 记住参数，供握手失败自动重试使用
         self.lastHostPath = hostPath
         self.lastKeyInfo = keyInfo
-        // v1.0.63：每条新连接都要重新探测线格式，别沿用上一条连接的结论
-        self.wireEncrypted = nil
+        // v1.0.63/v1.0.66：每条新连接都要重新探测线形态，别沿用上一条连接的结论
         self.wireIsArray = nil
 
         let wsURLString = hostPath
@@ -462,20 +464,20 @@ final class LXSyncService {
         // 不走加密，所以要在解密前拦掉
         if text == "ping" { wsClient?.send(text: "pong"); return }
 
-        // v1.0.63：**协议自动探测**。
-        // 不同版本/不同构建的桌面端 LX Music 实际跑的线格式并不一致，实测见过：
-        //   ① 加密 + 数组  [0, name, path, args, callbacks]   (v2.12.2 源码：encryptMsg(JSON.stringify(数组)))
-        //   ② 明文 + 对象  {"name":..,"path":[..],"data":[..]} (用户真机实测就是这种)
-        // 所以这里不预设格式，而是依次尝试「解密 → 解析」，能解析出 JSON 就用哪种。
+        // v1.0.63：**协议自动探测**。LX 桌面端 v2.12.x 实际跑的是 message2call v0.x
+        // 对象协议 `{"name":..,"path":[..],"data":[..]}` 或罕见 v1+ 数组协议
+        // `[0,name,path,args,callbacks]`。依次尝试明文/解 gzip/兜底 AES-解密 + JSON.parse，
+        // 能解析出 JSON 就用哪种。成功解析后用 `wireIsArray` 记住对象/数组形态，
+        // 后面响应时对称使用。
         let candidates = Self.decodeCandidates(text, key: lastKeyInfo?.key)
-        var parsed: (Any, Bool)?          // (json对象, 是否走的加密通道)
-        for (str, encrypted) in candidates {
+        var obj: Any?
+        for (str, _) in candidates {
             guard let d = str.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: d) else { continue }
-            parsed = (obj, encrypted)
+                  let parsedObj = try? JSONSerialization.jsonObject(with: d) else { continue }
+            obj = parsedObj
             break
         }
-        guard let (obj, encrypted) = parsed else {
+        guard let obj = obj else {
             Logger.error("LX 报文无法解析（前缀：\(text.prefix(60))）")
             DispatchQueue.main.async {
                 self.currentStep = "⚠️ 报文无法解析（试过加密/明文两种通道）。前缀：\(text.prefix(30))"
@@ -483,17 +485,17 @@ final class LXSyncService {
             }
             return
         }
-        // 记住本连接实际用的通道，之后 send 时对称使用
+        // 记住本连接实际用的对象/数组形态：服务端用对象（v0.x）就回对象，数组（v1+）就回数组。
         let isArray = (obj as? [Any]) != nil
-        if wireEncrypted == nil || wireIsArray == nil {
-            wireEncrypted = encrypted
+        if wireIsArray == nil {
             wireIsArray = isArray
             DispatchQueue.main.async {
-                self.lastInboundSummary = "协议探测：\(encrypted ? "加密" : "明文") + \(isArray ? "数组" : "对象")"
+                self.lastInboundSummary = "协议探测：\(isArray ? "数组" : "对象")"
                 self.notify()
             }
         }
-        Logger.info("LX 报文解析成功（\(encrypted ? "加密" : "明文") + \(isArray ? "数组" : "对象")）")
+        let detected = isArray ? "数组" : "对象"
+        Logger.info("LX 报文解析成功（\(detected)）")
 
         // ---- 分支 A：message2call **数组** 协议 ----
         if let arr = obj as? [Any], arr.count >= 3,
@@ -535,17 +537,26 @@ final class LXSyncService {
         Logger.error("LX 报文结构不识别：\(text.prefix(80))")
     }
 
-    /// 依次产出「可能的明文 JSON」候选：先试加密通道（decodeData + AES 解密），再试原文。
-    /// 这样不管桌面端是否加密、是否 gzip（cg_ 前缀），都能解析。
+    /// 依次产出「可能的明文 JSON」候选。
+    ///
+    /// v1.0.66 关键修正：**桌面端 v2.12.x 的 encryptMsg/decryptMsg 实际不调用 AES**（参考
+    /// lx-music-desktop `src/main/modules/sync/server/utils/tools.ts`：`aesEncrypt/aesDecrypt`
+    /// 函数存在但 `encryptMsg` 内对应行被注释，只对 >1024 字节做 `cg_` gzip），所以**入站报文
+    /// 应是「明文 JSON」或「cg_ gzip+base64」。** 把明文通道放最前面，正常情况第一档就解析成功。
+    ///
+    /// 第二档 AES-解密作为兜底：万一桌面端某天切回 AES、或用户装有第三方加密插件，旧逻辑仍能解析；
+    /// cipher 解析失败会被 JSONSerialization 静默忽略，自动继续下一档。
     private static func decodeCandidates(_ text: String, key: String?) -> [(String, Bool)] {
         var out: [(String, Bool)] = []
+        // 第 1 档：明文通道（最常见；cg_ gzip 由 decodeData 内部处理）
+        out.append((LXSyncCrypto.decodeData(text), false))
+        if text != LXSyncCrypto.decodeData(text) { out.append((text, false)) }
+        // 第 2 档：兜底 AES-解密
         if let k = key, !k.isEmpty {
-            let decoded = LXSyncCrypto.decodeData(text)          // 处理 cg_ gzip
+            let decoded = LXSyncCrypto.decodeData(text)
             let plain = LXSyncCrypto.aesDecryptLX(cipherBase64: decoded, keyBase64: k)
             if !plain.isEmpty { out.append((plain, true)) }
         }
-        out.append((LXSyncCrypto.decodeData(text), false))       // 明文（也试一次 decodeData）
-        if text != LXSyncCrypto.decodeData(text) { out.append((text, false)) }
         return out
     }
 
@@ -622,12 +633,21 @@ final class LXSyncService {
         }
     }
 
-    /// 统一出口：按本连接探测到的通道决定「是否 AES 加密」后发出
+    /// 统一出口：按本连接探测到的形态决定「对象 vs 数组」后发出。
+    /// 文本走 emitWire → encodeData（>1024 字节加 cg_ gzip 前缀，与桌面端 encryptMsg 保持一致）。
+    ///
+    /// v1.0.66 同步记录 lastSentSummary（最近一次外发的 RPC 名），方便 watchdog 显示
+    /// 「已发送：xxx」让用户确认本端没有静默丢包。
     private func send(obj: [String: Any]) {
         guard JSONSerialization.isValidJSONObject(obj),
               let data = try? JSONSerialization.data(withJSONObject: obj),
               let json = String(data: data, encoding: .utf8) else {
             Logger.error("LX 发送报文序列化失败"); return
+        }
+        if let name = obj["name"] as? String,
+           let _ = obj["error"] {  // RESPONSE 报文 → 解析被响应的 fn 名（path 前 12 段作摘要）
+            let summary = "\(name)"
+            DispatchQueue.main.async { self.lastSentSummary = summary }
         }
         emitWire(json)
     }
@@ -638,24 +658,29 @@ final class LXSyncService {
               let json = String(data: data, encoding: .utf8) else {
             Logger.error("LX 发送报文序列化失败"); return
         }
+        if payload.count >= 4, payload[0] as? Int == callTypeResponse,
+           let name = payload[1] as? String {
+            DispatchQueue.main.async { self.lastSentSummary = "response.\(name)" }
+        } else if payload.count >= 5, payload[0] as? Int == callTypeRequest,
+                  let name = payload[1] as? String {
+            DispatchQueue.main.async { self.lastSentSummary = "request.\(name)" }
+        }
         emitWire(json)
     }
 
-    /// v1.0.63：探测前（wireEncrypted == nil）默认按「加密」发（v2.12.2 源码协议）；
-    /// 一旦收到服务端报文探测出通道，就严格照它的来。
+    /// v1.0.66 关键修正：LX 桌面端 v2.12.x 的 `encryptMsg` 实际**不调用 AES**
+    /// （`aesEncrypt/aesDecrypt` 函数定义在 `utils/tools.ts`，但 `encryptMsg` 内对应
+    /// 那行被注释掉，只对 >1024 字节做 `cg_` gzip，否则明文 JSON 直发）。`decryptMsg` 同理。
+    /// 所以本端外发也应**照搬桌面端的发送逻辑**：明文 JSON，超长才 gzip+cg_ 前缀。
+    ///
+    /// 之前 v1.0.60 ~ v1.0.65 一直外发 AES 密文 → 服务端 `JSON.parse(密文)` 必抛 →
+    /// `socket.close(4100)` → 桌面端的 `await socket.remote.getEnabledFeatures(...)`
+    /// 永远不会 resolve（虽然 send-side 解析失败只 close 不 throw），导致后面的
+    /// `list_sync_get_list_data` 永远发不出来，手机端表面卡在「已等待 N 秒 / 收到 getEnabledFeatures」。
+    ///
+    /// 这里就一行：`encodeData(json)` 完全照搬桌面端的处理（与 `encryptMsg` 同逻辑）。
     private func emitWire(_ json: String) {
-        // v1.0.65：永远按 v2.12.2 源码协议发送——AES-128-ECB + 数组格式。
-        // 之前按探测结果（wireEncrypted/wireIsArray）发的"明文对象"是死锁源：
-        // 服务端 receive 路径写死调 decryptMsg，对明文会失败 → 抛错 → catch 只 log 不 close →
-        // sync 函数 120s 后 reject 但 socket 仍开着 → 客户端永远卡在 .syncing。
-        // 用户真机收到的明文对象是服务端 sendMessage 路径的乱实现，
-        // 但 receive 路径仍按源码（解密 + 解析数组），所以必须按 receive 路径发。
-        guard let key = lastKeyInfo?.key, !key.isEmpty else {
-            Logger.error("LX 无 AES key（未认证），放弃发送"); return
-        }
-        let cipher = LXSyncCrypto.aesEncryptLX(plaintext: json, keyBase64: key)
-        guard !cipher.isEmpty else { Logger.error("LX 报文加密失败"); return }
-        wsClient?.send(text: LXSyncCrypto.encodeData(cipher))
+        wsClient?.send(text: LXSyncCrypto.encodeData(json))
     }
 
     /// 本端主动调用服务端函数（预留：实时把手机端变更推送到桌面端）

@@ -545,7 +545,11 @@ final class LXSyncService {
         // （这是连接建立 ~30s 后确定性 4100、且重认证无效的真正根因）。
         // 正确做法：回 **WS pong 控制帧**（opcode 0xA），它是控制帧、不进 message 监听器，
         // 不会被 JSON.parse，且命中服务端 socket.on('pong') 保持 isAlive。
-        if text == "ping" { wsClient?.sendPongFrame(); return }
+        if text == "ping" {
+            Logger.info("LXSyncService: heartbeat ping -> sendPongFrame()")
+            wsClient?.sendPongFrame()
+            return
+        }
 
         // v1.0.67：把收到的报文前 80 字节原样打到 watch dog UI + 日志
         // v1.0.68：加长到 250B，但不要在这里赋值——后面协议探测完之后会再次设置，

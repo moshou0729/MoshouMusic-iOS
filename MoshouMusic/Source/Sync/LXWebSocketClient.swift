@@ -311,6 +311,17 @@ final class LXWebSocketClient {
         appendOut(frame)
     }
 
+    /// 发 WS pong 控制帧（opcode 0xA）回应服务端心跳。
+    /// ⚠️ v1.0.72 关键修正：服务端对移动端周期性发**应用层文本 "ping"**，
+    /// 而其 `message` 监听器对收到的每帧都做 `decryptMsg → JSON.parse`。
+    /// 若我们回文本 "pong"，服务端 `JSON.parse("pong")` 抛错 → `socket.close(4100)` ——
+    /// 这就是连接建立后约 30s 必现、重认证无效的确定性 4100。
+    /// 正确做法：回 **WS pong 控制帧**（0xA），它是控制帧、不进 `message` 监听器，
+    /// 不会被 JSON.parse，且命中服务端 `socket.on('pong')` 保持 `isAlive`。
+    func sendPongFrame() {
+        appendOut(buildFrame(opcode: 0xA, payload: Data()))
+    }
+
     /// 发 close 帧（1000 Normal Closure + "bye"）
     func close() {
         var p = Data([0x03, 0xE8])  // 1000

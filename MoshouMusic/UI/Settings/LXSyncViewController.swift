@@ -24,6 +24,8 @@ class LXSyncViewController: UIViewController {
     private let startSyncButton = UIButton(type: .system)
     private let stopSyncButton = UIButton(type: .system)
     private let syncStatusLabel = UILabel()
+    // v1.0.68：message2call 线格式手动切换（自动 / 对象 / 数组）
+    private let wireSegment = UISegmentedControl(items: ["自动", "对象", "数组"])
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -193,6 +195,23 @@ class LXSyncViewController: UIViewController {
         diagButton.addTarget(self, action: #selector(diagTapped), for: .touchUpInside)
         syncCard.stack.addArrangedSubview(diagButton)
         diagButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        // v1.0.68：协议格式手动切换。默认「自动」＝按桌面端第一条报文的对象/数组形态回包。
+        // 若桌面端用的是我们没见过的 m2c 变体（响应收不到），可在真机上一键切到另一种格式重试，
+        // 不必再重新打包。
+        let wireHint = UILabel()
+        wireHint.text = "回包协议格式（排障用，默认自动）："
+        wireHint.font = Theme.bodySmall
+        wireHint.textColor = Theme.subtext
+        wireHint.numberOfLines = 0
+        syncCard.stack.addArrangedSubview(wireHint)
+
+        let savedWire = UserDefaults.standard.integer(forKey: "lxWireFormatOverride")  // 0=自动 1=对象 2=数组
+        wireSegment.selectedSegmentIndex = (0...2).contains(savedWire) ? savedWire : 0
+        wireSegment.selectedSegmentTintColor = Theme.secondary
+        wireSegment.addTarget(self, action: #selector(wireChanged), for: .valueChanged)
+        syncCard.stack.addArrangedSubview(wireSegment)
+        applyWireOverride()
 
         syncStatusLabel.font = Theme.bodyMedium
         syncStatusLabel.textColor = Theme.text
@@ -387,6 +406,24 @@ class LXSyncViewController: UIViewController {
         }
         ConfigStore.shared.lxSyncMode = mode
         ConfigStore.shared.save()
+    }
+
+    // MARK: - v1.0.68 协议格式手动切换
+
+    @objc private func wireChanged() {
+        UserDefaults.standard.set(wireSegment.selectedSegmentIndex, forKey: "lxWireFormatOverride")
+        applyWireOverride()
+        let names = ["自动探测", "对象 {name,error,data}", "数组 [1,name,error,data]"]
+        let idx = (0...2).contains(wireSegment.selectedSegmentIndex) ? wireSegment.selectedSegmentIndex : 0
+        showToast("回包格式：\(names[idx])\n下次「开始同步」生效")
+    }
+
+    private func applyWireOverride() {
+        switch wireSegment.selectedSegmentIndex {
+        case 1: LXSyncService.shared.wireFormatOverride = false   // 强制对象（m2c 0.1.3 标准）
+        case 2: LXSyncService.shared.wireFormatOverride = true    // 强制数组（m2c v1+）
+        default: LXSyncService.shared.wireFormatOverride = nil    // 自动探测
+        }
     }
 
     private func showToast(_ msg: String) {

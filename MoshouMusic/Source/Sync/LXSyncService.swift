@@ -77,13 +77,20 @@ final class LXSyncService {
     private var syncWaitSeconds: Int = 0
     private var lastInboundSummary: String?    // 最近一次收到的服务端调用摘要，append 到 currentStep
     private var lastSentSummary: String?      // v1.0.66：本端最近一次回包摘要
-    private var lastSentRawPreview: String?   // v1.0.67：本端最近一次外发报文的前 80 字节原样
-    private var lastRecvRawPreview: String?   // v1.0.67：最近一次收到报文的前 80 字节原样
+    private var lastSentRawPreview: String?   // v1.0.67：本端最近一次外发报文的原样预览（v1.0.68 加长到 250B）
+    private var lastRecvRawPreview: String?   // v1.0.67：最近一次收到报文的原样预览（v1.0.68 加长到 250B）
+    private var lastTransportLog: String?     // v1.0.68：传输层事件（TCP/握手/字节数）
 
     // v1.0.63：本连接实际使用的对象/数组形态（由收到的第一条报文自动探测得出）。
     // 不同桌面端构建 message2call 的线格式 (v0.x={name,path,error,data} 对象 vs
     // v1+=[type,name,...] 数组) 差异很大，必须照着服务端实际使用的格式回包。
     private var wireIsArray: Bool?
+
+    // v1.0.68：用户手动覆盖协议格式（默认 nil=自动探测）
+    //  设为 true → 强制数组响应 `[1,name,error,data]`
+    //  设为 false → 强制对象响应 `{name,error,data}`
+    // 设 nil → 由 `wireIsArray` 自动探测（默认行为）
+    var wireFormatOverride: Bool?
 
     // 同步专用 HTTP 会话：独立 ephemeral 配置，避免与音乐搜索等共享 URLSession 的连接池互相挤占；
     // 并显式关闭 waitsForConnectivity，防止系统把局域网请求误判为“等待联网”而静默挂起。
@@ -196,6 +203,7 @@ final class LXSyncService {
         lastSentSummary = nil   // v1.0.66
         lastSentRawPreview = nil   // v1.0.67
         lastRecvRawPreview = nil   // v1.0.67
+        lastTransportLog = nil     // v1.0.68
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard case .syncing = self.status else { self.stopSyncWatchdog(); return }
@@ -203,9 +211,17 @@ final class LXSyncService {
             var line = "已连接桌面端，等待服务端编排…"
             if let s = self.lastInboundSummary { line += "\n收到：\(s)" }
             if let s = self.lastSentSummary { line += "\n已发送：\(s)" }
-            // v1.0.67：把原始报文前 80 字节也打出来，便于确认 wire 格式
+            // v1.0.68：发送原文 preview 加长到 250B；再加一行**传输层字节计数**，
+            // 用来区分「我们确实发出去了但桌面端不认」和「根本没发出去（写被堵住）」。
             if let s = self.lastSentRawPreview { line += "\n↑发送原文：\(s)" }
             if let s = self.lastRecvRawPreview { line += "\n↓收到原文：\(s)" }
+            if let st = self.wsClient?.ioStats() {
+                line += "\n传输：写出 \(st.writtenBytes)B / 读入 \(st.readBytes)B"
+                if st.writeFailures > 0 {
+                    line += " / ⚠️写失败 \(st.writeFailures) 次：\(st.lastError ?? "")"
+                }
+            }
+            if let s = self.lastTransportLog { line += "\n链路：\(s)" }
             line += "\n已等待 \(self.syncWaitSeconds) 秒"
             // 8s 没收到任何服务端调用 → 提示用户桌面端可能未启动或版本不兼容
             if self.syncWaitSeconds >= 8 && self.lastInboundSummary == nil {
@@ -375,8 +391,15 @@ final class LXSyncService {
         // 响应后拒绝完成握手（即使 Sec-WebSocket-Accept 正确），报 "Socket is not connected"。
         // v1.0.54 已用 dataTask 模拟 upgrade 拿到 HTTP 101 + 全部正确 headers，
         // 确诊为 iOS 端 URLSessionWebSocketTask 与 ws 库握手兼容性问题。
-        // LXWebSocketClient 用 URLSessionStreamTask 拿 TCP 字节流自己完成 RFC 6455 握手与帧收发。
+        // v1.0.68：传输层重写为 BSD socket。URLSessionStreamTask 版本踩过：
+        //   - readData 非阻塞、data 可能为空（v1.0.62 空读导致永不收包）
+        //   - 两个 readData 链并存互相 cancel -999（v1.0.64）
+        //   - 更致命的：readData(timeout:-1) 长期挂起可能把 write 堵在后面
+        //     （UI 显示「已发送」但桌面端毫无反应），见 LXWebSocketClient 顶部注释。
         let client = LXWebSocketClient(url: url)
+        client.onLog = { [weak self] s in
+            DispatchQueue.main.async { self?.lastTransportLog = s }
+        }
         client.onOpen = { [weak self] in
             guard let self = self else { return }
             Logger.info("LX WS handshake ok")
@@ -472,12 +495,10 @@ final class LXSyncService {
         if text == "ping" { wsClient?.send(text: "pong"); return }
 
         // v1.0.67：把收到的报文前 80 字节原样打到 watch dog UI + 日志
-        let recvPreview = String(text.prefix(80))
-        Logger.info("LX 收到原始（前 80B）：\(recvPreview)")
-        DispatchQueue.main.async {
-            self.lastRecvRawPreview = recvPreview
-            self.notify()
-        }
+        // v1.0.68：加长到 250B，但不要在这里赋值——后面协议探测完之后会再次设置，
+        // 以确保解析失败情况下也能在 UI 上看到原始报文。
+        let recvPreview0 = emitWirePreview(text, max: 80)
+        Logger.info("LX 收到原始（前 80B）：\(recvPreview0)")
 
         // v1.0.63：**协议自动探测**。LX 桌面端 v2.12.x 实际跑的是 message2call v0.x
         // 对象协议 `{"name":..,"path":[..],"data":[..]}` 或罕见 v1+ 数组协议
@@ -493,16 +514,24 @@ final class LXSyncService {
             break
         }
         guard let obj = obj else {
-            Logger.error("LX 报文无法解析（前缀：\(text.prefix(60))）")
+            Logger.error("LX 报文无法解析（前缀：\(emitWirePreview(text, max: 60))）")
             DispatchQueue.main.async {
-                self.currentStep = "⚠️ 报文无法解析（试过加密/明文两种通道）。前缀：\(text.prefix(30))"
+                self.lastRecvRawPreview = self.emitWirePreview(text, max: 250)
+                self.currentStep = "⚠️ 报文无法解析（试过加密/明文两种通道）。前缀：\(self.emitWirePreview(text, max: 30))"
                 self.notify()
             }
             return
         }
         // 记住本连接实际用的对象/数组形态：服务端用对象（v0.x）就回对象，数组（v1+）就回数组。
+        // v1.0.68：如果用户在 UI 上强制 wireFormatOverride，则覆盖探测结果
         let isArray = (obj as? [Any]) != nil
-        if wireIsArray == nil {
+        if let ovr = wireFormatOverride {
+            wireIsArray = ovr
+            DispatchQueue.main.async {
+                self.lastInboundSummary = "协议覆盖：\(ovr ? "数组" : "对象")"
+                self.notify()
+            }
+        } else if wireIsArray == nil {
             wireIsArray = isArray
             DispatchQueue.main.async {
                 self.lastInboundSummary = "协议探测：\(isArray ? "数组" : "对象")"
@@ -511,6 +540,10 @@ final class LXSyncService {
         }
         let detected = isArray ? "数组" : "对象"
         Logger.info("LX 报文解析成功（\(detected)）")
+
+        // v1.0.68：原文 preview 加长到 250B（v1.0.67 是 80B）
+        let recvPreview = emitWirePreview(text, max: 250)
+        DispatchQueue.main.async { self.lastRecvRawPreview = recvPreview }
 
         // ---- 分支 A：message2call **数组** 协议 ----
         if let arr = obj as? [Any], arr.count >= 3,
@@ -629,38 +662,38 @@ final class LXSyncService {
     private let callTypeRequest: Int = 0
     private let callTypeResponse: Int = 1
 
-    /// 成功响应。格式照服务端实际使用的来（v1.0.63 协议探测）：
-    /// 数组协议 → `[1, name, null, data]`；对象协议 → `{"name":..,"path":[],"error":null,"data":..}`
+    /// 成功响应。message2call v0.1.3 ESM 真实协议：
+    ///   - 桌面端作为 server，发 REQUEST 用 `{name:'fn__<id>', path:['fn'], data:[...]}`
+    ///   - 桌面端期望我们回 RESPONSE 用 `{name:'fn__<id>', error:null, data:...}`（**没有 path**）
+    /// 读完整 m2c ESM 源码后确认 onMessage 用 `path?.length` 路由：
+    ///   - path 真数组 → handleResponseData（本地 RPC 处理）
+    ///   - path 缺省/数组空 → handleGetData（resolve callback）
+    /// **所以 RESPONSE 必须不带 path！**
     ///
-    /// v1.0.67：响应里**显式带 `path: []`**——
-    /// 桌面端 LX v2.12.x 用 message2call v0.1.3（ESM 源码用 `path?.length` optional chaining，
-    /// 理论能正确处理 path=undefined）。但实战观察：
-    /// 发出 `getEnabledFeatures` 响应后桌面端**不再发第二个 RPC**——`await getEnabledFeatures`
-    /// 似乎没 resolve。可能 LX 桌面端实际跑的是某 fork / 编译产物把 `?.` 优化掉，导致
-    /// `path.length` 在 path=undefined 时 throw → onMessage 同步 throw → 服务端把 socket close
-    /// 但客户端表面看不出来（仍有 ping/pong 心跳）。**显式带 `path: []` 让所有变体都走
-    /// `handleResponseData` 分支（[路径空数组 → name=undefined? 实际是 path=[], pop()=undefined→throw）**
-    /// ——所以这个其实不行。
-    ///
-    /// ⚠️ 经读 v0.1.3 ESM 源码，**真正的安全响应格式**是 `{name, error, data}`（无 path），
-    /// 桌面端 v0.1.3 ESM 用 `path?.length` 正确处理。但如果 v2.12.x 实际打包用的是 .min.js
-    /// 版本（minified 后 `?.` 编译为 `null != r && r.length`——r=undefined 时 throw），那我们
-    /// 必须带 `path: []` 才能让 `r.length === 0`（falsy）走到 `handleGetData` 分支。
-    /// **所以同时兼容两种情况：响应里带 `path: []`**——ESM 版因为 `[].length === 0` falsy 走
-    /// handleGetData，min 版也因为 `[].length === 0` 不 throw 走 handleGetData。两条路都通。
-    /// （实测 `r=[]` 时 v0.1.3 min 的 `null != r && r.length` 表达式：
-    /// `null != []` 为 `true`，`true && 0` 为 `0`，`if(0)` falsy → handleGetData ✓）
+    /// v1.0.68 改变：
+    ///   1) **去掉 `path: []`**——v1.0.67 加 path 是错的：m2c 0.1.3 的 `onMessage` 用
+    ///      `if (path?.length) handleResponseData(...) else handleGetData(...)` 路由，
+    ///      带 path 会被当成「对端在调用本端」，走 handleResponseData 分支 → 事件永不 resolve。
+    ///   2) 保留 m2c 标准 RESPONSE 三字段 `{name, error, data}`：`handleGetData` 用它 resolve
+    ///      `getData()` 的 Promise，`data` 就是 RPC 返回值，桌面端直接 `enabledFeatures[moduleName]` 取。
+    ///   3) 若某天 desktop m2c 升级到 v1+ 数组协议，靠 `wireIsArray` 切到数组分支。
+    ///   4) `wireFormatOverride` 可在 UI 上手动强制对象/数组，优先级高于自动探测。
     private func respond(name: String, data: Any?) {
-        if wireIsArray == false {
-            send(obj: ["name": name, "path": [String](), "error": NSNull(), "data": data ?? NSNull()])
+        let useArray = wireFormatOverride ?? wireIsArray ?? false
+        if !useArray {
+            // 桌面端期待的 RESPONSE：name + error=null + data={list: ...}
+            // v1.0.66 的语义，但**不带 `path`**。这是 m2c 0.1.3 ESM 唯一正确的格式。
+            send(obj: ["name": name, "error": NSNull(), "data": data ?? NSNull()])
         } else {
+            // 数组协议兜底：m2c v1+ `[1, eventName, error, data]`
             sendArray([callTypeResponse, name, NSNull(), data ?? NSNull()])
         }
     }
 
     /// 失败响应。数组协议 → `[1, name, {message}]`；对象协议 → `{"name":..,"error":msg}`
     private func respondError(name: String, message: String) {
-        if wireIsArray == false {
+        let useArray = wireFormatOverride ?? wireIsArray ?? false
+        if !useArray {
             send(obj: ["name": name, "error": message])
         } else {
             sendArray([callTypeResponse, name, ["message": message]])
@@ -678,15 +711,15 @@ final class LXSyncService {
               let json = String(data: data, encoding: .utf8) else {
             Logger.error("LX 发送报文序列化失败"); return
         }
-        // v1.0.67：发送原文 preview（>80B 截断）
-        let sentPreview = String(json.prefix(80))
-        Logger.info("LX 发送原文（前 80B）：\(sentPreview)")
+        // v1.0.68：发送原文 preview（>250B 截断，附加 +N 表示剩余字节）—— 比 v1.0.67 的 80B 长 3 倍，
+        // 完整捕获长响应（如 list_sync_set_list_data 全歌单）的字段结构。
+        let preview = emitWirePreview(json)
+        Logger.info("LX 发送原文（\(preview.count)B）：\(preview)")
         if let name = obj["name"] as? String,
-           let _ = obj["error"] {  // RESPONSE 报文 → 解析被响应的 fn 名（path 前 12 段作摘要）
-            let summary = "\(name)"
+           let _ = obj["error"] {  // RESPONSE 报文 → 解析被响应的 fn 名
             DispatchQueue.main.async {
-                self.lastSentSummary = summary
-                self.lastSentRawPreview = sentPreview
+                self.lastSentSummary = name
+                self.lastSentRawPreview = preview
             }
         }
         emitWire(json)
@@ -725,6 +758,13 @@ final class LXSyncService {
         wsClient?.send(text: LXSyncCrypto.encodeData(json))
     }
 
+    /// v1.0.68：preview 工具——截 250B，剩余用 ` …(+N)` 补充。
+    /// v1.0.67 截 80B 太短，长响应看不到完整字段结构；250B 能完整看到大多数 m2c 报文。
+    private func emitWirePreview(_ json: String, max: Int = 250) -> String {
+        if json.count <= max { return json }
+        return String(json.prefix(max)) + " …(+\(json.count - max)B)"
+    }
+
     /// 本端主动调用服务端函数（预留：实时把手机端变更推送到桌面端）
     func callServer(function: String, arguments: [Any], timeout: TimeInterval = 20,
                     completion: @escaping (Result<Any?, Error>) -> Void) {
@@ -751,8 +791,23 @@ final class LXSyncService {
 
     private func registerHandlers() {
         handlers["getEnabledFeatures"] = { _, completion in
-            // 我们支持 list 同步；dislike 暂不支持
-            completion(.success(["list": ["skipSnapshot": false]]))
+            // 我们支持 list 同步；dislike 暂不支持（不返回 dislike 键 → 桌面端跳过该模块）。
+            //
+            // 桌面端 server/server/sync/sync.ts：
+            //   const enabledFeatures = await socket.remote.getEnabledFeatures('desktop-app', featureVersion)
+            //   for (const moduleName of FeaturesList /* ['list','dislike'] */) {
+            //     if (enabledFeatures[moduleName]) { socket.feature[moduleName] = ...; await modules[moduleName].sync(socket) }
+            //   }
+            // → 返回值**按模块名为顶层 key**，不是 {list:{...}} 再包一层。
+            //
+            // server/modules/list/sync/sync.ts::syncList：
+            //   if (!socket.feature.list) throw new Error('list feature options not available')
+            //   if (!socket.feature.list.skipSnapshot) { …读快照、list_sync_get_md5、三方合并… }
+            //   await handleSyncList(socket)
+            // v1.0.68：skipSnapshot 改成 **true**，强制走 handleSyncList 的确定性分支
+            // （手机端返回空歌单 → 桌面端直接 list_sync_set_list_data 推全量），
+            // 绕开快照/md5/三方合并这条对新设备毫无意义且更脆弱的路径。
+            completion(.success(["list": ["skipSnapshot": true]]))
         }
         handlers["list_sync_get_list_data"] = { [weak self] _, completion in
             // v1.0.59：手机端**永远返回空歌单**，让服务端走「桌面有 + 手机空」单向分支

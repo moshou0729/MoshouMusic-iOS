@@ -166,13 +166,20 @@ enum LXSyncCrypto {
             }
         }
         guard let fp = file else { return nil }
-        defer { gzclose(fp) }
         var written: Int = 0
         data.withUnsafeBytes { ptr in
-            written = Int(gzwrite(fp, ptr.baseAddress!, UInt32(data.count)))
+            guard let base = ptr.baseAddress else { return }
+            written = Int(gzwrite(fp, base, UInt32(data.count)))
         }
+        // ⚠️ v1.0.68 修正：原来用 `defer { gzclose(fp) }`，但 `return try? Data(contentsOf: tmp)`
+        // 的表达式会**先于** defer 求值 —— 读文件时 gz 缓冲还没刷盘，拿到的是空/半截文件，
+        // 于是 >1024 字节的报文会被打成 `cg_` + 空 base64 → 桌面端 zlib.gunzip 抛异常
+        // → `decrypt message error` → socket.close(4100)。必须**先 gzclose 再读文件**。
+        gzclose(fp)
         guard written == data.count else { return nil }
-        return try? Data(contentsOf: tmp).base64EncodedString()
+        let result = try? Data(contentsOf: tmp).base64EncodedString()
+        try? FileManager.default.removeItem(at: tmp)
+        return result
     }
 
     /// 标准 gzip 解码（输入 base64，对应 LX 的 cg_ 前缀内容）-> utf8 字符串

@@ -196,6 +196,20 @@ class LXSyncViewController: UIViewController {
         syncCard.stack.addArrangedSubview(diagButton)
         diagButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
+        // v1.0.70：4100 兜底入口。自动重认证最多 1 次，仍然 4100 就点这里强制
+        // 重新走一遍 hello→id→ah→ws（会重新生成 RSA 密钥对与新的 clientId）。
+        let reauthButton = makeButton("重置+重新认证（4100 专用）", color: Theme.error)
+        reauthButton.addTarget(self, action: #selector(reauthTapped), for: .touchUpInside)
+        syncCard.stack.addArrangedSubview(reauthButton)
+        reauthButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        let reauthHint = UILabel()
+        reauthHint.text = "报 4100 时：先完全退出桌面端 LX Music 再重开、重新生成同步码，然后点上面这个按钮。"
+        reauthHint.font = Theme.bodySmall
+        reauthHint.textColor = Theme.subtext
+        reauthHint.numberOfLines = 0
+        syncCard.stack.addArrangedSubview(reauthHint)
+
         // v1.0.68：协议格式手动切换。默认「自动」＝按桌面端第一条报文的对象/数组形态回包。
         // 若桌面端用的是我们没见过的 m2c 变体（响应收不到），可在真机上一键切到另一种格式重试，
         // 不必再重新打包。
@@ -395,6 +409,20 @@ class LXSyncViewController: UIViewController {
                 self?.syncStatusLabel.text = result
             }
         }
+    }
+
+    // v1.0.70：手动触发完整重新认证。4100 自动重试最多 1 次，
+    // 如果还是 4100（桌面端 dataManage 文件级损坏），点此按钮：
+    // ① 完全关闭桌面端 LX Music  ② 重新打开并开启同步  ③ 手机点这个按钮
+    @objc private func reauthTapped() {
+        let code = (codeField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard code.count == 6 else {
+            showToast("请先填好 6 位同步码")
+            return
+        }
+        // 强制重新生成 RSA 密钥对 + 重新走 /ah
+        LXSyncService.shared.startSync(authCode: code)
+        showToast("已触发完整重新认证…")
     }
 
     @objc private func modeChanged() {

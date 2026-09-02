@@ -99,6 +99,11 @@ class PlayerManager: NSObject {
         onSongChanged?(song)
         notifyStateChanged()
 
+        // v1.0.71：把当前播放写入「最近播放」歌单。play(song:) 是所有播放入口
+        // 的汇聚点（手动播 / next / previous / 列表播完自动 next / playAll），
+        // 在这里记一次就全覆盖。PlaylistStore.recordPlayed 内部做去重 + 上限裁剪。
+        PlaylistStore.shared.recordPlayed(song)
+
         loadAndPlay { [weak self] success in
             guard let self = self else { return }
             if !success {

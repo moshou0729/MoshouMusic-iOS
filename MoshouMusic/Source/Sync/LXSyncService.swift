@@ -71,6 +71,12 @@ final class LXSyncService {
     private var lastTEnc: String?
     private var userDidStop = false
 
+    // v1.0.70：保存最近一次同步码，供 WS 4100 时重新发起完整认证（hello→id→ah→ws）
+    private var lastAuthCode: String?
+    /// v1.0.70：fullSync 重试计数。4100 不会用同一份 keyInfo 重试（服务端 default user space
+    /// 的内存映射会被 10s GC，磁盘又可能没 flush），只能重新走一遍 /ah 让服务端再生成一次 clientId
+    private var fullSyncRetryCount = 0
+
     // v1.0.61：同步等待看门狗——WS 连上后每 1s 检查一次状态，如果还停在 .syncing
     // 就更新 currentStep 显示「已等待 N 秒」，让用户看清到底是连接成功还是真卡住
     private var syncWatchdog: Timer?
@@ -131,6 +137,8 @@ final class LXSyncService {
         // 重置 WS 重试状态（stopSync 会把 userDidStop 置 true，这里要清掉）
         userDidStop = false
         wsRetryCount = 0
+        fullSyncRetryCount = 0    // v1.0.70
+        lastAuthCode = authCode   // v1.0.70：保留下来给 4100 重认证
         let code = authCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             status = .failed(reason: "请输入桌面端显示的 6 位同步码"); currentStep = nil; notify(); return
@@ -446,6 +454,46 @@ final class LXSyncService {
             guard let self = self else { return }
             if case .synced = self.status {
                 // 已同步过，保持标记
+                self.currentStep = nil
+                self.notify()
+                return
+            }
+            // v1.0.70：WS 升级 close code=4100 = 服务端 handleConnection 里
+            // `if (!keyInfo) socket.close(SYNC_CLOSE_CODE.failed)` 触发。
+            // 这意味着服务端 default user space（内存 map + 磁盘文件）里查不到
+            // 我们 i= 这个 clientId。最常见的根因：服务端 `releaseUserSpace`
+            // 触发的 10s GC 刚刚清掉了内存 map，而 `saveClientKeyInfo` 的
+            // throttle 还没把新 keyInfo 刷到磁盘；下次从磁盘 reload 就是空。
+            // 用同一份 keyInfo 重试必失败——必须重新走 hello→id→ah 让服务端
+            // 再生成一个新的 clientId，重新注册到内存 map。
+            if reason.contains("4100"), self.fullSyncRetryCount < 1,
+               let code = self.lastAuthCode, !self.userDidStop {
+                // ⚠️ 注意顺序：startSync() 内部会把 fullSyncRetryCount 归零（用户主动发起 = 新一轮），
+                // 所以必须在调用 startSync **之后** 再把计数写回去，否则这里会变成无限重试。
+                let next = self.fullSyncRetryCount + 1
+                self.status = .connecting
+                self.currentStep = "桌面端 keyInfo 已丢失（4100），第 \(next) 次重新认证…"
+                self.notify()
+                Logger.info("LX WS 4100 → fullSyncRetry #\(next) reason=\(reason)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    guard let self = self, !self.userDidStop else { return }
+                    self.startSync(authCode: code)
+                    self.fullSyncRetryCount = next   // 覆盖 startSync 里的归零
+                }
+                return
+            }
+            // v1.0.70：已经完整重新认证过一次还是 4100 → 桌面端 dataManage 大概率是
+            // 文件级问题（devices.json 损坏 / 用户数据目录不可写）。这时候再拿同一份
+            // keyInfo 去重试 WS 是纯浪费时间，直接停下来给可操作指引。
+            // 注意：userDidStop 时（用户点了停止）不要覆盖 status，交给 stopSync 自己处理。
+            if reason.contains("4100"), !self.userDidStop {
+                let diag = "WebSocket 升级失败（4100）：已重新认证一次，桌面端仍查不到本机 clientId。\n"
+                    + "请按顺序处理：\n"
+                    + "① 完全退出桌面端 LX Music（Windows 用任务管理器结束进程，macOS 用 Cmd+Q）；\n"
+                    + "② 重新打开 → 设置 → 同步 → 服务端模式，确认服务已启动；\n"
+                    + "③ 重新生成 6 位同步码，再点下方「重置+重新认证」。\n"
+                    + "原始原因：\(reason)"
+                self.status = .failed(reason: diag)
                 self.currentStep = nil
                 self.notify()
                 return

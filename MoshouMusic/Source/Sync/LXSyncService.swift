@@ -539,8 +539,13 @@ final class LXSyncService {
     /// 形如 [type, name, ...]，按 type 分派（0=被调用 / 1=我方调用的返回）。
     private func processInbound(_ text: String) {
         // 服务端对 isMobile 客户端会周期性发**明文** 'ping'（server.ts 的 30s interval），
-        // 不走加密，所以要在解密前拦掉
-        if text == "ping" { wsClient?.send(text: "pong"); return }
+        // 不走加密，所以要在解密前拦掉。
+        // ⚠️ v1.0.72 关键修正：绝不能回文本 "pong"！服务端 message 监听器对收到的每帧
+        // 都 decryptMsg → JSON.parse，JSON.parse("pong") 抛错 → socket.close(4100)
+        // （这是连接建立 ~30s 后确定性 4100、且重认证无效的真正根因）。
+        // 正确做法：回 **WS pong 控制帧**（opcode 0xA），它是控制帧、不进 message 监听器，
+        // 不会被 JSON.parse，且命中服务端 socket.on('pong') 保持 isAlive。
+        if text == "ping" { wsClient?.sendPongFrame(); return }
 
         // v1.0.67：把收到的报文前 80 字节原样打到 watch dog UI + 日志
         // v1.0.68：加长到 250B，但不要在这里赋值——后面协议探测完之后会再次设置，

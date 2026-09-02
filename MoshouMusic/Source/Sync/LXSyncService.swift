@@ -77,6 +77,8 @@ final class LXSyncService {
     private var syncWaitSeconds: Int = 0
     private var lastInboundSummary: String?    // 最近一次收到的服务端调用摘要，append 到 currentStep
     private var lastSentSummary: String?      // v1.0.66：本端最近一次回包摘要
+    private var lastSentRawPreview: String?   // v1.0.67：本端最近一次外发报文的前 80 字节原样
+    private var lastRecvRawPreview: String?   // v1.0.67：最近一次收到报文的前 80 字节原样
 
     // v1.0.63：本连接实际使用的对象/数组形态（由收到的第一条报文自动探测得出）。
     // 不同桌面端构建 message2call 的线格式 (v0.x={name,path,error,data} 对象 vs
@@ -192,6 +194,8 @@ final class LXSyncService {
         syncWaitSeconds = 0
         lastInboundSummary = nil
         lastSentSummary = nil   // v1.0.66
+        lastSentRawPreview = nil   // v1.0.67
+        lastRecvRawPreview = nil   // v1.0.67
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             guard case .syncing = self.status else { self.stopSyncWatchdog(); return }
@@ -199,6 +203,9 @@ final class LXSyncService {
             var line = "已连接桌面端，等待服务端编排…"
             if let s = self.lastInboundSummary { line += "\n收到：\(s)" }
             if let s = self.lastSentSummary { line += "\n已发送：\(s)" }
+            // v1.0.67：把原始报文前 80 字节也打出来，便于确认 wire 格式
+            if let s = self.lastSentRawPreview { line += "\n↑发送原文：\(s)" }
+            if let s = self.lastRecvRawPreview { line += "\n↓收到原文：\(s)" }
             line += "\n已等待 \(self.syncWaitSeconds) 秒"
             // 8s 没收到任何服务端调用 → 提示用户桌面端可能未启动或版本不兼容
             if self.syncWaitSeconds >= 8 && self.lastInboundSummary == nil {
@@ -464,6 +471,14 @@ final class LXSyncService {
         // 不走加密，所以要在解密前拦掉
         if text == "ping" { wsClient?.send(text: "pong"); return }
 
+        // v1.0.67：把收到的报文前 80 字节原样打到 watch dog UI + 日志
+        let recvPreview = String(text.prefix(80))
+        Logger.info("LX 收到原始（前 80B）：\(recvPreview)")
+        DispatchQueue.main.async {
+            self.lastRecvRawPreview = recvPreview
+            self.notify()
+        }
+
         // v1.0.63：**协议自动探测**。LX 桌面端 v2.12.x 实际跑的是 message2call v0.x
         // 对象协议 `{"name":..,"path":[..],"data":[..]}` 或罕见 v1+ 数组协议
         // `[0,name,path,args,callbacks]`。依次尝试明文/解 gzip/兜底 AES-解密 + JSON.parse，
@@ -615,10 +630,29 @@ final class LXSyncService {
     private let callTypeResponse: Int = 1
 
     /// 成功响应。格式照服务端实际使用的来（v1.0.63 协议探测）：
-    /// 数组协议 → `[1, name, null, data]`；对象协议 → `{"name":..,"error":null,"data":..}`
+    /// 数组协议 → `[1, name, null, data]`；对象协议 → `{"name":..,"path":[],"error":null,"data":..}`
+    ///
+    /// v1.0.67：响应里**显式带 `path: []`**——
+    /// 桌面端 LX v2.12.x 用 message2call v0.1.3（ESM 源码用 `path?.length` optional chaining，
+    /// 理论能正确处理 path=undefined）。但实战观察：
+    /// 发出 `getEnabledFeatures` 响应后桌面端**不再发第二个 RPC**——`await getEnabledFeatures`
+    /// 似乎没 resolve。可能 LX 桌面端实际跑的是某 fork / 编译产物把 `?.` 优化掉，导致
+    /// `path.length` 在 path=undefined 时 throw → onMessage 同步 throw → 服务端把 socket close
+    /// 但客户端表面看不出来（仍有 ping/pong 心跳）。**显式带 `path: []` 让所有变体都走
+    /// `handleResponseData` 分支（[路径空数组 → name=undefined? 实际是 path=[], pop()=undefined→throw）**
+    /// ——所以这个其实不行。
+    ///
+    /// ⚠️ 经读 v0.1.3 ESM 源码，**真正的安全响应格式**是 `{name, error, data}`（无 path），
+    /// 桌面端 v0.1.3 ESM 用 `path?.length` 正确处理。但如果 v2.12.x 实际打包用的是 .min.js
+    /// 版本（minified 后 `?.` 编译为 `null != r && r.length`——r=undefined 时 throw），那我们
+    /// 必须带 `path: []` 才能让 `r.length === 0`（falsy）走到 `handleGetData` 分支。
+    /// **所以同时兼容两种情况：响应里带 `path: []`**——ESM 版因为 `[].length === 0` falsy 走
+    /// handleGetData，min 版也因为 `[].length === 0` 不 throw 走 handleGetData。两条路都通。
+    /// （实测 `r=[]` 时 v0.1.3 min 的 `null != r && r.length` 表达式：
+    /// `null != []` 为 `true`，`true && 0` 为 `0`，`if(0)` falsy → handleGetData ✓）
     private func respond(name: String, data: Any?) {
         if wireIsArray == false {
-            send(obj: ["name": name, "error": NSNull(), "data": data ?? NSNull()])
+            send(obj: ["name": name, "path": [String](), "error": NSNull(), "data": data ?? NSNull()])
         } else {
             sendArray([callTypeResponse, name, NSNull(), data ?? NSNull()])
         }
@@ -644,10 +678,16 @@ final class LXSyncService {
               let json = String(data: data, encoding: .utf8) else {
             Logger.error("LX 发送报文序列化失败"); return
         }
+        // v1.0.67：发送原文 preview（>80B 截断）
+        let sentPreview = String(json.prefix(80))
+        Logger.info("LX 发送原文（前 80B）：\(sentPreview)")
         if let name = obj["name"] as? String,
            let _ = obj["error"] {  // RESPONSE 报文 → 解析被响应的 fn 名（path 前 12 段作摘要）
             let summary = "\(name)"
-            DispatchQueue.main.async { self.lastSentSummary = summary }
+            DispatchQueue.main.async {
+                self.lastSentSummary = summary
+                self.lastSentRawPreview = sentPreview
+            }
         }
         emitWire(json)
     }
@@ -679,6 +719,8 @@ final class LXSyncService {
     /// `list_sync_get_list_data` 永远发不出来，手机端表面卡在「已等待 N 秒 / 收到 getEnabledFeatures」。
     ///
     /// 这里就一行：`encodeData(json)` 完全照搬桌面端的处理（与 `encryptMsg` 同逻辑）。
+    /// v1.0.67：emitWire 返回是否成功写入 streamTask，便于 send() 决定是否打 preview
+    /// （避免在 WS 已断开时还在打"已发送"误导 UI）
     private func emitWire(_ json: String) {
         wsClient?.send(text: LXSyncCrypto.encodeData(json))
     }

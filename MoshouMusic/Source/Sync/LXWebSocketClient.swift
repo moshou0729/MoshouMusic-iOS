@@ -119,9 +119,12 @@ final class LXWebSocketClient {
             setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
             setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, &one, socklen_t(MemoryLayout<Int32>.size))
 
+            // ⚠️ 必须写 `Darwin.connect`：本类有同名的 `connect()` 实例方法，
+            // 裸写 `connect(...)` 会被 Swift 解析成实例方法而报
+            // "use of 'connect' refers to instance method rather than global function"。
             a.withUnsafeBytes { buf in
                 guard let base = buf.baseAddress else { return }
-                _ = connect(s, base.assumingMemoryBound(to: sockaddr.self), socklen_t(a.count))
+                _ = Darwin.connect(s, base.assumingMemoryBound(to: sockaddr.self), socklen_t(a.count))
             }
             // 非阻塞 connect：等 POLLOUT 再查 SO_ERROR
             var pfd = pollfd(fd: s, events: Int16(POLLOUT), revents: 0)
@@ -343,7 +346,8 @@ final class LXWebSocketClient {
         while !rest.isEmpty {
             let n = rest.withUnsafeBytes { p -> Int in
                 guard let base = p.baseAddress else { return -1 }
-                return send(fd, base, rest.count, 0)
+                // ⚠️ 必须写 `Darwin.send`：本类有同名的 `send(text:)` 实例方法
+                return Darwin.send(fd, base, rest.count, 0)
             }
             if n > 0 {
                 ioLock.lock(); writeOKBytes += n; ioLock.unlock()

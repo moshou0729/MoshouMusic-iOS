@@ -57,11 +57,45 @@ class PlaylistStore {
 
     // MARK: - 默认歌单
 
+    /// 「最近播放」歌单的固定名称。createDefaultPlaylists 用它建空壳；
+    /// recordPlayed 也按这个名字查找/创建。所有「最近播放」逻辑只能写在这里，
+    /// 避免别处散落硬编码字符串导致改名字后两边对不上。
+    static let recentPlayedName = "最近播放"
+
+    /// 「最近播放」保留的最大条数。手机端没必要无上限，100 首够日常用，
+    /// 也避免 JSON 文件被无限撑大。
+    static let recentPlayedMax = 100
+
     private func createDefaultPlaylists() {
         playlists = [
             Playlist(name: "我的收藏", songs: []),
-            Playlist(name: "最近播放", songs: []),
+            Playlist(name: Self.recentPlayedName, songs: []),
         ]
+        save()
+    }
+
+    // MARK: - 最近播放（v1.0.71 修复）
+
+    /// 记录一首被播放的歌：插入到「最近播放」**最前**、按 id 去重、超过上限裁尾。
+    /// 调用方应在每次真正切到一首新歌时调一次（PlayerManager.play(song:) 已 hook），
+    /// 用户手动播/上一首/下一首/列表播完自动 next 全覆盖。
+    func recordPlayed(_ song: Song) {
+        let target = Self.recentPlayedName
+        if let index = playlists.firstIndex(where: { $0.name == target }) {
+            // 去重：先把同 id 的旧记录删掉
+            playlists[index].songs.removeAll { $0.id == song.id }
+            // 插到最前
+            playlists[index].songs.insert(song, at: 0)
+            // 上限裁剪
+            if playlists[index].songs.count > Self.recentPlayedMax {
+                playlists[index].songs = Array(playlists[index].songs.prefix(Self.recentPlayedMax))
+            }
+            playlists[index].updatedAt = Date()
+        } else {
+            // 正常情况不会进这里（createDefaultPlaylists 已建好）；
+            // 兜底：用户可能手动删过「最近播放」，重建一条单元素歌单
+            playlists.append(Playlist(name: target, songs: [song]))
+        }
         save()
     }
 

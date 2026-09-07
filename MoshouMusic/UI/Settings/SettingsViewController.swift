@@ -35,6 +35,9 @@ class SettingsViewController: UIViewController {
         }
     }
 
+    /// 缓存大小文案（异步算完再刷新，避免主线程遍历目录卡顿）
+    private var cacheSizeText = "计算中…"
+
     /// 计算属性：每次读取实时取配置，保证开关/副标题状态与 ConfigStore 同步
     private var sections: [SettingSection] {
         // LX 同步状态指示色（与图标/副标题联动）
@@ -74,7 +77,7 @@ class SettingsViewController: UIViewController {
             SettingItem(icon: "moon", iconColor: Theme.primary, title: "深色模式", subtitle: nil, type: .toggle(ConfigStore.shared.isDarkMode)),
         ]),
         SettingSection(title: "其他", items: [
-            SettingItem(icon: "trash", iconColor: Theme.error, title: "清除缓存", subtitle: nil, type: .navigate),
+            SettingItem(icon: "trash", iconColor: Theme.error, title: "清除缓存", subtitle: cacheSizeText, type: .navigate),
             SettingItem(icon: "info.circle", iconColor: Theme.tertiary, title: "关于墨守music", subtitle: "v\(AppInfo.shortVersion)", type: .navigate),
         ]),
         ]
@@ -88,6 +91,48 @@ class SettingsViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         tableView.reloadData()
+        refreshCacheSize()
+    }
+
+    // MARK: - 缓存
+
+    /// 后台统计缓存大小（并顺带执行 1 GB 上限的自动清理），回主线程刷新副标题
+    private func refreshCacheSize() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            ConfigStore.shared.enforceCacheLimit()
+            let bytes = ConfigStore.shared.currentCacheBytes()
+            let text = "当前 \(ConfigStore.formatBytes(bytes)) · 上限 \(ConfigStore.formatBytes(ConfigStore.maxCacheBytes))"
+            DispatchQueue.main.async {
+                self?.cacheSizeText = text
+                self?.tableView.reloadData()
+            }
+        }
+    }
+
+    /// 先算出真实大小再让用户确认，避免「点了才知道清了啥」
+    private func confirmClearCache() {
+        cacheSizeText = "计算中…"
+        tableView.reloadData()
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let bytes = ConfigStore.shared.currentCacheBytes()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let alert = UIAlertController(
+                    title: "清除缓存",
+                    message: "当前缓存 \(ConfigStore.formatBytes(bytes))，上限 \(ConfigStore.formatBytes(ConfigStore.maxCacheBytes))。\n下载的歌曲不会被清除。\n确定清除吗？",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+                alert.addAction(UIAlertAction(title: "清除", style: .destructive) { _ in
+                    ConfigStore.shared.clearCache()
+                    self.refreshCacheSize()
+                    self.showAlert(title: "已清除缓存", message: "缓存已清理完成")
+                })
+                self.present(alert, animated: true)
+                self.refreshCacheSize()
+            }
+        }
     }
 
     private func setupUI() {
@@ -225,8 +270,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case "关于墨守music":
             navigationController?.pushViewController(AboutViewController(), animated: true)
         case "清除缓存":
-            ConfigStore.shared.clearCache()
-            showAlert(title: "已清除缓存", message: "缓存已清理完成")
+            confirmClearCache()
         case "LX Music 桌面版同步":
             navigationController?.pushViewController(LXSyncViewController(), animated: true)
         default:

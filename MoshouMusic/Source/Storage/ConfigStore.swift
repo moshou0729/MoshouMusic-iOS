@@ -242,10 +242,97 @@ class ConfigStore {
         Logger.debug("配置已保存")
     }
 
-    // MARK: - 清理缓存
+    // MARK: - 缓存
 
+    /// 缓存目录（系统 Caches：URLCache / 图片 / 临时媒体等）。
+    /// ⚠️「下载的音乐」在 Documents/downloads，属用户资产，**不算缓存、不会被自动清理**。
+    var cacheDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+    }
+
+    /// 缓存硬上限：1 GB（1024³ 字节）
+    static let maxCacheBytes: Int64 = 1024 * 1024 * 1024
+
+    /// 触发自动清理后回落到的水位（上限的 80%），避免写入一点点就反复触发全量清理
+    static let cacheLowWaterBytes: Int64 = maxCacheBytes * 8 / 10
+
+    /// 递归统计某个目录占用的字节数（只算普通文件）
+    func folderSize(at url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: []
+        ) else { return 0 }
+
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true,
+                  let size = values.fileSize else { continue }
+            total += Int64(size)
+        }
+        return total
+    }
+
+    /// 当前缓存大小（字节）
+    func currentCacheBytes() -> Int64 {
+        folderSize(at: cacheDirectory)
+    }
+
+    /// 字节数 → 人类可读（B / KB / MB / GB，1024 进制）
+    static func formatBytes(_ bytes: Int64) -> String {
+        let value = max(0, bytes)
+        if value < 1024 { return "\(value) B" }
+        let kb = Double(value) / 1024
+        if kb < 1024 { return String(format: "%.1f KB", kb) }
+        let mb = kb / 1024
+        if mb < 1024 { return String(format: "%.1f MB", mb) }
+        return String(format: "%.2f GB", mb / 1024)
+    }
+
+    /// 超过 1 GB 上限时按「最久未修改优先」自动清理，直到回落到低水位。
+    /// - Returns: 本次释放的字节数（未超限则为 0）
+    @discardableResult
+    func enforceCacheLimit() -> Int64 {
+        var total = currentCacheBytes()
+        guard total > ConfigStore.maxCacheBytes else { return 0 }
+
+        let fm = FileManager.default
+        var files: [(url: URL, size: Int64, mtime: Date)] = []
+        if let enumerator = fm.enumerator(
+            at: cacheDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+            options: []
+        ) {
+            for case let fileURL as URL in enumerator {
+                guard let values = try? fileURL.resourceValues(
+                    forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+                ), values.isRegularFile == true, let size = values.fileSize else { continue }
+                files.append((fileURL, Int64(size), values.contentModificationDate ?? .distantPast))
+            }
+        }
+
+        // 最旧的先删（LRU），保证用户刚产生的缓存尽量保留
+        files.sort { $0.mtime < $1.mtime }
+
+        var freed: Int64 = 0
+        for file in files {
+            guard total > ConfigStore.cacheLowWaterBytes else { break }
+            if (try? fm.removeItem(at: file.url)) != nil {
+                total -= file.size
+                freed += file.size
+            }
+        }
+
+        if freed > 0 {
+            Logger.info("ConfigStore: cache trimmed, freed \(ConfigStore.formatBytes(freed)) bytes")
+        }
+        return freed
+    }
+
+    /// 清空全部缓存
     func clearCache() {
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let cacheDir = cacheDirectory
         if let files = try? FileManager.default.contentsOfDirectory(atPath: cacheDir.path) {
             for file in files {
                 try? FileManager.default.removeItem(at: cacheDir.appendingPathComponent(file))

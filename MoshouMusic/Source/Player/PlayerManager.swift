@@ -500,6 +500,13 @@ class PlayerManager: NSObject {
                 }
             } else if keyPath == #keyPath(AVPlayerItem.duration) {
                 self.duration = PlayerManager.sane(item.duration.seconds)
+                // v1.0.76：duration 首次确定时把真实值推给锁屏 / 控制中心，
+                // 否则 MPMediaItemPropertyPlaybackDuration 一直停在 0，
+                // 锁屏进度条会「卡死不动」且无法拖动快进（系统无 duration 无法映射 scrub）。
+                if self.duration > 0 {
+                    Logger.info("LX PlayerManager: nowPlaying duration pushed")
+                    self.updateNowPlayingInfo()
+                }
                 self.onTimeChanged?(self.currentTime, self.duration)
             }
         }
@@ -520,6 +527,7 @@ class PlayerManager: NSObject {
         if isPlaying {
             var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+            info[MPMediaItemPropertyPlaybackDuration] = duration
             info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }

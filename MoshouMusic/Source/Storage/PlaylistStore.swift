@@ -62,6 +62,10 @@ class PlaylistStore {
     /// 避免别处散落硬编码字符串导致改名字后两边对不上。
     static let recentPlayedName = "最近播放"
 
+    /// 「我的收藏」歌单的固定名称。LX 同步把 loveList（我喜欢）按此名映射到本歌单，
+    /// 避免与同步生成的「我喜欢」歌单重复。所有相关逻辑只引用此常量。
+    static let collectionName = "我的收藏"
+
     /// 「最近播放」保留的最大条数。手机端没必要无上限，100 首够日常用，
     /// 也避免 JSON 文件被无限撑大。
     static let recentPlayedMax = 100

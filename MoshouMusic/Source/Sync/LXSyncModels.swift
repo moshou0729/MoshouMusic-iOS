@@ -164,12 +164,14 @@ enum LXSyncModels {
     }
 
     /// 本机全量列表 -> LX ListData
+    /// ⚠️ 回传方向必须与落地方向一致（见 applyRemoteListData）：
+    ///   defaultList ← 内置「最近播放」、loveList ← 内置「我的收藏」。
     static func getLocalListData() -> LXListData {
         let store = PlaylistStore.shared
-        let defaultSongs = store.get(id: LXListIDs.default)?.songs ?? []
-        let loveSongs = store.get(id: LXListIDs.love)?.songs ?? []
+        let defaultSongs = store.playlists.first(where: { $0.name == PlaylistStore.recentPlayedName })?.songs ?? []
+        let loveSongs = store.playlists.first(where: { $0.name == PlaylistStore.collectionName })?.songs ?? []
         var userLists: [LXUserListInfoFull] = []
-        for pl in store.playlists where pl.id != LXListIDs.default && pl.id != LXListIDs.love {
+        for pl in store.playlists where pl.name != PlaylistStore.recentPlayedName && pl.name != PlaylistStore.collectionName {
             userLists.append(LXUserListInfoFull(
                 id: pl.id, name: pl.name, source: pl.source,
                 sourceListId: pl.sourceListId,
@@ -191,14 +193,21 @@ enum LXSyncModels {
         return Crypto.md5(encoded)
     }
 
-    /// LX ListData -> 整体覆盖本机（default/love/user）
+    /// LX ListData -> 整体覆盖本机，按墨守music 内置歌单名映射（v1.0.74 起）：
+    ///   LX loveList（我喜欢）  → 内置「我的收藏」
+    ///   LX defaultList（默认列表）→ 内置「最近播放」
+    ///   LX userList            → 各自原 id / 原名的歌单
+    /// 兼容迁移：清掉旧版以 __lx_default__ / __lx_love__ 为 id 的残留歌单
+    /// （即之前同步生成的「默认列表」「我喜欢」），避免与内置歌单重复出现。
     static func applyRemoteListData(_ data: LXListData) {
         let store = PlaylistStore.shared
         store.withMutablePlaylists { lists in
-            replaceOrCreate(id: LXListIDs.default, name: "默认列表",
-                            songs: data.defaultList.map { $0.toSong() }, in: &lists)
-            replaceOrCreate(id: LXListIDs.love, name: "我喜欢",
-                            songs: data.loveList.map { $0.toSong() }, in: &lists)
+            // 迁移清理：删除旧映射残留（按 id 命中，不影响用户自建同名歌单）
+            lists.removeAll { $0.id == LXListIDs.default || $0.id == LXListIDs.love }
+            replaceOrCreateByName(name: PlaylistStore.collectionName,
+                                  songs: data.loveList.map { $0.toSong() }, in: &lists)
+            replaceOrCreateByName(name: PlaylistStore.recentPlayedName,
+                                  songs: data.defaultList.map { $0.toSong() }, in: &lists)
             for ul in data.userList {
                 let songs = ul.list.map { $0.toSong() }
                 if let idx = lists.firstIndex(where: { $0.id == ul.id }) {
@@ -212,12 +221,12 @@ enum LXSyncModels {
         }
     }
 
-    private static func replaceOrCreate(id: String, name: String, songs: [Song], in lists: inout [Playlist]) {
-        if let idx = lists.firstIndex(where: { $0.id == id }) {
+    private static func replaceOrCreateByName(name: String, songs: [Song], in lists: inout [Playlist]) {
+        if let idx = lists.firstIndex(where: { $0.name == name }) {
             lists[idx].songs = songs
             lists[idx].updatedAt = Date()
         } else {
-            lists.append(Playlist(id: id, name: name, songs: songs))
+            lists.append(Playlist(name: name, songs: songs))
         }
     }
 

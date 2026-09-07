@@ -28,6 +28,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             LXCompatEngine.shared.ensureLoaded()
         }
 
+        // 缓存上限兜底：超过 1 GB 时按「最久未修改优先」自动清理到 800 MB。
+        // 放后台线程 + 延后执行，避免启动阶段遍历目录拖慢首帧。
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0) {
+            ConfigStore.shared.enforceCacheLimit()
+        }
+
         Logger.info("墨守music 启动成功")
 
         // 若上次发生过崩溃，弹窗展示原因，方便定位

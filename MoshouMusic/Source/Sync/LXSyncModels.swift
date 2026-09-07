@@ -201,6 +201,7 @@ enum LXSyncModels {
     /// （即之前同步生成的「默认列表」「我喜欢」），避免与内置歌单重复出现。
     static func applyRemoteListData(_ data: LXListData) {
         let store = PlaylistStore.shared
+        Logger.info("LX applyRemoteListData: love->我的收藏, default->最近播放 (userList=\(data.userList.count))")
         store.withMutablePlaylists { lists in
             // 迁移清理：删除旧映射残留（按 id 命中，不影响用户自建同名歌单）
             lists.removeAll { $0.id == LXListIDs.default || $0.id == LXListIDs.love }

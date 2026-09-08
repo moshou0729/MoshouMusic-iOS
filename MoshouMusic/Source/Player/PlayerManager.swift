@@ -23,6 +23,15 @@ struct SourceGuard {
         let s = url.lowercased()
         return forgedUrlTokens.contains { s.contains($0) }
     }
+
+    /// v1.0.86：脚本内容级黑名单 —— 用户导入的试用脚本可能改名（id 不含 ikun），
+    /// 但其 TTS 提示文案/托管地址必然出现在脚本源码里，按内容拦截。
+    static let blockedContentTokens = ["shopicanshare", "购买卡密", "卡密后", "赞助版ikun", "以继续试用", "试用版音源"]
+
+    static func isBlockedScriptContent(_ code: String) -> Bool {
+        let s = code.lowercased()
+        return blockedContentTokens.contains { s.contains($0.lowercased()) }
+    }
 }
 
 /// 播放管理器 — 单例，管理音频播放、队列、锁屏控制、歌词同步

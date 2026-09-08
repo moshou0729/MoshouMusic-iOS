@@ -37,6 +37,10 @@ class LXMusicViewController: UIViewController, UITableViewDataSource, UITableVie
         tableView.reloadData()
     }
 
+    private func preferredID() -> String {
+        return LXCompatEngine.shared.preferredScriptID
+    }
+
     private func setupImportButton() {
         let btn = UIButton(type: .system)
         btn.setTitle("+ 导入洛雪脚本", for: .normal)
@@ -85,14 +89,45 @@ class LXMusicViewController: UIViewController, UITableViewDataSource, UITableVie
         }
 
         let s = scripts[indexPath.row]
-        cell.textLabel?.text = s.name + (s.isUser ? "  (本地)" : "  (预设)")
+        let isPreferred = (s.id == preferredID())
+        cell.textLabel?.text = (isPreferred ? "★ " : "") + s.name + (s.isUser ? "  (本地)" : "  (预设)")
         if s.platforms.isEmpty {
             cell.detailTextLabel?.text = "未声明可用平台"
         } else {
             cell.detailTextLabel?.text = "平台: " + s.platforms.joined(separator: ", ")
         }
-        cell.accessoryType = .none
+        cell.accessoryType = isPreferred ? .checkmark : .none
         return cell
+    }
+
+    // MARK: - 点选设为首选（同平台轮询/换源优先用它的搜索与取链）
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard !scripts.isEmpty else { return }
+        let s = scripts[indexPath.row]
+        let isPreferred = (s.id == preferredID())
+        let alert = UIAlertController(title: s.name, message: nil, preferredStyle: .actionSheet)
+        let table = tableView
+        if isPreferred {
+            alert.addAction(UIAlertAction(title: "取消首选", style: .default) { [weak self] _ in
+                LXCompatEngine.shared.setPreferredScript(nil)
+                self?.scripts = LXCompatEngine.shared.scriptList
+                table.reloadData()
+            })
+        } else {
+            alert.addAction(UIAlertAction(title: "设为首选音源（优先搜索与取链）", style: .default) { [weak self] _ in
+                LXCompatEngine.shared.setPreferredScript(s.id)
+                self?.scripts = LXCompatEngine.shared.scriptList
+                table.reloadData()
+            })
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let pop = alert.popoverPresentationController {
+            pop.sourceView = tableView
+            pop.sourceRect = tableView.rectForRow(at: indexPath)
+        }
+        present(alert, animated: true)
     }
 
     func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {

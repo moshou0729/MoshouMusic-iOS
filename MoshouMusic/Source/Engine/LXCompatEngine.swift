@@ -309,6 +309,11 @@ final class LXCompatEngine {
         // musicInfo 规范一致，部分脚本依赖 musicInfo.source 路由到对应平台后端。
         var musicInfo: [String: Any] = ["songmid": songId, "hash": songId, "songId": songId, "source": source]
         for (k, v) in extra where !k.isEmpty { musicInfo[k] = v }
+        // v1.0.94：kg 按请求音质选 hash —— 同步歌 meta 存有各档位 hash（hash_320k 等），
+        // 拿 128k hash 请求高音质可能失败或被后端兜底成非目标音频
+        if source == "kg", let h = extra["hash_\(quality)"], !h.isEmpty {
+            musicInfo["hash"] = h
+        }
         return ["musicInfo": musicInfo, "type": quality]
     }
 

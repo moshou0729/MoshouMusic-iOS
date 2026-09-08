@@ -47,12 +47,13 @@ final class SourceSwitcher {
         let url: String
     }
 
-    /// 在候选音源中依次尝试找到可播放的同名歌曲
+    /// 在候选音源里找到可播放的同名歌曲
     /// - Parameters:
     ///   - name: 歌曲名
     ///   - singer: 歌手名
     ///   - excluding: 需要跳过的音源（通常是已失败的当前源）
     ///   - quality: 目标音质
+    ///   - interval: 目标歌曲权威时长（秒），用于时长接近度过滤（同步歌传）
     ///   - completion: 成功返回 Hit，全部失败返回 nil
     func findPlayable(
         name: String,
@@ -76,35 +77,6 @@ final class SourceSwitcher {
             return
         }
 
-        Logger.info("自动换源：候选 \(candidates.joined(separator: " → "))")
-        tryNext(candidates, index: 0, name: name, singer: singer,
-                quality: quality, interval: interval, completion: completion)
-    }
-
-    // MARK: - 串行递归尝试
-
-    private func tryNext(
-        _ candidates: [String],
-        index: Int,
-        name: String,
-        singer: String,
-        quality: String,
-        interval: Int,
-        completion: @escaping (Hit?) -> Void
-    ) {
-        guard index < candidates.count else {
-            Logger.error("自动换源：所有候选音源均失败")
-            completion(nil)
-            return
-        }
-
-        let source = candidates[index]
-        let advance = { [weak self] in
-            self?.tryNext(candidates, index: index + 1, name: name,
-                          singer: singer, quality: quality, interval: interval,
-                          completion: completion)
-        }
-
         // 关键词带上歌手，提高匹配准确度
         // v1.0.83：歌名先去括号（不把 (Live)/（伴奏）带进搜索词），否则引擎倾向返回现场版/伴奏版
         // v1.0.91：版本标记（赤旗版/爆燃版 等实义改编版）要带进搜索词 —— 这类版本
@@ -117,22 +89,34 @@ final class SourceSwitcher {
         }
         let keyword = baseKeyword
 
-        // v1.0.90：同平台「内置源 + LX 社区脚本」并行竞速，先到先得；
-        // 两路都失败才换下一个平台。
-        let race = DualRace()
-        attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer, quality: quality, interval: interval) { hit in
-            if let hit = hit {
-                if race.settle(success: true) { completion(hit) }
-                return
+        // v1.0.95：全平台并行竞速 —— 旧版逐平台串行（每平台 内置+LX 竞速，全挂才下一个），
+        // 「kg 挂 → 等 tx → 等 wy…」最坏可达数十秒。桌面端跨源兜底 1 秒出结果，
+        // 说明各源后端本来就快，慢的是串行等待。现在所有平台（内置+LX）同时抢，
+        // 首个有效结果胜出；准确性由 bestMatch 的歌名/歌手/版本标记/时长接近度把守，
+        // 出声前还有音频时长预检兜底。
+        let total = candidates.count * 2
+        let race = DualRace(total: total)
+        Logger.info("自动换源：全平台并行竞速 \(candidates.joined(separator: "+"))")
+
+        let onFail: () -> Void = {
+            if race.settle(success: false) {
+                Logger.error("自动换源：所有候选音源均失败")
+                completion(nil)
             }
-            if race.settle(success: false) { advance() }
         }
-        attemptLX(source: source, keyword: keyword, name: name, singer: singer, quality: quality, interval: interval) { lxHit in
-            if let lxHit = lxHit {
-                if race.settle(success: true) { completion(lxHit) }
-                return
+        let onHit: (Hit) -> Void = { hit in
+            if race.settle(success: true) { completion(hit) }
+        }
+
+        for source in candidates {
+            attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer,
+                           quality: quality, interval: interval) { hit in
+                if let hit = hit { onHit(hit) } else { onFail() }
             }
-            if race.settle(success: false) { advance() }
+            attemptLX(source: source, keyword: keyword, name: name, singer: singer,
+                      quality: quality, interval: interval) { lxHit in
+                if let lxHit = lxHit { onHit(lxHit) } else { onFail() }
+            }
         }
     }
 
@@ -358,10 +342,19 @@ final class SourceSwitcher {
             // 「当那一天来临 (English Ver.)」归一化剥括号后与「当那一天来临」完全同形，
             // 会绕过上面的 CJK 防线并拿到「精确同名」满分，实测导致赤旗版搜出英文歌。
             guard languageMarkers(in: name) == languageMarkers(in: song.name) else { continue }
-            // v1.0.91：版本标记一致性
+            // v1.0.91：版本标记一致性。v1.0.95 宽限通道 —— 候选不含目标版本标记时，
+            // 仅当「双方都带时长且在容差内」才允许降权参赛（换源兜底最后手段：
+            // 各源对改编版的命名不一，宁播时长对得上的同名同歌手候选也不至于完全不播；
+            // 出声前还有音频时长预检把最后一道关）。没有时长佐证的一律出局。
+            var editionPenalty = 0
             if !targetEditions.isEmpty {
                 let cn = song.name.lowercased()
-                guard targetEditions.allSatisfy({ cn.contains($0) }) else { continue }
+                if !targetEditions.allSatisfy({ cn.contains($0) }) {
+                    guard intervalTolerance > 0, song.interval > 0,
+                          abs(Double(song.interval - targetInterval)) <= intervalTolerance
+                    else { continue }
+                    editionPenalty = 40
+                }
             }
 
             var score: Int
@@ -387,6 +380,9 @@ final class SourceSwitcher {
             // v1.0.83：原版启发式 —— 原唱/原版加分，live/翻唱/伴奏/remix 降权，
             // 避免「歌手对但版本错」（搜到现场版/翻唱版/伴奏版）。
             score += song.originalScore
+
+            // v1.0.95：版本标记宽限通道的候选降权，有严格标记匹配的候选时让位
+            score -= editionPenalty
 
             // 有时长信息的更可信
             if song.interval > 0 { score += 5 }

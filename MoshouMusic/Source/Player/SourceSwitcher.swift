@@ -1,5 +1,34 @@
 import Foundation
 
+/// v1.0.90：两路取链竞速计票——首个成功胜出（后续结果一律作废），两路都失败才上报失败。
+/// 只在主线程使用，无需加锁。
+///
+/// 背景：旧版「内置源 → LX 兼容层」串行兜底，同步歌的内置官方源经常失效，
+/// 每次都要等内置源 10s 超时才轮到洛雪脚本（dujia 1~3s 就能回），
+/// 是「点歌要等十几秒才出声」的主要来源。
+final class DualRace {
+    private var finished = false
+    private var failures = 0
+    private let total: Int
+    init(total: Int = 2) { self.total = total }
+
+    /// success=true：首个成功返回 true（胜出），后续成功返回 false。
+    /// success=false：全部失败时返回 true（此时应上报失败），否则 false。
+    func settle(success: Bool) -> Bool {
+        guard !finished else { return false }
+        if success {
+            finished = true
+            return true
+        }
+        failures += 1
+        if failures >= total {
+            finished = true
+            return true
+        }
+        return false
+    }
+}
+
 /// 自动换源 — 当前音源拿不到播放链接时，去其他音源找同一首歌
 ///
 /// 与旧版的区别：旧版只是「通知一下换源」但不真正找歌，导致失败被静默吞掉。
@@ -78,20 +107,22 @@ final class SourceSwitcher {
         let cleanName = Self.cleanSearchName(name)
         let keyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
 
-        // 1) 先试内置源（ScriptEngine）
-        attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { [weak self] hit in
+        // v1.0.90：同平台「内置源 + LX 社区脚本」并行竞速，先到先得；
+        // 两路都失败才换下一个平台。
+        let race = DualRace()
+        attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { hit in
             if let hit = hit {
-                completion(hit)
+                if race.settle(success: true) { completion(hit) }
                 return
             }
-            // 2) 内置失败 → 再试用户导入的 7 个 LX 社区音源（不同后端，常能绕过版权/地域限制）
-            self?.attemptLX(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { lxHit in
-                if let lxHit = lxHit {
-                    completion(lxHit)
-                } else {
-                    advance()
-                }
+            if race.settle(success: false) { advance() }
+        }
+        attemptLX(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { lxHit in
+            if let lxHit = lxHit {
+                if race.settle(success: true) { completion(lxHit) }
+                return
             }
+            if race.settle(success: false) { advance() }
         }
     }
 
@@ -207,18 +238,21 @@ final class SourceSwitcher {
             }
             let source = candidates[idx]
             idx += 1
+            // v1.0.90：同平台「内置 + LX」并行竞速，先匹配到先用；都失败换下一平台
+            let race = DualRace()
             attemptSearchBuiltin(source: source, keyword: keyword, name: name, singer: singer) { song in
                 if let song = song {
-                    completion(song)
+                    if race.settle(success: true) { completion(song) }
                     return
                 }
-                self.attemptSearchLX(source: source, keyword: keyword, name: name, singer: singer) { lxSong in
-                    if let lxSong = lxSong {
-                        completion(lxSong)
-                    } else {
-                        step()
-                    }
+                if race.settle(success: false) { step() }
+            }
+            attemptSearchLX(source: source, keyword: keyword, name: name, singer: singer) { lxSong in
+                if let lxSong = lxSong {
+                    if race.settle(success: true) { completion(lxSong) }
+                    return
                 }
+                if race.settle(success: false) { step() }
             }
         }
         step()

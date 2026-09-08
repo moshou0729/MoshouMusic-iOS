@@ -143,6 +143,9 @@ class PlayerManager: NSObject {
         player.pause()
         isPlaying = false
         currentTime = 0
+        // v1.0.94：同步清零进度回调——否则新歌取链期间，播放页左侧时间还挂着
+        // 上一首停下来的 currentTime，右侧却是新歌的 "--:--"，观感割裂
+        onTimeChanged?(0, 0)
 
         onSongChanged?(song)
         notifyStateChanged()
@@ -253,13 +256,16 @@ class PlayerManager: NSObject {
         player.pause()
         isPlaying = false
         currentTime = 0
+        // v1.0.94：换源同样清零进度回调（与切歌一致）
+        onTimeChanged?(0, 0)
 
         // 借用 SourceSwitcher 的搜索+匹配+取链接流程，但只限定目标这一个源
         sourceSwitcher.findPlayable(
             name: song.name,
             singer: song.singer,
             excluding: Set(ConfigStore.shared.selectableSourceIds.filter { $0 != target }),
-            quality: ConfigStore.shared.defaultQuality
+            quality: ConfigStore.shared.defaultQuality,
+            interval: song.interval
         ) { [weak self] hit in
             guard let self = self else { return }
             DispatchQueue.main.async {
@@ -460,6 +466,58 @@ class PlayerManager: NSObject {
             return
         }
 
+        // v1.0.94：时长一致性预检 —— 桌面同步歌带权威时长（interval）。音源对某个
+        // songmid 直接返回错音频（翻唱/错版顶号）是链接层检测不到的盲区，但音频
+        // 时长会露馅（错版与目标普遍差几十秒）。出声前用 AVURLAsset 探时长，
+        // 偏差超过 max(12s, 目标10%) → 拦截并走换源链；拿不到时长则放行不卡。
+        if song.interval > 0 {
+            verifyDurationThenStart(url: url, song: song)
+            return
+        }
+        commitStartPlayback(url: url, song: song)
+    }
+
+    /// v1.0.94：出声前时长校验。4 秒内探不到时长就放行（宁慢勿卡）。
+    private func verifyDurationThenStart(url: URL, song: Song) {
+        let generation = playGeneration
+        let expected = TimeInterval(song.interval)
+        let tolerance = max(12.0, expected * 0.10)
+        let asset = AVURLAsset(url: url)
+        var finished = false
+        let decide: (Bool) -> Void = { [weak self] ok in
+            DispatchQueue.main.async {
+                guard !finished else { return }
+                finished = true
+                guard let self = self, generation == self.playGeneration else { return }
+                if ok {
+                    self.commitStartPlayback(url: url, song: song)
+                } else {
+                    Logger.warn("LX PlayerManager: 音频时长与目标不符（目标 \(Int(expected))s），拦截错版音频并换源")
+                    self.handlePlayFailure(
+                        song: song,
+                        reason: "音源返回的音频与歌曲时长不符，已拦截并尝试其他音源",
+                        generation: generation,
+                        completion: { _ in }
+                    )
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { decide(true) }
+        asset.loadValuesAsynchronously(forKeys: ["duration"]) {
+            var error: NSError?
+            let status = asset.statusOfValue(forKey: "duration", error: &error)
+            let d = status == .loaded ? CMTimeGetSeconds(asset.duration) : -1
+            DispatchQueue.main.async {
+                if d.isFinite && d > 0 {
+                    decide(abs(d - expected) <= tolerance)
+                } else {
+                    decide(true)
+                }
+            }
+        }
+    }
+
+    private func commitStartPlayback(url: URL, song: Song) {
         // 先移除上一个播放项的观察者，避免其释放后被观察而崩溃
         if let old = observedItem {
             removeObservers(from: old)
@@ -534,7 +592,8 @@ class PlayerManager: NSObject {
             name: song.name,
             singer: song.singer,
             excluding: [currentSource],
-            quality: ConfigStore.shared.defaultQuality
+            quality: ConfigStore.shared.defaultQuality,
+            interval: song.interval
         ) { [weak self] hit in
             guard let self = self else { return }
             DispatchQueue.main.async {

@@ -111,7 +111,7 @@ extension LXMusicInfo {
         // - kg：songmid 必须是 32 位 hash —— 取 meta.qualitys[0].hash（128k 档），
         //   否则从 id 尾部提取 32 位十六进制；audioId 部分存 meta.albumAudioId；
         // - kw/tx/wy/mg：songmid = meta.songId，否则剥掉 "{source}_" 前缀。
-        var md = metaDict()
+        var md = metaDict() ?? [:]
         let songmid = Self.resolveSongmid(id: id, source: source, songmidField: songmid,
                                           rawMeta: meta, meta: &md)
 

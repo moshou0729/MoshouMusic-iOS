@@ -49,11 +49,12 @@ enum JSONValue: Codable {
 
 /// 单曲（LX 在线结构）
 struct LXMusicInfo: Codable {
-    let id: String          // 源内 ID（无 source 前缀）
+    let id: String          // LX 内部缓存 id（kw_568484086 / 573841230_D7FF…），≠ 平台 songmid！
     let name: String
     let singer: String
     let source: String      // wy / tx / kg / mg
     let interval: String    // "mm:ss"
+    var songmid: String?    // 平台 songmid（桌面端若下发则优先用）
     var meta: [String: JSONValue]?
 }
 
@@ -98,16 +99,64 @@ enum LXListIDs {
 
 extension LXMusicInfo {
     func toSong() -> Song {
-        let songmid = id
         let imgUrl = meta?["picUrl"]?.stringValue
         let albumId = meta?["albumId"]?.stringValue
+
+        // v1.0.91 重大修复：LX 的 `id` 是内部缓存 id，不是平台 songmid！
+        // 实测桌面端 DB：kw 歌 id="kw_568484086"、kg 歌 id="573841230_D7FF5208…"。
+        // 旧版直接 songmid=id → 所有直接取链（内置源+洛雪脚本）必然失败，
+        // 每首歌都落入慢速搜索匹配（~10s）且版本经常不对（赤旗版播成原版）。
+        // 还原规则：
+        // - 优先用桌面端下发的 songmid 字段（若含）；
+        // - kg：songmid 必须是 32 位 hash —— 取 meta.qualitys[0].hash（128k 档），
+        //   否则从 id 尾部提取 32 位十六进制；audioId 部分存 meta.albumAudioId；
+        // - kw/tx/wy/mg：songmid = meta.songId，否则剥掉 "{source}_" 前缀。
+        var md = metaDict()
+        let songmid = Self.resolveSongmid(id: id, source: source, songmidField: songmid,
+                                          rawMeta: meta, meta: &md)
+
         return Song(
             id: Song.makeId(source: source, songmid: songmid),
             name: name, singer: singer, source: source, songmid: songmid,
             albumName: nil, albumId: albumId, imgUrl: imgUrl, quality: nil,
             interval: LXSyncModels.parseInterval(interval),
-            meta: metaDict()
+            meta: md.isEmpty ? nil : md
         )
+    }
+
+    /// 还原平台 songmid（详见 toSong 注释）。md 会被就地补写 hash/albumAudioId。
+    static func resolveSongmid(id: String, source: String, songmidField: String?,
+                               rawMeta: [String: JSONValue]?, meta: inout [String: String]) -> String {
+        // ① 桌面端显式下发 songmid → 直接信任
+        if let sm = songmidField, !sm.isEmpty { return sm }
+
+        // ② kg：songmid = hash（32 位十六进制）
+        if source == "kg" {
+            // meta.qualitys[].hash（128k 档即可满足内置 kg.js 与 dujia）
+            if case .array(let qs)? = rawMeta?["qualitys"] {
+                for q in qs {
+                    if case .object(let d)? = q, let h = d["hash"]?.stringValue,
+                       h.count == 32, !h.isEmpty {
+                        meta["hash"] = h
+                        break
+                    }
+                }
+            }
+            if meta["hash"] == nil, let idx = id.firstIndex(of: "_") {
+                let tail = String(id[id.index(after: idx)...])
+                if tail.count == 32, tail.allSatisfy({ $0.isHexDigit }) {
+                    meta["hash"] = tail
+                }
+            }
+            if let audioId = meta["songId"] { meta["albumAudioId"] = audioId }
+            if let h = meta["hash"], !h.isEmpty { return h }
+        }
+
+        // ③ 其他平台：songId → 剥 "{source}_" 前缀
+        if let sid = meta["songId"], !sid.isEmpty { return sid }
+        let prefix = source + "_"
+        if id.hasPrefix(prefix) { return String(id.dropFirst(prefix.count)) }
+        return id
     }
 
     private func metaDict() -> [String: String]? {
@@ -122,12 +171,18 @@ extension LXMusicInfo {
         if let img = song.imgUrl { m["picUrl"] = .string(img) }
         if let a = song.albumId { m["albumId"] = .string(a) }
         m["songId"] = .string(song.songmid)
+        if let meta = song.meta {
+            for (k, v) in meta where m[k] == nil { m[k] = .string(v) }
+        }
+        // 对齐桌面端内部 id 约定：{source}_{songmid}
+        let internalId = song.source + "_" + song.songmid
         return LXMusicInfo(
-            id: song.songmid,
+            id: internalId,
             name: song.name,
             singer: song.singer,
             source: song.source,
             interval: LXSyncModels.formatInterval(song.interval),
+            songmid: song.songmid,
             meta: m.isEmpty ? nil : m
         )
     }

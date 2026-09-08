@@ -83,6 +83,11 @@ class PlayerManager: NSObject {
     private var sourceSwitcher: SourceSwitcher!
     private var isSwitchingSource = false
 
+    /// v1.0.88 切歌取消令牌：每次 play()/switchTo() 自增。取链链路（内置源 → LX 兜底 →
+    /// 自动换源）可能耗时数十秒，旧链路的 completion 若不作废，会在用户已经切到新歌后
+    /// 才返回并顶掉新歌（播错歌 / 状态错乱）。所有异步回调先比对令牌再继续。
+    private var playGeneration = 0
+
     // MARK: - Init
 
     override init() {
@@ -120,6 +125,8 @@ class PlayerManager: NSObject {
 
     /// 播放一首歌
     func play(song: Song, queue: [Song]? = nil) {
+        // v1.0.88：作废上一条还在路上的取链链路（其 completion 会因令牌不符被丢弃）
+        playGeneration += 1
         if let queue = queue, !queue.isEmpty {
             playQueue = queue
             queueIndex = queue.firstIndex(where: { $0.id == song.id }) ?? 0
@@ -129,6 +136,13 @@ class PlayerManager: NSObject {
         currentSong = song
         currentSource = song.source
         isSwitchingSource = false
+
+        // v1.0.88：立刻停掉旧歌。旧实现要等新歌取链链路（可能几十秒）走完才
+        // replaceCurrentItem，期间上一首一直在响，体感就是「切歌慢半拍」。
+        // 现在切歌瞬间静音，新歌就绪后无缝接上。
+        player.pause()
+        isPlaying = false
+        currentTime = 0
 
         onSongChanged?(song)
         notifyStateChanged()
@@ -150,6 +164,9 @@ class PlayerManager: NSObject {
 
     /// 恢复播放
     func resume() {
+        // v1.0.88：没有可恢复的播放项（刚切歌还在取链 / 上一首已因失败被摘除）时，
+        // 不要把可能残留的旧音频放出来
+        guard observedItem != nil else { return }
         player.play()
         isPlaying = true
         updateNowPlayingInfo()
@@ -229,6 +246,14 @@ class PlayerManager: NSObject {
         lastPlayError = "正在切换到 \(targetName)…"
         notifyStateChanged()
 
+        // v1.0.88：手动换源同样作废旧的取链链路，并立刻停掉旧歌（与切歌一致，
+        // 避免「点了换源，旧歌还响半天」的迟滞感）
+        playGeneration += 1
+        let generation = playGeneration
+        player.pause()
+        isPlaying = false
+        currentTime = 0
+
         // 借用 SourceSwitcher 的搜索+匹配+取链接流程，但只限定目标这一个源
         sourceSwitcher.findPlayable(
             name: song.name,
@@ -238,6 +263,8 @@ class PlayerManager: NSObject {
         ) { [weak self] hit in
             guard let self = self else { return }
             DispatchQueue.main.async {
+                // 用户在切换期间又点了别的歌 → 本次结果作废
+                guard generation == self.playGeneration else { return }
                 guard let hit = hit, let url = URL(string: hit.url) else {
                     self.lastPlayError = "\(targetName) 没有找到这首歌"
                     self.notifyStateChanged()
@@ -310,6 +337,9 @@ class PlayerManager: NSObject {
             return
         }
 
+        // v1.0.88：本条取链链路的令牌。期间用户再切歌（令牌自增）则本链路全部作废。
+        let generation = playGeneration
+
         // v1.0.78：标记当前音源是否为已知试用/赞助版（用于 readyToPlay 阶段兜底拦截）
         suspectCurrentSource = SourceGuard.isBlockedSource(currentSource) || SourceGuard.isBlockedSource(song.source)
 
@@ -337,13 +367,18 @@ class PlayerManager: NSObject {
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                // v1.0.88：切歌后旧链路结果一律作废（包括试用拦截/换源分支）
+                guard generation == self.playGeneration else {
+                    Logger.info("LX PlayerManager: 旧取链链路已作废（用户已切歌）")
+                    return
+                }
 
                 switch result {
                 case .success(let url):
                     // v1.0.78：拦截试用/赞助版音源（ikun 等）返回的 TTS 提示音频，改走自动换源
                     if SourceGuard.isBlockedSource(self.currentSource) || SourceGuard.isBlockedSource(song.source) || SourceGuard.isForgedUrl(url) {
                         Logger.warn("LX PlayerManager: 拦截试用音源 \(self.currentSource)，改用其他音源播放")
-                        self.handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", completion: completion)
+                        self.handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", generation: generation, completion: completion)
                         return
                     }
                     guard let playUrl = URL(string: url) else {
@@ -357,14 +392,15 @@ class PlayerManager: NSObject {
                 case .failure(let error):
                     Logger.error("获取播放链接失败[\(self.currentSource)]: \(error.localizedDescription)")
                     // 兜底：同平台的内置源失效时，尝试 LX 兼容层（洛雪社区脚本）的同源端点
-                    self.tryLXCompatFallback(song: song, builtinError: error.localizedDescription, completion: completion)
+                    self.tryLXCompatFallback(song: song, builtinError: error.localizedDescription, generation: generation, completion: completion)
                 }
             }
         }
     }
 
     /// LX 兼容层兜底：内置源取不到播放链接时，用同平台的洛雪社区脚本再试一次
-    private func tryLXCompatFallback(song: Song, builtinError: String, completion: @escaping (Bool) -> Void) {
+    private func tryLXCompatFallback(song: Song, builtinError: String, generation: Int, completion: @escaping (Bool) -> Void) {
+        guard generation == playGeneration else { return }
         guard LXCompatEngine.shared.isPlatformAvailable(song.source) else {
             handlePlayFailure(song: song, reason: builtinError, completion: completion)
             return
@@ -380,12 +416,14 @@ class PlayerManager: NSObject {
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                // v1.0.88：切歌后旧兜底链路作废
+                guard generation == self.playGeneration else { return }
                 switch result {
                 case .success(let url):
                     // v1.0.78：LX 兼容层同样可能返回试用音源的 TTS 提示音频，拦截并换源
                     if SourceGuard.isBlockedSource(song.source) || SourceGuard.isForgedUrl(url) {
                         Logger.warn("LX PlayerManager: LX兜底拦截试用音源 \(song.source)，改用其他音源播放")
-                        self.handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", completion: completion)
+                        self.handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", generation: generation, completion: completion)
                         return
                     }
                     guard let playUrl = URL(string: url) else {
@@ -472,8 +510,13 @@ class PlayerManager: NSObject {
     private func handlePlayFailure(
         song: Song,
         reason: String,
+        generation: Int? = nil,
         completion: @escaping (Bool) -> Void
     ) {
+        // v1.0.88：切歌后旧失败链路不再换源（generation 为 nil 的调用点来自
+        // readyToPlay 短音频兜底等「当前歌仍然有效」的场景，不受限）
+        if let generation = generation, generation != playGeneration { return }
+
         let reason = friendlyReason(reason)
         let sourceName = ConfigStore.shared.displayName(for: currentSource)
 
@@ -499,9 +542,19 @@ class PlayerManager: NSObject {
             DispatchQueue.main.async {
                 self.isSwitchingSource = false
 
+                // v1.0.88：换源期间用户又切了歌 → 本次结果作废
+                if let generation = generation, generation != self.playGeneration { return }
+
                 guard let hit = hit, let playUrl = URL(string: hit.url) else {
                     self.lastPlayError = "\(sourceName)：\(reason)（其他音源也未找到）"
                     self.isPlaying = false
+                    // v1.0.88：彻底失败时把旧音频从播放器上摘掉——否则播放页显示的
+                    // 是新歌、点播放键 resume 的却是上一首的音频（名实不符）。
+                    if let old = self.observedItem {
+                        self.removeObservers(from: old)
+                        self.observedItem = nil
+                    }
+                    self.player.replaceCurrentItem(with: nil)
                     self.notifyStateChanged()
                     completion(false)
                     return

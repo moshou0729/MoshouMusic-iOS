@@ -288,6 +288,10 @@ final class SourceSwitcher {
             let n = normalize(song.name)
             // v1.0.88：语言防线 —— 显示中文歌名播外语歌的主通道
             guard languageCompatible(target: targetName, candidate: n) else { continue }
+            // v1.0.89：语言版本标记一致性 —— 在剥括号前的原始名上检查。
+            // 「当那一天来临 (English Ver.)」归一化剥括号后与「当那一天来临」完全同形，
+            // 会绕过上面的 CJK 防线并拿到「精确同名」满分，实测导致赤旗版搜出英文歌。
+            guard languageMarkers(in: name) == languageMarkers(in: song.name) else { continue }
 
             var score: Int
             switch nameRelation(candidate: n, target: targetName, targetSingers: targetSingers) {
@@ -368,6 +372,36 @@ final class SourceSwitcher {
     /// 否则视为不同语言的歌曲直接出局。纯符号/数字歌名（双方都不含 CJK）不设防。
     private static func languageCompatible(target: String, candidate: String) -> Bool {
         return containsCJK(target) == containsCJK(candidate)
+    }
+
+    // MARK: - v1.0.89 语言版本标记（English Ver. / 英文版 等）
+
+    /// 语言版本标记 → 归一语言码。在**原始歌名**（含括号内容）上匹配；
+    /// 目标与候选的标记集合必须完全一致，否则该候选弃选。
+    /// 例：目标「当那一天来临（赤旗版）」标记 ∅，候选「当那一天来临 (English Ver.)」
+    /// 标记 {en} → 不一致弃选；目标「后来(英文版)」标记 {en} 只允许同为 {en} 的候选。
+    static let matchLanguageGuardNote = "语言版本标记不一致的候选一律弃选，防中文歌名播外语版本"
+
+    private static let languageMarkerMap: [(marker: String, lang: String)] = [
+        ("english", "en"), ("英文", "en"), ("英语", "en"),
+        ("japanese", "ja"), ("日语", "ja"), ("日文", "ja"),
+        ("korean", "ko"), ("韩语", "ko"), ("韩文", "ko"),
+        ("chinese", "zh"), ("中文", "zh"), ("国语", "zh"), ("普通话", "zh"), ("mandarin", "zh"),
+        ("cantonese", "yue"), ("粤语", "yue"), ("粵語", "yue"),
+        ("french", "fr"), ("法语", "fr"), ("法語", "fr"),
+        ("german", "de"), ("德语", "de"), ("德語", "de"),
+        ("russian", "ru"), ("俄语", "ru"), ("俄語", "ru"),
+        ("spanish", "es"), ("西语", "es"), ("西語", "es"),
+        ("thai", "th"), ("泰语", "th"), ("泰文", "th"),
+    ]
+
+    private static func languageMarkers(in rawName: String) -> Set<String> {
+        let s = rawName.lowercased()
+        var result = Set<String>()
+        for (marker, lang) in languageMarkerMap where s.contains(marker) {
+            result.insert(lang)
+        }
+        return result
     }
 
     private static func containsCJK(_ s: String) -> Bool {

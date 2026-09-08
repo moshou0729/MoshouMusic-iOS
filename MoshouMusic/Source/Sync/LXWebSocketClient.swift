@@ -219,7 +219,16 @@ final class LXWebSocketClient {
         guard let r = readBuf.range(of: marker) else { return }
         let headerData = readBuf.subdata(in: 0..<r.lowerBound)
         let after = readBuf.subdata(in: r.upperBound..<readBuf.count)
-        readBuf = Data()
+        // v1.0.82 关键修复：101 头之后的剩余字节必须放回 readBuf！
+        // 之前 `readBuf = Data()` 直接清空，after 只活在局部变量里，下面的
+        // parseFrames() 读到的是空缓冲区 —— 当 desktop 在 upgrade 完成后立刻发的
+        // 第一帧（getEnabledFeatures 调用）与 101 响应头**同 TCP 包到达**时，
+        // 该帧被静默丢弃。后果链条：mobile 永不响应 → desktop `await remote.
+        // getEnabledFeatures` 等 120s 超时 → sync() 抛异常 → handleConnection
+        // `catch { log.warn; return }` 静默吞掉（连接不断、UI 显示已连接）→
+        // 手机端显示「WS 101 成功但收不到任何调用」。v1.0.73 偶尔成功纯粹是
+        // 101 与首帧分属不同 TCP 段的时序运气。
+        readBuf = after
         guard let s = String(data: headerData, encoding: .utf8) else {
             fail(.handshakeFailed("响应头不是 utf8")); return
         }
@@ -240,7 +249,11 @@ final class LXWebSocketClient {
         log("WS 握手完成（101）")
         Logger.info("LX WS handshake ok: \(s.prefix(120))")
         DispatchQueue.main.async { [weak self] in self?.onOpen?() }
-        if !after.isEmpty { parseFrames() }
+        // v1.0.82：剩余字节已放回 readBuf，首帧与 101 同包到达时在此立即解析
+        if !readBuf.isEmpty {
+            Logger.info("LX WS: handshake leftover -> parseFrames v1.0.82 同包首帧已保留")
+            parseFrames()
+        }
     }
 
     private func parseFrames() {

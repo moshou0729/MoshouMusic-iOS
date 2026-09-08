@@ -26,6 +26,7 @@ class ConfigStore {
         static let lxSyncEnabled = "lxSyncEnabled"
         static let lxSyncMode = "lxSyncMode"
         static let lxLastSyncDate = "lxLastSyncDate"
+        static let preferredLXScriptID = "preferredLXScriptID"
     }
 
     // MARK: - 路径
@@ -105,6 +106,19 @@ class ConfigStore {
             return defaults.bool(forKey: Keys.autoSwitchSource)
         }
         set { defaults.set(newValue, forKey: Keys.autoSwitchSource) }
+    }
+
+    // MARK: - LX 首选音源脚本
+
+    /// 用户偏好的洛雪社区脚本 id：取链/换源时它在同平台 provider 轮询里被置顶优先。
+    /// 默认 "dujia"（独家音源v5）——若该脚本未成功注册（如 iOS 环境不兼容）则自动忽略，
+    /// 不影响其它脚本；用户可在「洛雪社区音源」列表里改成任意已加载脚本。
+    var preferredLXScriptID: String {
+        get {
+            if defaults.object(forKey: Keys.preferredLXScriptID) == nil { return "dujia" }
+            return defaults.string(forKey: Keys.preferredLXScriptID) ?? "dujia"
+        }
+        set { defaults.set(newValue, forKey: Keys.preferredLXScriptID) }
     }
 
     // MARK: - LX Music 桌面版同步

@@ -28,7 +28,9 @@ final class LXCompatEngine {
     }
 
     private var instances: [String: Instance] = [:]
-    private var platformIndex: [String: String] = [:]   // platform -> 第一个提供它的脚本 id
+    // v1.0.83：platform -> 提供它的脚本 id 列表（同平台多脚本并存，逐个轮询，
+    // 修复「第一个注册脚本失效时，hyw/yuxi 等其它同平台脚本再无机会」的问题）
+    private var platformIndex: [String: [String]] = [:]
     private var loaded = false
 
     // bundle 内资源代码（首次注册时读取并缓存）
@@ -146,8 +148,8 @@ final class LXCompatEngine {
         let inst = Instance(id: id, displayName: displayName, context: ctx,
                             platforms: platforms, isUser: isUser)
         instances[id] = inst
-        for p in platforms where platformIndex[p] == nil {
-            platformIndex[p] = id
+        for p in platforms {
+            platformIndex[p, default: []].append(id)
         }
         Logger.info("LX 音源已加载: \(displayName) 平台=\(platforms.joined(separator: ","))")
     }
@@ -230,24 +232,69 @@ final class LXCompatEngine {
             .sorted { $0.name < $1.name }
     }
 
+    /// 平台第一个提供者（UI 展示用）
     func providerName(forPlatform platform: String) -> String? {
-        guard let id = platformIndex[platform] else { return nil }
-        return instances[id]?.displayName
+        guard let ids = platformIndex[platform], let first = ids.first else { return nil }
+        return instances[first]?.displayName
     }
 
     func isPlatformAvailable(_ platform: String) -> Bool {
-        return platformIndex[platform] != nil
+        return !(platformIndex[platform]?.isEmpty ?? true)
     }
 
     // MARK: - 统一派发
 
-    private func buildInfo(songId: String, quality: String, extra: [String: String]) -> [String: Any] {
-        var musicInfo: [String: Any] = ["songmid": songId, "hash": songId, "songId": songId]
+    private func buildInfo(songId: String, quality: String, extra: [String: String], source: String) -> [String: Any] {
+        // v1.0.83：musicInfo 补 source 字段 —— 与 lx-music 桌面端发给音源脚本的
+        // musicInfo 规范一致，部分脚本依赖 musicInfo.source 路由到对应平台后端。
+        var musicInfo: [String: Any] = ["songmid": songId, "hash": songId, "songId": songId, "source": source]
         for (k, v) in extra where !k.isEmpty { musicInfo[k] = v }
         return ["musicInfo": musicInfo, "type": quality]
     }
 
     private final class CallbackBox { var finished = false }
+
+    // v1.0.83：同平台多 provider 轮询 —— 当前脚本失败/返回内容无效时自动换下一个，
+    // 全部失败才报错。解决「kg 平台被失效脚本占坑，其它同平台脚本无机会取链」。
+    private func dispatchAcrossProviders(
+        platform: String,
+        ids: [String],
+        index: Int,
+        action: String,
+        info: [String: Any],
+        timeout: Double,
+        validate: ((JSValue) -> Bool)?,
+        completion: @escaping (Result<JSValue, Error>) -> Void
+    ) {
+        guard index < ids.count else {
+            completion(.failure(LXError.noProvider(platform)))
+            return
+        }
+        guard let inst = instances[ids[index]] else {
+            dispatchAcrossProviders(platform: platform, ids: ids, index: index + 1,
+                                    action: action, info: info, timeout: timeout,
+                                    validate: validate, completion: completion)
+            return
+        }
+        dispatch(in: inst, action: action, platform: platform, info: info, timeout: timeout) { result in
+            switch result {
+            case .success(let data):
+                // 内容有效才算成功；无效（如取链为空）继续换下一个脚本
+                if validate?(data) ?? true {
+                    completion(.success(data))
+                } else {
+                    self.dispatchAcrossProviders(platform: platform, ids: ids, index: index + 1,
+                                                 action: action, info: info, timeout: timeout,
+                                                 validate: validate, completion: completion)
+                }
+            case .failure:
+                // 当前脚本失败 → 试下一个提供同平台的脚本
+                self.dispatchAcrossProviders(platform: platform, ids: ids, index: index + 1,
+                                             action: action, info: info, timeout: timeout,
+                                             validate: validate, completion: completion)
+            }
+        }
+    }
 
     /// 在指定实例里派发一个 action，回调返回原始 data（Any）
     private func dispatch(in inst: Instance, action: String, platform: String,
@@ -302,12 +349,14 @@ final class LXCompatEngine {
                      extra: [String: String],
                      completion: @escaping (Result<String, Error>) -> Void) {
         ensureLoaded()
-        guard let id = platformIndex[platform], let inst = instances[id] else {
+        guard let ids = platformIndex[platform], !ids.isEmpty else {
             completion(.failure(LXError.noProvider(platform)))
             return
         }
-        let info = buildInfo(songId: songId, quality: quality, extra: extra)
-        dispatch(in: inst, action: "musicUrl", platform: platform, info: info, timeout: 22) { result in
+        let info = buildInfo(songId: songId, quality: quality, extra: extra, source: platform)
+        dispatchAcrossProviders(platform: platform, ids: ids, index: 0,
+                                action: "musicUrl", info: info, timeout: 22,
+                                validate: { Self.extractUrl(from: $0) != nil }) { result in
             switch result {
             case .success(let data):
                 if let url = Self.extractUrl(from: data) {
@@ -324,12 +373,14 @@ final class LXCompatEngine {
     func getLyrics(platform: String, songId: String, extra: [String: String],
                    completion: @escaping (Result<String, Error>) -> Void) {
         ensureLoaded()
-        guard let id = platformIndex[platform], let inst = instances[id] else {
+        guard let ids = platformIndex[platform], !ids.isEmpty else {
             completion(.failure(LXError.noProvider(platform)))
             return
         }
-        let info = buildInfo(songId: songId, quality: "", extra: extra)
-        dispatch(in: inst, action: "lyric", platform: platform, info: info, timeout: 18) { result in
+        let info = buildInfo(songId: songId, quality: "", extra: extra, source: platform)
+        dispatchAcrossProviders(platform: platform, ids: ids, index: 0,
+                                action: "lyric", info: info, timeout: 18,
+                                validate: nil) { result in
             switch result {
             case .success(let data):
                 completion(.success(Self.extractLyric(from: data)))
@@ -342,12 +393,14 @@ final class LXCompatEngine {
     func getPic(platform: String, songId: String, extra: [String: String],
                 completion: @escaping (Result<String, Error>) -> Void) {
         ensureLoaded()
-        guard let id = platformIndex[platform], let inst = instances[id] else {
+        guard let ids = platformIndex[platform], !ids.isEmpty else {
             completion(.failure(LXError.noProvider(platform)))
             return
         }
-        let info = buildInfo(songId: songId, quality: "", extra: extra)
-        dispatch(in: inst, action: "pic", platform: platform, info: info, timeout: 18) { result in
+        let info = buildInfo(songId: songId, quality: "", extra: extra, source: platform)
+        dispatchAcrossProviders(platform: platform, ids: ids, index: 0,
+                                action: "pic", info: info, timeout: 18,
+                                validate: { Self.extractUrl(from: $0) != nil }) { result in
             switch result {
             case .success(let data):
                 if let url = Self.extractUrl(from: data) {
@@ -371,12 +424,14 @@ final class LXCompatEngine {
         completion: @escaping (Result<[[String: Any]], Error>) -> Void
     ) {
         ensureLoaded()
-        guard let id = platformIndex[platform], let inst = instances[id] else {
+        guard let ids = platformIndex[platform], !ids.isEmpty else {
             completion(.failure(LXError.noProvider(platform)))
             return
         }
         let info: [String: Any] = ["keyword": keyword, "page": page]
-        dispatch(in: inst, action: "musicSearch", platform: platform, info: info, timeout: 20) { result in
+        dispatchAcrossProviders(platform: platform, ids: ids, index: 0,
+                                action: "musicSearch", info: info, timeout: 20,
+                                validate: { !Self.extractList(from: $0).isEmpty }) { result in
             switch result {
             case .success(let data):
                 completion(.success(Self.extractList(from: data)))
@@ -488,8 +543,12 @@ final class LXCompatEngine {
 
     func removeUserScript(id: String) {
         guard let inst = instances[id], inst.isUser else { return }
-        for p in inst.platforms where platformIndex[p] == id {
-            platformIndex.removeValue(forKey: p)
+        for p in inst.platforms {
+            if var ids = platformIndex[p] {
+                ids.removeAll { $0 == id }
+                if ids.isEmpty { platformIndex.removeValue(forKey: p) }
+                else { platformIndex[p] = ids }
+            }
         }
         instances.removeValue(forKey: id)
         try? FileManager.default.removeItem(at: userDir().appendingPathComponent("\(id).es5.js"))

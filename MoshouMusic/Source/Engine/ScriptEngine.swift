@@ -431,7 +431,7 @@ class ScriptEngine {
             source: source,
             action: "musicSearch",
             info: ["page": page, "keyword": keyword],
-            timeout: 20
+            timeout: 12
         ) { result in
             switch result {
             case .success(let dict):
@@ -491,7 +491,9 @@ class ScriptEngine {
         ]
         for (k, v) in extra { info[k] = v }
 
-        invoke(source: source, action: "musicUrl", info: info, timeout: 25) { result in
+        // v1.0.88：取链超时 25s → 10s。挂掉的内置源拖满 25s 才进 LX 兜底，
+        // 是「切歌慢半拍」的主要来源之一；正常源 1~3s 内必回。
+        invoke(source: source, action: "musicUrl", info: info, timeout: 10) { result in
             switch result {
             case .success(let dict):
                 if let url = dict["url"] as? String, !url.isEmpty,
@@ -518,7 +520,7 @@ class ScriptEngine {
         var info: [String: Any] = ["songmid": songId, "hash": songId]
         for (k, v) in extra { info[k] = v }
 
-        invoke(source: source, action: "lyric", info: info, timeout: 20) { result in
+        invoke(source: source, action: "lyric", info: info, timeout: 12) { result in
             switch result {
             case .success(let dict):
                 let lyric = dict["lyric"] as? String ?? ""
@@ -542,7 +544,7 @@ class ScriptEngine {
         var info: [String: Any] = ["songmid": songId, "hash": songId]
         for (k, v) in extra { info[k] = v }
 
-        invoke(source: source, action: "pic", info: info, timeout: 20) { result in
+        invoke(source: source, action: "pic", info: info, timeout: 12) { result in
             switch result {
             case .success(let dict):
                 completion(.success(dict["url"] as? String ?? ""))

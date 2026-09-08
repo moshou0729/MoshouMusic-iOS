@@ -217,6 +217,13 @@ final class LXSyncService {
             guard case .syncing = self.status else { self.stopSyncWatchdog(); return }
             self.syncWaitSeconds += 1
             var line = "已连接桌面端，等待服务端编排…"
+            // v1.0.81：把本端实际连的地址显出来，避免「我连的是 12345 还是别的」反复猜。
+            // hostPathFromConfig() 返回 http://host:port（已 normalize）。
+            if let hp = self.hostPathFromConfig() {
+                line += "\n连接地址：\(hp)"
+                // v1.0.81：长诊断串（>15 字节，避免 Swift 小字符串内联后扫不到）
+                Logger.info("LXSyncService: 连接地址诊断显示已启用 v1.0.81")
+            }
             if let s = self.lastInboundSummary { line += "\n收到：\(s)" }
             if let s = self.lastSentSummary { line += "\n已发送：\(s)" }
             // v1.0.68：发送原文 preview 加长到 250B；再加一行**传输层字节计数**，

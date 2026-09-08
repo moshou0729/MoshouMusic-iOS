@@ -165,7 +165,9 @@ enum LXPlaylistBridge {
             if d["hash"] == nil, let sid = meta["songId"] { d["hash"] = "\(sid)" }
         }
         let source = nonEmpty(item["source"]) ?? "wy"
-        return Song.init(from: d, source: source)
+        let song = Song.init(from: d, source: source)
+        // v1.0.91：LX 内部 id（kw_xxx / audioId_hash32）≠ 平台 songmid，同一规则修复
+        return song.flatMap { PlaylistStore.repairSongmid($0) } ?? song
     }
 
     private static func nonEmpty(_ v: Any?) -> String? {

@@ -2,6 +2,29 @@ import AVFoundation
 import MediaPlayer
 import Foundation
 
+// MARK: - 试用/赞助版音源拦截
+/// 某些用户导入的洛雪社区脚本（如 ikun 音源）在试用到期后会返回一个「真实可播放」的
+/// TTS 音频链接（内容是一段“请在 xxx 购买卡密”的语音播报）。AVPlayer 会把它当正版
+/// 歌曲播出来，于是每首歌都变成那段购买提示。
+/// 这里在「拿到链接、尚未播放」前做一次拦截：命中则**不播放该链接**，改走自动换源
+/// （kg/tx/wy/mg），既不播那段提示音，也能用正常音源把歌放出来。
+struct SourceGuard {
+    /// 音源 id（小写）命中其一即视为试用/赞助版，禁止直接播放
+    static let blockedSourceSubstrings = ["ikun", "shopicanshare", "卡密", "赞助版", "trial"]
+    /// 返回的播放链接（小写）命中其一即视为伪造链接（试用提示托管地址等）
+    static let forgedUrlTokens = ["shopicanshare", "ikun", "卡密", "购买卡密", "赞助版", "试用", "trial"]
+
+    static func isBlockedSource(_ id: String) -> Bool {
+        let s = id.lowercased()
+        return blockedSourceSubstrings.contains { s.contains($0) }
+    }
+
+    static func isForgedUrl(_ url: String) -> Bool {
+        let s = url.lowercased()
+        return forgedUrlTokens.contains { s.contains($0) }
+    }
+}
+
 /// 播放管理器 — 单例，管理音频播放、队列、锁屏控制、歌词同步
 class PlayerManager: NSObject {
 
@@ -36,6 +59,8 @@ class PlayerManager: NSObject {
 
     private var player: AVPlayer!
     private var timeObserverToken: Any?
+    /// v1.0.78：当前音源是否被标记为已知试用/赞助版，用于 readyToPlay 阶段的极短音频兜底拦截
+    private var suspectCurrentSource = false
     /// KVO 不再使用 context 指针：旧实现用 static let 指针做上下文比较，
     /// 在 observeValue 内读取它会触发 Swift 独占访问运行时（swift_endAccess → abort）崩溃。
     /// 改为 addObserver 传 context: nil，observeValue 内仅按「object 身份 + keyPath」判定，
@@ -276,6 +301,9 @@ class PlayerManager: NSObject {
             return
         }
 
+        // v1.0.78：标记当前音源是否为已知试用/赞助版（用于 readyToPlay 阶段兜底拦截）
+        suspectCurrentSource = SourceGuard.isBlockedSource(currentSource) || SourceGuard.isBlockedSource(song.source)
+
         // 记录上一次播放错误，供播放页展示
         lastPlayError = nil
 
@@ -303,6 +331,12 @@ class PlayerManager: NSObject {
 
                 switch result {
                 case .success(let url):
+                    // v1.0.78：拦截试用/赞助版音源（ikun 等）返回的 TTS 提示音频，改走自动换源
+                    if SourceGuard.isBlockedSource(self.currentSource) || SourceGuard.isBlockedSource(song.source) || SourceGuard.isForgedUrl(url) {
+                        Logger.warn("LX PlayerManager: 拦截试用音源 \(self.currentSource)，改用其他音源播放")
+                        self.handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", completion: completion)
+                        return
+                    }
                     guard let playUrl = URL(string: url) else {
                         Logger.error("无效的播放 URL: \(url)")
                         self.handlePlayFailure(song: song, reason: "播放链接无效", completion: completion)
@@ -339,6 +373,12 @@ class PlayerManager: NSObject {
                 guard let self = self else { return }
                 switch result {
                 case .success(let url):
+                    // v1.0.78：LX 兼容层同样可能返回试用音源的 TTS 提示音频，拦截并换源
+                    if SourceGuard.isBlockedSource(song.source) || SourceGuard.isForgedUrl(url) {
+                        Logger.warn("LX PlayerManager: LX兜底拦截试用音源 \(song.source)，改用其他音源播放")
+                        self.handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", completion: completion)
+                        return
+                    }
                     guard let playUrl = URL(string: url) else {
                         self.handlePlayFailure(song: song, reason: builtinError, completion: completion)
                         return
@@ -476,7 +516,19 @@ class PlayerManager: NSObject {
             if keyPath == #keyPath(AVPlayerItem.status) {
                 switch item.status {
                 case .readyToPlay:
-                    self.duration = PlayerManager.sane(item.duration.seconds)
+                    let dur = PlayerManager.sane(item.duration.seconds)
+                    // v1.0.78 兜底：已知试用音源若返回的是极短 TTS 音频（<25s），立即换源，
+                    // 不再把它当正版歌曲放出来（链接层拦截万一漏判时的最后一道防线）
+                    if self.suspectCurrentSource, dur > 0, dur < 25 {
+                        Logger.warn("LX PlayerManager: 检测到试用音源短音频(\(dur)s)，换源")
+                        self.suspectCurrentSource = false
+                        self.player.pause()
+                        if let song = self.currentSong {
+                            self.handlePlayFailure(song: song, reason: "试用音源，已切换其他音源", completion: { _ in })
+                        }
+                        return
+                    }
+                    self.duration = dur
                     self.onTimeChanged?(self.currentTime, self.duration)
                 case .failed:
                     let reason = item.error?.localizedDescription ?? "链接无法播放"

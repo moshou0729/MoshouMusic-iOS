@@ -28,10 +28,73 @@ class PlaylistStore {
         do {
             let data = try Data(contentsOf: path)
             playlists = try JSONDecoder().decode([Playlist].self, from: data)
+            migrateLXSongmidIfNeeded()
         } catch {
             Logger.error("加载歌单失败: \(error)")
             createDefaultPlaylists()
         }
+    }
+
+    // MARK: - v1.0.91 存量迁移：修复同步歌曲的 songmid 身份
+
+    /// 旧版同步把 LX 内部 id（kw_568484086 / 573841230_D7FF5208…）当成 songmid 落库，
+    /// 导致所有直接取链失败。升级后按同一规则修复一遍存量数据（只跑一次）。
+    private func migrateLXSongmidIfNeeded() {
+        guard !ConfigStore.shared.lxSongmidFixV1Done else { return }
+        ConfigStore.shared.lxSongmidFixV1Done = true
+
+        var repaired = 0
+        for plIdx in playlists.indices {
+            for sIdx in playlists[plIdx].songs.indices {
+                if let fixed = Self.repairSongmid(playlists[plIdx].songs[sIdx]) {
+                    playlists[plIdx].songs[sIdx] = fixed
+                    repaired += 1
+                }
+            }
+        }
+        if repaired > 0 {
+            Logger.info("LX Sync: 存量歌曲 songmid 身份修复完成，共 \(repaired) 首")
+            save()
+        }
+    }
+
+    /// 单首修复：坏 songmid → 平台 songmid。无问题返回 nil。
+    static func repairSongmid(_ song: Song) -> Song? {
+        var meta = song.meta ?? [:]
+        let source = song.source
+        var songmid = song.songmid
+
+        // kw/tx/wy/mg：id 带 "{source}_" 前缀
+        let prefix = source + "_"
+        if songmid.hasPrefix(prefix) {
+            songmid = String(songmid.dropFirst(prefix.count))
+        }
+        // kg：复合 id "{audioId}_{hash32}" → 取 hash；hash 必须在 meta 里补齐
+        if source == "kg" {
+            if meta["hash"] == nil, let idx = songmid.firstIndex(of: "_") {
+                let tail = String(songmid[songmid.index(after: idx)...])
+                if tail.count == 32, tail.allSatisfy({ $0.isHexDigit }) {
+                    meta["hash"] = tail
+                    if songmid.contains("_") {
+                        let audioId = String(songmid[..<idx])
+                        if !audioId.isEmpty { meta["albumAudioId"] = audioId }
+                    }
+                    songmid = tail
+                }
+            }
+            if songmid.count != 32, let sid = meta["songId"], sid.count == 32 {
+                meta["hash"] = sid
+                songmid = sid
+            }
+        }
+
+        let metaChanged = (meta["hash"] ?? "") != (song.meta?["hash"] ?? "")
+        guard songmid != song.songmid || metaChanged else { return nil }
+        return Song(id: Song.makeId(source: source, songmid: songmid),
+                    name: song.name, singer: song.singer, source: source,
+                    songmid: songmid, albumName: song.albumName, albumId: song.albumId,
+                    imgUrl: song.imgUrl, quality: song.quality, interval: song.interval,
+                    meta: meta.isEmpty ? nil : meta)
     }
 
     func save() {

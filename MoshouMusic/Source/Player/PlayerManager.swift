@@ -481,15 +481,19 @@ class PlayerManager: NSObject {
                 }
 
                 // 换源成功：切换当前源与当前歌曲元数据（songmid 属于新源）
+                // v1.0.83：用 withDisplay 保留「歌单里的原名/歌手」展示，播放链接仍是
+                // 新源匹配到的版本——否则换到 live/翻唱版时播放页名字也跟着变，用户
+                // 会误以为播错了歌。id/songmid 保持新源版本不变（后续切歌/收藏以它为准）。
+                let displaySong = hit.song.withDisplay(name: song.name, singer: song.singer)
                 self.currentSource = hit.source
-                self.currentSong = hit.song
+                self.currentSong = displaySong
                 self.lastPlayError = nil
-                self.onSongChanged?(hit.song)
+                self.onSongChanged?(displaySong)
 
                 let newName = ConfigStore.shared.displayName(for: hit.source)
-                Logger.info("已自动换源到 \(newName)")
+                Logger.info("已自动换源到 \(newName)（保留原名显示）")
 
-                self.startPlayback(url: playUrl, song: hit.song)
+                self.startPlayback(url: playUrl, song: displaySong)
                 completion(true)
             }
         }

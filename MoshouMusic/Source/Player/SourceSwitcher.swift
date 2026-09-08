@@ -271,6 +271,11 @@ final class SourceSwitcher {
     /// - 若存在，则直接排除「歌手明显不符」的候选（不与其竞争），让歌手对得上的胜出。
     /// - 若不存在任何歌手对得上的候选（纯属音源歌手字段缺失/不一致），才退而求其次，
     ///   但仍对「歌手明显不符」者显著扣分，避免它排在前面。
+    ///
+    /// v1.0.88 强化（治「播的不是显示的版本」「中文歌名播外语歌」）：
+    /// - 歌名从「子串沾边就算」改为「归一化后完全相等，或只差版本后缀（Live/伴奏/版…）」，
+    ///   杜绝「晴天娃娃」靠 contains 命中「晴天」这类撞名错播。
+    /// - 语言防线：目标歌名含中日韩文字时，候选必须同样含中日韩文字（反之亦然）。
     static func bestMatch(in songs: [Song], name: String, singer: String) -> Song? {
         guard !songs.isEmpty else { return nil }
 
@@ -281,10 +286,18 @@ final class SourceSwitcher {
 
         for song in songs {
             let n = normalize(song.name)
-            if n != targetName && !n.contains(targetName) && !targetName.contains(n) {
+            // v1.0.88：语言防线 —— 显示中文歌名播外语歌的主通道
+            guard languageCompatible(target: targetName, candidate: n) else { continue }
+
+            var score: Int
+            switch nameRelation(candidate: n, target: targetName, targetSingers: targetSingers) {
+            case .none:
                 continue // 歌名完全不沾边就跳过
+            case .exact:
+                score = 100
+            case .versionVariant:
+                score = 55 // 可接受的版本变体，但要输给完全同名者
             }
-            var score = (n == targetName) ? 100 : 60
 
             if !targetSingers.isEmpty {
                 let s = singerTokens(song.singer)
@@ -311,6 +324,67 @@ final class SourceSwitcher {
         // 目标歌手非空但没有任何候选歌手能匹配 → 返回 nil（上层会自动跳下一首/换源），
         // 绝不在歌手对不上的候选中硬挑一个播。v1.0.59 不变量。
         return best?.song
+    }
+
+    // MARK: - v1.0.88 歌名严格匹配 / 语言防线
+
+    private enum NameRelation { case none, exact, versionVariant }
+
+    /// 歌名关系判定：归一化后相等，或只差「版本后缀 / 歌手连写」，否则视为不同歌。
+    private static func nameRelation(candidate: String, target: String, targetSingers: Set<String>) -> NameRelation {
+        if candidate == target { return .exact }
+        // 候选 = 目标 + 尾巴（如「起风了live」对「起风了」）
+        if candidate.hasPrefix(target) {
+            let rem = String(candidate.dropFirst(target.count))
+            if isVersionSuffix(rem) || containsSingerToken(rem, targetSingers) { return .versionVariant }
+        }
+        // 目标 = 候选 + 尾巴（歌单里带后缀而源里是干名）
+        if target.hasPrefix(candidate) {
+            let rem = String(target.dropFirst(candidate.count))
+            if isVersionSuffix(rem) || containsSingerToken(rem, targetSingers) { return .versionVariant }
+        }
+        return .none
+    }
+
+    /// 尾巴是否只是版本修饰词（live/伴奏/版…）。剩余内容不含任何版本词 → 不是同一首歌。
+    private static func isVersionSuffix(_ raw: String) -> Bool {
+        var s = raw.trimmingCharacters(in: CharacterSet(charactersIn: " -_·•~~"))
+        guard !s.isEmpty else { return false }
+        s = s.lowercased()
+        let keywords = ["live", "cover", "remix", "demo", "acoustic", "instrumental",
+                        "inst", "ver", "version", "版", "现场", "翻唱", "伴奏", "钢琴",
+                        "吉他", "演奏", "弹唱", "纯音乐", "清唱", "慢摇", "电音", "混音"]
+        return keywords.contains { s.contains($0) }
+    }
+
+    /// 尾巴里含目标歌手名（音源把「歌名歌手」连写，如「起风了买辣椒也用券」）
+    private static func containsSingerToken(_ raw: String, _ targetSingers: Set<String>) -> Bool {
+        guard !targetSingers.isEmpty else { return false }
+        let s = raw.lowercased()
+        return targetSingers.contains { !s.isEmpty && s.contains($0) }
+    }
+
+    /// v1.0.88：语言防线 —— 目标与候选的歌名必须「同为含中日韩文字」或「同为不含」，
+    /// 否则视为不同语言的歌曲直接出局。纯符号/数字歌名（双方都不含 CJK）不设防。
+    private static func languageCompatible(target: String, candidate: String) -> Bool {
+        return containsCJK(target) == containsCJK(candidate)
+    }
+
+    private static func containsCJK(_ s: String) -> Bool {
+        for scalar in s.unicodeScalars {
+            switch scalar.value {
+            case 0x3040...0x30FF,    // 平假名 / 片假名
+                 0x3400...0x4DBF,    // CJK 扩展 A
+                 0x4E00...0x9FFF,    // CJK 基本区
+                 0xAC00...0xD7AF,    // 谚文
+                 0xF900...0xFAFF,    // CJK 兼容
+                 0x20000...0x2A6DF:  // CJK 扩展 B
+                return true
+            default:
+                continue
+            }
+        }
+        return false
     }
 
     /// v1.0.83：歌手名切 token —— 按常见分隔符（/ 、& feat with 空格等）拆分后逐个归一。

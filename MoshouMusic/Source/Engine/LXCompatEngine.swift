@@ -113,6 +113,14 @@ final class LXCompatEngine {
 
     private func registerScript(id: String, es5Code: String, displayName: String, isUser: Bool) {
         guard instances[id] == nil else { return }
+        // v1.0.84：试用/赞助版脚本（如 ikun）直接拒载 —— 它在试用到期后对任何平台都返回
+        // 「购买卡密」TTS 音频链接；且 v1.0.83 多 provider 轮询会让它伪装 kg/tx/wy/mg 平台
+        // 加入取链队列，而 source=kg 不命中链接层黑名单 → TTS 被当正版歌播放。
+        // 在注册源头封杀：不加载、不进 platformIndex、不参与任何平台轮询。
+        if SourceGuard.isBlockedSource(id) {
+            Logger.warn("LXCompat: 已屏蔽试用/赞助版脚本加载 (\(id)/\(displayName))")
+            return
+        }
         guard let shim = shimCode, !es5Code.isEmpty else {
             Logger.error("LX[\(id)] 缺少 shim 或脚本代码，跳过")
             return
@@ -268,6 +276,14 @@ final class LXCompatEngine {
     ) {
         guard index < ids.count else {
             completion(.failure(LXError.noProvider(platform)))
+            return
+        }
+        // v1.0.84 纵深：即使脚本已注册进 instances（如旧版本缓存），轮询到试用/赞助版
+        // provider（ikun 等）也直接跳过，绝不让它响应任何平台的取链/搜索请求。
+        if SourceGuard.isBlockedSource(ids[index]) {
+            self.dispatchAcrossProviders(platform: platform, ids: ids, index: index + 1,
+                                         action: action, info: info, timeout: timeout,
+                                         validate: validate, completion: completion)
             return
         }
         guard let inst = instances[ids[index]] else {

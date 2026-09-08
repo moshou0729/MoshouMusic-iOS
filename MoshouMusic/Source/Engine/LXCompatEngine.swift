@@ -62,6 +62,7 @@ final class LXCompatEngine {
             registerScript(id: id, es5Code: es5, displayName: presetNames[id] ?? id, isUser: false)
         }
         loadUserCachedScripts()
+        promotePreferredScript()
         Logger.info("LX 兼容层已加载，平台总数: \(platformIndex.count)")
     }
 
@@ -359,6 +360,37 @@ final class LXCompatEngine {
         dispatchFn.call(withArguments: [action, platform, infoVal, cbVal])
     }
 
+    // MARK: - 首选脚本置顶（v1.0.85）
+
+    /// 把用户首选脚本在每个平台的 provider 列表里置顶 —— 同平台取链/搜索先走它。
+    /// 若首选脚本未成功注册（如 dujia 在此环境不兼容）则空操作，保持原顺序。
+    func promotePreferredScript() {
+        let preferred = ConfigStore.shared.preferredLXScriptID
+        guard !preferred.isEmpty, instances[preferred] != nil else { return }
+        var changed = false
+        for (platform, ids) in platformIndex {
+            if let idx = ids.firstIndex(of: preferred), idx != 0 {
+                var newIds = ids
+                newIds.remove(at: idx)
+                newIds.insert(preferred, at: 0)
+                platformIndex[platform] = newIds
+                changed = true
+            }
+        }
+        if changed {
+            Logger.info("LX 首选音源已置顶: \(instances[preferred]?.displayName ?? preferred)")
+        }
+    }
+
+    /// UI 调用：设置/切换首选脚本，并立即置顶生效
+    func setPreferredScript(_ id: String?) {
+        ConfigStore.shared.preferredLXScriptID = id ?? ""
+        promotePreferredScript()
+    }
+
+    /// 对外查询：当前首选脚本 id（空表示未设）
+    var preferredScriptID: String { ConfigStore.shared.preferredLXScriptID }
+
     // MARK: - 对外接口
 
     func getMusicUrl(platform: String, songId: String, quality: String,
@@ -541,6 +573,8 @@ final class LXCompatEngine {
                 list.append(["id": id, "displayName": displayName])
                 writeRegistry(list)
             }
+            // 导入的正是首选脚本（如新版 dujia 重名导入）→ 立即置顶生效
+            promotePreferredScript()
             completion(true, inst.platforms)
         } else {
             completion(false, [])

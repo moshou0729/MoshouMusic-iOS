@@ -135,7 +135,7 @@ extension LXMusicInfo {
             // meta.qualitys[].hash（128k 档即可满足内置 kg.js 与 dujia）
             if case .array(let qs)? = rawMeta?["qualitys"] {
                 for q in qs {
-                    if case .object(let d)? = q, let h = d["hash"]?.stringValue,
+                    if case .object(let d) = q, let h = d["hash"]?.stringValue,
                        h.count == 32, !h.isEmpty {
                         meta["hash"] = h
                         break

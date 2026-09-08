@@ -314,6 +314,78 @@ final class LXCompatEngine {
 
     private final class CallbackBox { var finished = false }
 
+    /// v1.0.88 竞速计数盒：同平台多脚本错峰并发，首个有效结果胜出；
+    /// 只有当所有已派发的脚本都失败时才上报失败。
+    private final class RaceBox {
+        private let lock = NSLock()
+        private var won = false
+        private var pending: Int
+        init(count: Int) { pending = count }
+        var isWon: Bool { lock.lock(); defer { lock.unlock() }; return won }
+        /// 返回 true 表示该结果应上报（首个成功 或 全部失败）
+        func settle(success: Bool) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if success {
+                if won { return false }
+                won = true
+                return true
+            }
+            if won { return false }
+            pending -= 1
+            return pending == 0
+        }
+    }
+
+    // v1.0.88：同平台多脚本「错峰竞速」——首选脚本立即发出（保留 dujia 等首选音源
+    // 的优先权），其余脚本每隔 stagger 秒陆续跟上，任一脚本返回有效结果即胜出。
+    // 旧版串行轮询中，一个挂掉的脚本要拖满整个 timeout（22s）才轮到下一个，
+    // 是「切歌要等几十秒」的主要来源。
+    private func dispatchRace(
+        platform: String,
+        ids: [String],
+        action: String,
+        info: [String: Any],
+        timeout: Double,
+        stagger: Double,
+        validate: ((JSValue) -> Bool)?,
+        completion: @escaping (Result<JSValue, Error>) -> Void
+    ) {
+        // 过滤黑名单与缺失实例，保持首选置顶后的顺序
+        let ordered = ids.filter { !SourceGuard.isBlockedSource($0) && instances[$0] != nil }
+        guard !ordered.isEmpty else {
+            completion(.failure(LXError.noProvider(platform)))
+            return
+        }
+        let box = RaceBox(count: ordered.count)
+        for (i, id) in ordered.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * stagger) { [weak self] in
+                guard let self = self else { return }
+                // 竞速已分出胜负 → 后续脚本不再发起（省流量省电）
+                guard !box.isWon else { return }
+                // 等待期间脚本可能被用户移除 —— 记一次失败，避免竞速计数永远不归零
+                guard let inst = self.instances[id] else {
+                    if box.settle(success: false) { completion(.failure(LXError.noProvider(platform))) }
+                    return
+                }
+                self.dispatch(in: inst, action: action, platform: platform, info: info, timeout: timeout) { result in
+                    switch result {
+                    case .success(let data):
+                        if validate?(data) ?? true {
+                            if box.settle(success: true) {
+                                Logger.info("LXCompat: 竞速胜出 \(inst.id) \(action)/\(platform)")
+                                completion(.success(data))
+                            }
+                        } else {
+                            if box.settle(success: false) { completion(.failure(LXError.noPlayUrl)) }
+                        }
+                    case .failure(let e):
+                        if box.settle(success: false) { completion(.failure(e)) }
+                    }
+                }
+            }
+        }
+    }
+
     // v1.0.83：同平台多 provider 轮询 —— 当前脚本失败/返回内容无效时自动换下一个，
     // 全部失败才报错。解决「kg 平台被失效脚本占坑，其它同平台脚本无机会取链」。
     private func dispatchAcrossProviders(
@@ -453,8 +525,9 @@ final class LXCompatEngine {
             return
         }
         let info = buildInfo(songId: songId, quality: quality, extra: extra, source: platform)
-        dispatchAcrossProviders(platform: platform, ids: ids, index: 0,
-                                action: "musicUrl", info: info, timeout: 22,
+        // v1.0.88：错峰竞速（超时 22s→10s，错峰 3s），首选脚本仍最先发出
+        dispatchRace(platform: platform, ids: ids,
+                                action: "musicUrl", info: info, timeout: 10, stagger: 3.0,
                                 validate: { Self.extractUrl(from: $0) != nil }) { result in
             switch result {
             case .success(let data):
@@ -478,7 +551,7 @@ final class LXCompatEngine {
         }
         let info = buildInfo(songId: songId, quality: "", extra: extra, source: platform)
         dispatchAcrossProviders(platform: platform, ids: ids, index: 0,
-                                action: "lyric", info: info, timeout: 18,
+                                action: "lyric", info: info, timeout: 10,
                                 validate: nil) { result in
             switch result {
             case .success(let data):
@@ -498,7 +571,7 @@ final class LXCompatEngine {
         }
         let info = buildInfo(songId: songId, quality: "", extra: extra, source: platform)
         dispatchAcrossProviders(platform: platform, ids: ids, index: 0,
-                                action: "pic", info: info, timeout: 18,
+                                action: "pic", info: info, timeout: 10,
                                 validate: { Self.extractUrl(from: $0) != nil }) { result in
             switch result {
             case .success(let data):
@@ -528,8 +601,9 @@ final class LXCompatEngine {
             return
         }
         let info: [String: Any] = ["keyword": keyword, "page": page]
-        dispatchAcrossProviders(platform: platform, ids: ids, index: 0,
-                                action: "musicSearch", info: info, timeout: 20,
+        // v1.0.88：错峰竞速（超时 20s→12s，错峰 3s），首选脚本仍最先发出
+        dispatchRace(platform: platform, ids: ids,
+                                action: "musicSearch", info: info, timeout: 12, stagger: 3.0,
                                 validate: { !Self.extractList(from: $0).isEmpty }) { result in
             switch result {
             case .success(let data):

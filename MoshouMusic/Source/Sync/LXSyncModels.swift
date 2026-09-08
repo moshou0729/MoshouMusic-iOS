@@ -132,13 +132,16 @@ extension LXMusicInfo {
 
         // ② kg：songmid = hash（32 位十六进制）
         if source == "kg" {
-            // meta.qualitys[].hash（128k 档即可满足内置 kg.js 与 dujia）
+            // meta.qualitys[].hash —— 除 128k 基准 hash 外，各档位 hash 也存下。
+            // v1.0.94：拿 128k 的 hash 去请求 320k/flac 可能失败或被后端兜底成
+            // 非目标音频；取链时按请求音质选对应 hash（hash_320k / hash_flac…）。
             if case .array(let qs)? = rawMeta?["qualitys"] {
                 for q in qs {
                     if case .object(let d) = q, let h = d["hash"]?.stringValue,
                        h.count == 32, !h.isEmpty {
-                        meta["hash"] = h
-                        break
+                        let t = d["type"]?.stringValue ?? "128k"
+                        if t == "128k" || meta["hash"] == nil { meta["hash"] = h }
+                        meta["hash_\(t)"] = h
                     }
                 }
             }

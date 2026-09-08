@@ -397,6 +397,24 @@ class PlayerManager: NSObject {
     private func startPlayback(url: URL, song: Song) {
         Logger.info("开始播放: \(song.name) - \(song.singer) [\(currentSource)]")
 
+        // v1.0.84：入口统一拦截 —— 覆盖「内置源 / LX 兼容兜底 / 自动换源」三条取链路径。
+        // 此前检查只存在于 loadAndPlay 与 tryLXCompatFallback 两处；自动换源成功后
+        // (SourceSwitcher hit.url → startPlayback) 不经过任何 SourceGuard 检查，若换源池里
+        // 混入试用脚本返回的 TTS 链接就会被直接播放。命中已知试用/赞助版音源 id 或伪造
+        // 链接时拒绝播放，交给 handlePlayFailure 换下一个候选源。
+        let suspect = SourceGuard.isBlockedSource(currentSource)
+            || SourceGuard.isBlockedSource(song.source)
+            || SourceGuard.isForgedUrl(url.absoluteString)
+        // 同步给 readyToPlay 的 duration<25s 兜底：换源/兜底链路同样启用短音频检测
+        suspectCurrentSource = suspect
+        if suspect {
+            Logger.warn("LX PlayerManager: startPlayback 拦截试用音源链接 (\(currentSource) / \(url.absoluteString.prefix(60)))")
+            if let song = currentSong {
+                handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", completion: { _ in })
+            }
+            return
+        }
+
         // 先移除上一个播放项的观察者，避免其释放后被观察而崩溃
         if let old = observedItem {
             removeObservers(from: old)

@@ -204,13 +204,13 @@ final class LXCompatEngine {
         guard let lx = ctx.objectForKeyedSubscript("lx"), !lx.isUndefined else { return }
         let meta = parseScriptMeta(code)
         let csi = JSValue(newObjectIn: ctx)
-        csi?.setObject(meta.name ?? displayName, forKeyed: "name")
-        csi?.setObject(meta.description ?? "", forKeyed: "description")
-        csi?.setObject(meta.version ?? "", forKeyed: "version")
-        csi?.setObject(meta.author ?? "", forKeyed: "author")
-        csi?.setObject(meta.homepage ?? "", forKeyed: "homepage")
-        csi?.setObject(code, forKeyed: "rawScript")
-        lx.setObject(csi!, forKeyed: "currentScriptInfo")
+        csi?.setObject(meta.name ?? displayName, forKeyedSubscript: "name")
+        csi?.setObject(meta.description ?? "", forKeyedSubscript: "description")
+        csi?.setObject(meta.version ?? "", forKeyedSubscript: "version")
+        csi?.setObject(meta.author ?? "", forKeyedSubscript: "author")
+        csi?.setObject(meta.homepage ?? "", forKeyedSubscript: "homepage")
+        csi?.setObject(code, forKeyedSubscript: "rawScript")
+        lx.setObject(csi!, forKeyedSubscript: "currentScriptInfo")
         Logger.info("LXCompat: 已注入 currentScriptInfo rawScript \(code.count) 字符 id=\(scriptId)")
     }
 

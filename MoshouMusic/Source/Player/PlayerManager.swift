@@ -88,6 +88,10 @@ class PlayerManager: NSObject {
     /// 才返回并顶掉新歌（播错歌 / 状态错乱）。所有异步回调先比对令牌再继续。
     private var playGeneration = 0
 
+    /// v1.0.95 播放提交标记：本代取链一旦真正开播（commitStartPlayback），
+    /// 同代的其余竞速结果（直接取链 / 提前跨源兜底）一律作废，防止重复开播或顶歌。
+    private var playbackCommitted = false
+
     // MARK: - Init
 
     override init() {
@@ -127,6 +131,7 @@ class PlayerManager: NSObject {
     func play(song: Song, queue: [Song]? = nil) {
         // v1.0.88：作废上一条还在路上的取链链路（其 completion 会因令牌不符被丢弃）
         playGeneration += 1
+        playbackCommitted = false
         if let queue = queue, !queue.isEmpty {
             playQueue = queue
             queueIndex = queue.firstIndex(where: { $0.id == song.id }) ?? 0
@@ -253,6 +258,7 @@ class PlayerManager: NSObject {
         // 避免「点了换源，旧歌还响半天」的迟滞感）
         playGeneration += 1
         let generation = playGeneration
+        playbackCommitted = false
         player.pause()
         isPlaying = false
         currentTime = 0
@@ -444,10 +450,26 @@ class PlayerManager: NSObject {
                 failToSwitch("该音源无法获取播放链接")
             }
         }
+
+        // v1.0.95：2.5s 宽限后仍无结果 → 提前启动跨源兜底（与直接取链并行，谁先有效谁播）。
+        // 桌面端体感「源挂了 1 秒切其他源」，是因为它的兜底不等当前源超时；
+        // 旧版要等本源竞速全部失败（最长 ~13s）才开始换源，坏源歌曲始终慢。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self = self, generation == self.playGeneration, !self.playbackCommitted else { return }
+            Logger.info("LX PlayerManager: 直接取链 2.5s 未果，提前启动跨源兜底")
+            self.handlePlayFailure(
+                song: song,
+                reason: "正在其他音源查找这首歌",
+                generation: generation,
+                completion: { _ in }
+            )
+        }
     }
 
     /// 真正把 item 挂上播放器
     private func startPlayback(url: URL, song: Song) {
+        // v1.0.95：本代已开播（提前跨源兜底或直接取链先到者）→ 其余竞速结果作废
+        guard !playbackCommitted else { return }
         Logger.info("开始播放: \(song.name) - \(song.singer) [\(currentSource)]")
 
         // v1.0.84：入口统一拦截 —— 覆盖「内置源 / LX 兼容层 / 自动换源」所有取链路径
@@ -518,6 +540,9 @@ class PlayerManager: NSObject {
     }
 
     private func commitStartPlayback(url: URL, song: Song) {
+        // v1.0.95：标记本代已开播；清掉兜底阶段挂出的过渡性错误提示
+        playbackCommitted = true
+        lastPlayError = nil
         // 先移除上一个播放项的观察者，避免其释放后被观察而崩溃
         if let old = observedItem {
             removeObservers(from: old)

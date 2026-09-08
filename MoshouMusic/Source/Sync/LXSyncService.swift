@@ -232,8 +232,17 @@ final class LXSyncService {
             if let s = self.lastTransportLog { line += "\n链路：\(s)" }
             line += "\n已等待 \(self.syncWaitSeconds) 秒"
             // 8s 没收到任何服务端调用 → 提示用户桌面端可能未启动或版本不兼容
+            // v1.0.79：把"完全退出桌面端 LX Music 进程"作为明确的一步写出来——
+            // WS 101 已成功说明 HTTP / WS 监听正常，桌面端进程内部状态卡住（典型场景：
+            // requestIps 计数到限 / default user space 内存映射 10s GC + saveClientKeyInfo
+            // throttle 没刷盘 / 同步模块僵死），不杀进程仅关闭窗口不会清状态。
             if self.syncWaitSeconds >= 8 && self.lastInboundSummary == nil {
-                line += "\n⚠️ 还没收到桌面端任何调用——确认桌面 LX Music 主窗口「同步 → 服务端模式」已开启并显示服务已启动"
+                line += "\n⚠️ 还没收到桌面端任何调用——WS 握手已成功，但桌面端进程内部没继续往下走（常见于 requestIps 计数到限或桌面端进程状态卡死）"
+                if self.syncWaitSeconds >= 30 {
+                    line += "\n处理步骤：① 完全退出桌面端 LX Music（Windows 用任务管理器结束进程，macOS 用 Cmd+Q），再重新打开；"
+                    line += "② 设置 → 同步 → 服务端模式，确认服务已启动；"
+                    line += "③ 重新生成 6 位同步码并在 60 秒内点这里同步。"
+                }
             }
             self.currentStep = line
             self.notify()

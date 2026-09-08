@@ -490,6 +490,10 @@ class ScriptEngine {
             "quality": quality
         ]
         for (k, v) in extra { info[k] = v }
+        // v1.0.94：kg 按请求音质选 hash（同步歌 meta 存有各档位 hash）
+        if source == "kg", let h = extra["hash_\(quality)"], !h.isEmpty {
+            info["hash"] = h
+        }
 
         // v1.0.88：取链超时 25s → 10s。挂掉的内置源拖满 25s 才进 LX 兜底，
         // 是「切歌慢半拍」的主要来源之一；正常源 1~3s 内必回。

@@ -482,7 +482,7 @@ final class SourceSwitcher {
     }
 
     /// 正则提取（返回完整匹配串数组）
-    private static func matches(of pattern: String, in s: String) -> [Substring] {
+    private static func matches(of pattern: String, in s: String) -> [String] {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
         let ns = s as NSString
         return regex.matches(in: s, range: NSRange(location: 0, length: ns.length))

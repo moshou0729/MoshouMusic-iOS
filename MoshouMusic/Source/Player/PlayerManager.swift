@@ -359,83 +359,83 @@ class PlayerManager: NSObject {
 
         notifyStateChanged()
 
-        ScriptEngine.shared.getMusicUrl(
-            source: currentSource,
-            songId: song.songmid,
-            quality: ConfigStore.shared.defaultQuality,
-            extra: song.meta ?? [:]
-        ) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                // v1.0.88：切歌后旧链路结果一律作废（包括试用拦截/换源分支）
-                guard generation == self.playGeneration else {
-                    Logger.info("LX PlayerManager: 旧取链链路已作废（用户已切歌）")
-                    return
-                }
-
-                switch result {
-                case .success(let url):
-                    // v1.0.78：拦截试用/赞助版音源（ikun 等）返回的 TTS 提示音频，改走自动换源
-                    if SourceGuard.isBlockedSource(self.currentSource) || SourceGuard.isBlockedSource(song.source) || SourceGuard.isForgedUrl(url) {
-                        Logger.warn("LX PlayerManager: 拦截试用音源 \(self.currentSource)，改用其他音源播放")
-                        self.handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", generation: generation, completion: completion)
-                        return
-                    }
-                    guard let playUrl = URL(string: url) else {
-                        Logger.error("无效的播放 URL: \(url)")
-                        self.handlePlayFailure(song: song, reason: "播放链接无效", completion: completion)
-                        return
-                    }
-                    self.startPlayback(url: playUrl, song: song)
-                    completion(true)
-
-                case .failure(let error):
-                    Logger.error("获取播放链接失败[\(self.currentSource)]: \(error.localizedDescription)")
-                    // 兜底：同平台的内置源失效时，尝试 LX 兼容层（洛雪社区脚本）的同源端点
-                    self.tryLXCompatFallback(song: song, builtinError: error.localizedDescription, generation: generation, completion: completion)
-                }
-            }
-        }
-    }
-
-    /// LX 兼容层兜底：内置源取不到播放链接时，用同平台的洛雪社区脚本再试一次
-    private func tryLXCompatFallback(song: Song, builtinError: String, generation: Int, completion: @escaping (Bool) -> Void) {
-        guard generation == playGeneration else { return }
-        guard LXCompatEngine.shared.isPlatformAvailable(song.source) else {
-            handlePlayFailure(song: song, reason: builtinError, completion: completion)
-            return
-        }
-        Logger.info("尝试 LX 兼容层兜底: \(song.source)")
+        // v1.0.90：内置源与 LX 兼容层「并行竞速」——旧版串行（内置源超时 10s 挂掉后
+        // 才轮到洛雪脚本），同步歌的内置官方源经常失效，每次都白等十几秒。
+        // 现在两路同时发出，先拿到有效链接的立即开播，另一路结果作废；
+        // 两路都失败才进入自动换源链路。
+        let race = DualRace()
         let quality = ConfigStore.shared.defaultQuality
         let extra = song.meta ?? [:]
-        LXCompatEngine.shared.getMusicUrl(
-            platform: song.source,
+
+        let failToSwitch: (String) -> Void = { [weak self] reason in
+            self?.handlePlayFailure(song: song, reason: reason, generation: generation, completion: completion)
+        }
+
+        // ① 内置源（ScriptEngine，官方平台脚本）
+        ScriptEngine.shared.getMusicUrl(
+            source: currentSource,
             songId: song.songmid,
             quality: quality,
             extra: extra
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                // v1.0.88：切歌后旧兜底链路作废
-                guard generation == self.playGeneration else { return }
-                switch result {
-                case .success(let url):
-                    // v1.0.78：LX 兼容层同样可能返回试用音源的 TTS 提示音频，拦截并换源
-                    if SourceGuard.isBlockedSource(song.source) || SourceGuard.isForgedUrl(url) {
-                        Logger.warn("LX PlayerManager: LX兜底拦截试用音源 \(song.source)，改用其他音源播放")
-                        self.handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", generation: generation, completion: completion)
-                        return
-                    }
-                    guard let playUrl = URL(string: url) else {
-                        self.handlePlayFailure(song: song, reason: builtinError, completion: completion)
-                        return
-                    }
-                    Logger.info("LX 兼容层兜底成功: \(song.source)")
-                    self.startPlayback(url: playUrl, song: song)
-                    completion(true)
-                case .failure:
-                    self.handlePlayFailure(song: song, reason: builtinError, completion: completion)
+                // v1.0.88：切歌后旧链路结果一律作废
+                guard generation == self.playGeneration else {
+                    Logger.info("LX PlayerManager: 旧取链链路已作废（用户已切歌）")
+                    return
                 }
+                if case .success(let url) = result,
+                   !SourceGuard.isBlockedSource(self.currentSource),
+                   !SourceGuard.isBlockedSource(song.source),
+                   !SourceGuard.isForgedUrl(url),
+                   let playUrl = URL(string: url) {
+                    if race.settle(success: true) {
+                        Logger.info("LX PlayerManager: 内置源竞速胜出 \(self.currentSource)")
+                        self.startPlayback(url: playUrl, song: song)
+                        completion(true)
+                    }
+                } else {
+                    if case .failure(let error) = result {
+                        Logger.error("获取播放链接失败[\(self.currentSource)]: \(error.localizedDescription)")
+                    }
+                    if race.settle(success: false) {
+                        failToSwitch("该音源无法获取播放链接")
+                    }
+                }
+            }
+        }
+
+        // ② LX 兼容层（洛雪社区脚本，首选脚本 dujia 已置顶且最先发出）
+        if LXCompatEngine.shared.isPlatformAvailable(song.source) {
+            LXCompatEngine.shared.getMusicUrl(
+                platform: song.source,
+                songId: song.songmid,
+                quality: quality,
+                extra: extra
+            ) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    guard generation == self.playGeneration else { return }
+                    if case .success(let url) = result,
+                       !SourceGuard.isBlockedSource(song.source),
+                       !SourceGuard.isForgedUrl(url),
+                       let playUrl = URL(string: url) {
+                        if race.settle(success: true) {
+                            Logger.info("LX PlayerManager: LX竞速胜出 \(song.source)")
+                            self.startPlayback(url: playUrl, song: song)
+                            completion(true)
+                        }
+                    } else {
+                        if race.settle(success: false) {
+                            failToSwitch("该音源无法获取播放链接")
+                        }
+                    }
+                }
+            }
+        } else {
+            if race.settle(success: false) {
+                failToSwitch("该音源无法获取播放链接")
             }
         }
     }
@@ -444,11 +444,9 @@ class PlayerManager: NSObject {
     private func startPlayback(url: URL, song: Song) {
         Logger.info("开始播放: \(song.name) - \(song.singer) [\(currentSource)]")
 
-        // v1.0.84：入口统一拦截 —— 覆盖「内置源 / LX 兼容兜底 / 自动换源」三条取链路径。
-        // 此前检查只存在于 loadAndPlay 与 tryLXCompatFallback 两处；自动换源成功后
-        // (SourceSwitcher hit.url → startPlayback) 不经过任何 SourceGuard 检查，若换源池里
-        // 混入试用脚本返回的 TTS 链接就会被直接播放。命中已知试用/赞助版音源 id 或伪造
-        // 链接时拒绝播放，交给 handlePlayFailure 换下一个候选源。
+        // v1.0.84：入口统一拦截 —— 覆盖「内置源 / LX 兼容层 / 自动换源」所有取链路径
+        // （v1.0.90 起内置与 LX 并行竞速，两路的链接都经过这里）。命中已知试用/赞助版
+        // 音源 id 或伪造链接时拒绝播放，交给 handlePlayFailure 换下一个候选源。
         let suspect = SourceGuard.isBlockedSource(currentSource)
             || SourceGuard.isBlockedSource(song.source)
             || SourceGuard.isForgedUrl(url.absoluteString)

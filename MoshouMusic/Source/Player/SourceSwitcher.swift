@@ -88,6 +88,10 @@ final class SourceSwitcher {
             baseKeyword += " " + editions.joined(separator: " ")
         }
         let keyword = baseKeyword
+        // v1.0.96：不带版本标记的兜底搜索词。「燃爆版」这类词在各平台索引里未必存在，
+        // 带标记的搜索可能全军覆没（空结果 / 候选全不含标记）——此时退回干净歌名
+        // 再搜一轮，宽松版本匹配把关（歌手硬门 + 语言防线 + 时长接近度仍在）。
+        let fallbackKeyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
 
         // v1.0.95：全平台并行竞速 —— 旧版逐平台串行（每平台 内置+LX 竞速，全挂才下一个），
         // 「kg 挂 → 等 tx → 等 wy…」最坏可达数十秒。桌面端跨源兜底 1 秒出结果，
@@ -109,11 +113,13 @@ final class SourceSwitcher {
         }
 
         for source in candidates {
-            attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer,
+            attemptBuiltin(source: source, keyword: keyword, fallbackKeyword: fallbackKeyword,
+                           name: name, singer: singer,
                            quality: quality, interval: interval) { hit in
                 if let hit = hit { onHit(hit) } else { onFail() }
             }
-            attemptLX(source: source, keyword: keyword, name: name, singer: singer,
+            attemptLX(source: source, keyword: keyword, fallbackKeyword: fallbackKeyword,
+                      name: name, singer: singer,
                       quality: quality, interval: interval) { lxHit in
                 if let lxHit = lxHit { onHit(lxHit) } else { onFail() }
             }
@@ -121,10 +127,38 @@ final class SourceSwitcher {
     }
 
     /// 用内置音源（ScriptEngine）搜索 + 取链接
+    /// v1.0.96：两段式搜索 —— 第一段带版本标记（严格匹配）；搜不到/匹配不到时
+    /// 第二段退回干净歌名重搜，宽松版本匹配兜底。修复「燃爆版」这类平台索引
+    /// 不存在的标记词导致所有音源全军覆没（表现为「其他音源也未找到」）。
     private func attemptBuiltin(
-        source: String, keyword: String, name: String, singer: String, quality: String,
+        source: String, keyword: String, fallbackKeyword: String,
+        name: String, singer: String, quality: String,
         interval: Int = 0,
         completion: @escaping (Hit?) -> Void
+    ) {
+        searchMatchBuiltin(source: source, keyword: keyword, name: name, singer: singer,
+                           interval: interval, lenientEditions: false) { matched in
+            if let matched = matched {
+                self.fetchBuiltinUrl(source: source, song: matched, quality: quality, completion: completion)
+            } else {
+                Logger.info("自动换源：带版本标记搜索无果，改用干净歌名兜底重搜 \(source)")
+                self.searchMatchBuiltin(source: source, keyword: fallbackKeyword, name: name, singer: singer,
+                                        interval: interval, lenientEditions: true) { m2 in
+                    if let m2 = m2 {
+                        self.fetchBuiltinUrl(source: source, song: m2, quality: quality, completion: completion)
+                    } else {
+                        completion(nil)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 内置源搜一轮 + 匹配（不取链接）。completion 恰好回调一次。
+    private func searchMatchBuiltin(
+        source: String, keyword: String, name: String, singer: String,
+        interval: Int, lenientEditions: Bool,
+        completion: @escaping (Song?) -> Void
     ) {
         ScriptEngine.shared.search(keyword: keyword, page: 1, source: source) { result in
             DispatchQueue.main.async {
@@ -135,36 +169,43 @@ final class SourceSwitcher {
                 }
 
                 let songs = rawList.compactMap { Song(from: $0, source: source) }
-                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer, targetInterval: interval) else {
+                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer,
+                                                   targetInterval: interval,
+                                                   lenientEditions: lenientEditions) else {
                     Logger.warn("自动换源(内置)：\(source) 未匹配到同名歌曲")
                     completion(nil)
                     return
                 }
+                completion(matched)
+            }
+        }
+    }
 
-                ScriptEngine.shared.getMusicUrl(
-                    source: source,
-                    songId: matched.songmid,
-                    quality: quality,
-                    extra: matched.meta ?? [:]
-                ) { urlResult in
-                    DispatchQueue.main.async {
-                        switch urlResult {
-                        case .success(let url):
-                            Logger.info("自动换源成功(内置)：\(source) → \(matched.name) - \(matched.singer)")
-                            completion(Hit(source: source, song: matched, url: url))
-                        case .failure(let e):
-                            Logger.warn("自动换源(内置)：\(source) 取链接失败 \(e.localizedDescription)")
-                            completion(nil)
-                        }
-                    }
+    private func fetchBuiltinUrl(source: String, song: Song, quality: String, completion: @escaping (Hit?) -> Void) {
+        ScriptEngine.shared.getMusicUrl(
+            source: source,
+            songId: song.songmid,
+            quality: quality,
+            extra: song.meta ?? [:]
+        ) { urlResult in
+            DispatchQueue.main.async {
+                switch urlResult {
+                case .success(let url):
+                    Logger.info("自动换源成功(内置)：\(source) → \(song.name) - \(song.singer)")
+                    completion(Hit(source: source, song: song, url: url))
+                case .failure(let e):
+                    Logger.warn("自动换源(内置)：\(source) 取链接失败 \(e.localizedDescription)")
+                    completion(nil)
                 }
             }
         }
     }
 
     /// 用 LX 社区音源（LXCompatEngine，即用户导入的 7 个自定义源）搜索 + 取链接
+    /// v1.0.96：与 attemptBuiltin 相同的两段式搜索兜底。
     private func attemptLX(
-        source: String, keyword: String, name: String, singer: String, quality: String,
+        source: String, keyword: String, fallbackKeyword: String,
+        name: String, singer: String, quality: String,
         interval: Int = 0,
         completion: @escaping (Hit?) -> Void
     ) {
@@ -172,6 +213,30 @@ final class SourceSwitcher {
             completion(nil)
             return
         }
+        searchMatchLX(source: source, keyword: keyword, name: name, singer: singer,
+                      interval: interval, lenientEditions: false) { matched in
+            if let matched = matched {
+                self.fetchLXUrl(source: source, song: matched, quality: quality, completion: completion)
+            } else {
+                Logger.info("自动换源：带版本标记搜索无果，改用干净歌名兜底重搜(LX) \(source)")
+                self.searchMatchLX(source: source, keyword: fallbackKeyword, name: name, singer: singer,
+                                   interval: interval, lenientEditions: true) { m2 in
+                    if let m2 = m2 {
+                        self.fetchLXUrl(source: source, song: m2, quality: quality, completion: completion)
+                    } else {
+                        completion(nil)
+                    }
+                }
+            }
+        }
+    }
+
+    /// LX 源搜一轮 + 匹配（不取链接）。completion 恰好回调一次。
+    private func searchMatchLX(
+        source: String, keyword: String, name: String, singer: String,
+        interval: Int, lenientEditions: Bool,
+        completion: @escaping (Song?) -> Void
+    ) {
         LXCompatEngine.shared.search(keyword: keyword, platform: source, page: 1) { result in
             DispatchQueue.main.async {
                 guard case .success(let rawList) = result, !rawList.isEmpty else {
@@ -181,28 +246,33 @@ final class SourceSwitcher {
                 }
 
                 let songs = rawList.compactMap { Song(from: $0, source: source) }
-                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer, targetInterval: interval) else {
+                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer,
+                                                   targetInterval: interval,
+                                                   lenientEditions: lenientEditions) else {
                     Logger.warn("自动换源(LX)：\(source) 未匹配到同名歌曲")
                     completion(nil)
                     return
                 }
+                completion(matched)
+            }
+        }
+    }
 
-                LXCompatEngine.shared.getMusicUrl(
-                    platform: source,
-                    songId: matched.songmid,
-                    quality: quality,
-                    extra: matched.meta ?? [:]
-                ) { urlResult in
-                    DispatchQueue.main.async {
-                        switch urlResult {
-                        case .success(let url):
-                            Logger.info("自动换源成功(LX)：\(source) → \(matched.name) - \(matched.singer)")
-                            completion(Hit(source: source, song: matched, url: url))
-                        case .failure(let e):
-                            Logger.warn("自动换源(LX)：\(source) 取链接失败 \(e.localizedDescription)")
-                            completion(nil)
-                        }
-                    }
+    private func fetchLXUrl(source: String, song: Song, quality: String, completion: @escaping (Hit?) -> Void) {
+        LXCompatEngine.shared.getMusicUrl(
+            platform: source,
+            songId: song.songmid,
+            quality: quality,
+            extra: song.meta ?? [:]
+        ) { urlResult in
+            DispatchQueue.main.async {
+                switch urlResult {
+                case .success(let url):
+                    Logger.info("自动换源成功(LX)：\(source) → \(song.name) - \(song.singer)")
+                    completion(Hit(source: source, song: song, url: url))
+                case .failure(let e):
+                    Logger.warn("自动换源(LX)：\(source) 取链接失败 \(e.localizedDescription)")
+                    completion(nil)
                 }
             }
         }
@@ -230,6 +300,8 @@ final class SourceSwitcher {
             baseKeyword += " " + editions.joined(separator: " ")
         }
         let keyword = baseKeyword
+        // v1.0.96：干净歌名兜底搜索词（同 findPlayable 的两段式策略）
+        let fallbackKeyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
         var idx = 0
 
         func step() {
@@ -241,14 +313,16 @@ final class SourceSwitcher {
             idx += 1
             // v1.0.90：同平台「内置 + LX」并行竞速，先匹配到先用；都失败换下一平台
             let race = DualRace()
-            attemptSearchBuiltin(source: source, keyword: keyword, name: name, singer: singer) { song in
+            attemptSearchBuiltin(source: source, keyword: keyword, fallbackKeyword: fallbackKeyword,
+                                 name: name, singer: singer) { song in
                 if let song = song {
                     if race.settle(success: true) { completion(song) }
                     return
                 }
                 if race.settle(success: false) { step() }
             }
-            attemptSearchLX(source: source, keyword: keyword, name: name, singer: singer) { lxSong in
+            attemptSearchLX(source: source, keyword: keyword, fallbackKeyword: fallbackKeyword,
+                            name: name, singer: singer) { lxSong in
                 if let lxSong = lxSong {
                     if race.settle(success: true) { completion(lxSong) }
                     return
@@ -260,38 +334,42 @@ final class SourceSwitcher {
     }
 
     private func attemptSearchBuiltin(
-        source: String, keyword: String, name: String, singer: String,
+        source: String, keyword: String, fallbackKeyword: String,
+        name: String, singer: String,
         completion: @escaping (Song?) -> Void
     ) {
-        ScriptEngine.shared.search(keyword: keyword, page: 1, source: source) { result in
-            DispatchQueue.main.async {
-                guard case .success(let rawList) = result, !rawList.isEmpty else {
-                    completion(nil)
-                    return
+        searchMatchBuiltin(source: source, keyword: keyword, name: name, singer: singer,
+                           interval: 0, lenientEditions: false) { matched in
+            if let matched = matched {
+                completion(matched)
+            } else {
+                // v1.0.96：带版本标记搜索无果 → 干净歌名兜底重搜（宽松版本匹配）
+                self.searchMatchBuiltin(source: source, keyword: fallbackKeyword, name: name, singer: singer,
+                                        interval: 0, lenientEditions: true) { m2 in
+                    completion(m2)
                 }
-                let songs = rawList.compactMap { Song(from: $0, source: source) }
-                completion(SourceSwitcher.bestMatch(in: songs, name: name, singer: singer))
             }
         }
     }
 
     private func attemptSearchLX(
-        source: String, keyword: String, name: String, singer: String,
-        interval: Int = 0,
+        source: String, keyword: String, fallbackKeyword: String,
+        name: String, singer: String,
         completion: @escaping (Song?) -> Void
     ) {
         guard LXCompatEngine.shared.isPlatformAvailable(source) else {
             completion(nil)
             return
         }
-        LXCompatEngine.shared.search(keyword: keyword, platform: source, page: 1) { result in
-            DispatchQueue.main.async {
-                guard case .success(let rawList) = result, !rawList.isEmpty else {
-                    completion(nil)
-                    return
+        searchMatchLX(source: source, keyword: keyword, name: name, singer: singer,
+                      interval: 0, lenientEditions: false) { matched in
+            if let matched = matched {
+                completion(matched)
+            } else {
+                self.searchMatchLX(source: source, keyword: fallbackKeyword, name: name, singer: singer,
+                                   interval: 0, lenientEditions: true) { m2 in
+                    completion(m2)
                 }
-                let songs = rawList.compactMap { Song(from: $0, source: source) }
-                completion(SourceSwitcher.bestMatch(in: songs, name: name, singer: singer, targetInterval: interval))
             }
         }
     }
@@ -316,7 +394,11 @@ final class SourceSwitcher {
     /// 候选带时长且与目标偏差超过 max(12s, 目标10%) 的直接出局：
     /// 翻唱/错版/伴奏版与原曲的时长普遍差几十秒，是「赤旗版播成原版」之外的
     /// 又一道硬防线。
-    static func bestMatch(in songs: [Song], name: String, singer: String, targetInterval: Int = 0) -> Song? {
+    /// - lenientEditions: v1.0.96 宽松版本匹配（两段式搜索的第二段）。目标带版本标记
+    ///   而候选不含时，降权 60 参赛而非出局 —— 仅在「带标记搜索全军覆没」的兜底轮
+    ///   启用；歌手硬门、CJK 语言防线、时长接近度照常把关。
+    static func bestMatch(in songs: [Song], name: String, singer: String,
+                          targetInterval: Int = 0, lenientEditions: Bool = false) -> Song? {
         guard !songs.isEmpty else { return nil }
 
         let targetName = normalize(name)
@@ -350,10 +432,16 @@ final class SourceSwitcher {
             if !targetEditions.isEmpty {
                 let cn = song.name.lowercased()
                 if !targetEditions.allSatisfy({ cn.contains($0) }) {
-                    guard intervalTolerance > 0, song.interval > 0,
-                          abs(Double(song.interval - targetInterval)) <= intervalTolerance
-                    else { continue }
-                    editionPenalty = 40
+                    if lenientEditions {
+                        // v1.0.96：兜底轮 —— 宁播「同名同歌手、时长对得上」的原版/近似版，
+                        // 也不至于完全不播（桌面端同策略：1 秒匹配到其他源的同一首歌）。
+                        editionPenalty = 60
+                    } else {
+                        guard intervalTolerance > 0, song.interval > 0,
+                              abs(Double(song.interval - targetInterval)) <= intervalTolerance
+                        else { continue }
+                        editionPenalty = 40
+                    }
                 }
             }
 

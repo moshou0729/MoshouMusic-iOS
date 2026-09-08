@@ -74,7 +74,9 @@ final class SourceSwitcher {
         }
 
         // 关键词带上歌手，提高匹配准确度
-        let keyword = singer.isEmpty || singer == "未知歌手" ? name : "\(name) \(singer)"
+        // v1.0.83：歌名先去括号（不把 (Live)/（伴奏）带进搜索词），否则引擎倾向返回现场版/伴奏版
+        let cleanName = Self.cleanSearchName(name)
+        let keyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
 
         // 1) 先试内置源（ScriptEngine）
         attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { [weak self] hit in
@@ -193,7 +195,9 @@ final class SourceSwitcher {
             return
         }
 
-        let keyword = singer.isEmpty || singer == "未知歌手" ? name : "\(name) \(singer)"
+        // v1.0.83：同上，搜索词用干净歌名
+        let cleanName = Self.cleanSearchName(name)
+        let keyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
         var idx = 0
 
         func step() {
@@ -271,47 +275,30 @@ final class SourceSwitcher {
         guard !songs.isEmpty else { return nil }
 
         let targetName = normalize(name)
-        let targetSinger = normalize(singer)
-
-        // 先扫一遍：是否存在歌手能对应上的候选
-        var hasSingerMatch = false
-        if !targetSinger.isEmpty {
-            for song in songs {
-                let s = normalize(song.singer)
-                if s == targetSinger || s.contains(targetSinger) || targetSinger.contains(s) {
-                    hasSingerMatch = true
-                    break
-                }
-            }
-        }
-
-        // ⚠️ v1.0.59：用户要求「当前显示的是谁，那就播谁的版本；都不是就跳下一首」
-        // 之前如果 targetSinger 非空但**没有**任何候选歌手能匹配上（hasSingerMatch=false），
-        // 旧逻辑会"退而求其次"扣 70 分后返回——结果就是：搜出 5 个同名翻唱、1 个原唱也没有，
-        // bestMatch 仍会挑第一个翻唱返回，播放出来歌手跟列表对不上。
-        // 现在硬约束：hasSingerMatch=false 且 targetSinger 非空 → 直接返回 nil，
-        // 上层 PlaylistDetailViewController.runStreamingPlay 看到 nil 会自动 next() 跳下一首。
-        if !targetSinger.isEmpty && !hasSingerMatch {
-            return nil
-        }
+        let targetSingers = singerTokens(singer)
 
         var best: (song: Song, score: Int)?
 
         for song in songs {
             let n = normalize(song.name)
-            let s = normalize(song.singer)
-            var score = 0
-
-            if n == targetName { score += 100 }
-            else if n.contains(targetName) || targetName.contains(n) { score += 60 }
-            else { continue } // 歌名完全不沾边就跳过
-
-            if !targetSinger.isEmpty {
-                if s == targetSinger { score += 50 }
-                else if s.contains(targetSinger) || targetSinger.contains(s) { score += 25 }
-                // 走到这里 s 一定是 hasSingerMatch 的（s == targetSinger 或 contains 任一）
+            if n != targetName && !n.contains(targetName) && !targetName.contains(n) {
+                continue // 歌名完全不沾边就跳过
             }
-            // else: targetSinger 为空，按歌名+时长打分即可
+            var score = (n == targetName) ? 100 : 60
+
+            if !targetSingers.isEmpty {
+                let s = singerTokens(song.singer)
+                // v1.0.83：目标歌手非空时，**歌手无关的候选直接出局**——
+                // 旧逻辑只对歌手轻微加分，可能让「歌手对不上的同名翻唱」靠歌名满分胜出，
+                // 播出来歌手跟歌单对不上。现在只允许「与目标有共同歌手」的候选参与竞争。
+                guard !s.isEmpty, !s.isDisjoint(with: targetSingers) else { continue }
+                // 候选歌手覆盖全部目标歌手更强（不漏合作者）
+                score += s.isSuperset(of: targetSingers) ? 40 : 20
+            }
+
+            // v1.0.83：原版启发式 —— 原唱/原版加分，live/翻唱/伴奏/remix 降权，
+            // 避免「歌手对但版本错」（搜到现场版/翻唱版/伴奏版）。
+            score += song.originalScore
 
             // 有时长信息的更可信
             if song.interval > 0 { score += 5 }
@@ -321,7 +308,47 @@ final class SourceSwitcher {
             }
         }
 
+        // 目标歌手非空但没有任何候选歌手能匹配 → 返回 nil（上层会自动跳下一首/换源），
+        // 绝不在歌手对不上的候选中硬挑一个播。v1.0.59 不变量。
         return best?.song
+    }
+
+    /// v1.0.83：歌手名切 token —— 按常见分隔符（/ 、& feat with 空格等）拆分后逐个归一。
+    /// 目标"周深"命中"周深/李克勤"（交集非空，可接受合作版），
+    /// 但不再命中"周深模仿秀"这种只是名字含子串的无关歌手。
+    private static func singerTokens(_ raw: String) -> Set<String> {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty || s == "未知歌手" { return [] }
+        s = s.lowercased()
+            .replacingOccurrences(of: "feat.", with: "/", options: [])
+            .replacingOccurrences(of: "feat", with: "/", options: [])
+            .replacingOccurrences(of: "ft.", with: "/", options: [])
+            .replacingOccurrences(of: "ft", with: "/", options: [])
+            .replacingOccurrences(of: " with ", with: "/")
+            .replacingOccurrences(of: " and ", with: "/")
+            .replacingOccurrences(of: "&", with: "/")
+            .replacingOccurrences(of: "×", with: "/")
+            .replacingOccurrences(of: "、", with: "/")
+        var result = Set<String>()
+        let seps = CharacterSet(charactersIn: "/,，;；·")
+        for piece in s.components(separatedBy: seps) {
+            for sub in piece.components(separatedBy: .whitespacesAndNewlines) {
+                let t = normalize(sub)
+                if !t.isEmpty { result.insert(t) }
+            }
+        }
+        return result
+    }
+
+    /// v1.0.83：搜索关键词用干净歌名（去掉 (Live)/（伴奏）等括号后缀），
+    /// 避免把 "(Live)" 之类带进搜索词导致引擎只返回现场版/伴奏版。
+    private static func cleanSearchName(_ raw: String) -> String {
+        let patterns = ["\\([^)]*\\)", "（[^）]*）", "\\[[^\\]]*\\]", "【[^】]*】"]
+        var t = raw
+        for p in patterns {
+            t = t.replacingOccurrences(of: p, with: "", options: .regularExpression)
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 归一化：去空格、括号内容、大小写、常见后缀

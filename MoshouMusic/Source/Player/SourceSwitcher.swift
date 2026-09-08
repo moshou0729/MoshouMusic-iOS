@@ -59,6 +59,7 @@ final class SourceSwitcher {
         singer: String,
         excluding excluded: Set<String>,
         quality: String,
+        interval: Int = 0,
         completion: @escaping (Hit?) -> Void
     ) {
         let enabled = ConfigStore.shared.enabledSources
@@ -77,7 +78,7 @@ final class SourceSwitcher {
 
         Logger.info("自动换源：候选 \(candidates.joined(separator: " → "))")
         tryNext(candidates, index: 0, name: name, singer: singer,
-                quality: quality, completion: completion)
+                quality: quality, interval: interval, completion: completion)
     }
 
     // MARK: - 串行递归尝试
@@ -88,6 +89,7 @@ final class SourceSwitcher {
         name: String,
         singer: String,
         quality: String,
+        interval: Int,
         completion: @escaping (Hit?) -> Void
     ) {
         guard index < candidates.count else {
@@ -99,7 +101,8 @@ final class SourceSwitcher {
         let source = candidates[index]
         let advance = { [weak self] in
             self?.tryNext(candidates, index: index + 1, name: name,
-                          singer: singer, quality: quality, completion: completion)
+                          singer: singer, quality: quality, interval: interval,
+                          completion: completion)
         }
 
         // 关键词带上歌手，提高匹配准确度
@@ -117,14 +120,14 @@ final class SourceSwitcher {
         // v1.0.90：同平台「内置源 + LX 社区脚本」并行竞速，先到先得；
         // 两路都失败才换下一个平台。
         let race = DualRace()
-        attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { hit in
+        attemptBuiltin(source: source, keyword: keyword, name: name, singer: singer, quality: quality, interval: interval) { hit in
             if let hit = hit {
                 if race.settle(success: true) { completion(hit) }
                 return
             }
             if race.settle(success: false) { advance() }
         }
-        attemptLX(source: source, keyword: keyword, name: name, singer: singer, quality: quality) { lxHit in
+        attemptLX(source: source, keyword: keyword, name: name, singer: singer, quality: quality, interval: interval) { lxHit in
             if let lxHit = lxHit {
                 if race.settle(success: true) { completion(lxHit) }
                 return
@@ -136,6 +139,7 @@ final class SourceSwitcher {
     /// 用内置音源（ScriptEngine）搜索 + 取链接
     private func attemptBuiltin(
         source: String, keyword: String, name: String, singer: String, quality: String,
+        interval: Int = 0,
         completion: @escaping (Hit?) -> Void
     ) {
         ScriptEngine.shared.search(keyword: keyword, page: 1, source: source) { result in
@@ -147,7 +151,7 @@ final class SourceSwitcher {
                 }
 
                 let songs = rawList.compactMap { Song(from: $0, source: source) }
-                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer) else {
+                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer, targetInterval: interval) else {
                     Logger.warn("自动换源(内置)：\(source) 未匹配到同名歌曲")
                     completion(nil)
                     return
@@ -177,6 +181,7 @@ final class SourceSwitcher {
     /// 用 LX 社区音源（LXCompatEngine，即用户导入的 7 个自定义源）搜索 + 取链接
     private func attemptLX(
         source: String, keyword: String, name: String, singer: String, quality: String,
+        interval: Int = 0,
         completion: @escaping (Hit?) -> Void
     ) {
         guard LXCompatEngine.shared.isPlatformAvailable(source) else {
@@ -192,7 +197,7 @@ final class SourceSwitcher {
                 }
 
                 let songs = rawList.compactMap { Song(from: $0, source: source) }
-                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer) else {
+                guard let matched = Self.bestMatch(in: songs, name: name, singer: singer, targetInterval: interval) else {
                     Logger.warn("自动换源(LX)：\(source) 未匹配到同名歌曲")
                     completion(nil)
                     return
@@ -288,6 +293,7 @@ final class SourceSwitcher {
 
     private func attemptSearchLX(
         source: String, keyword: String, name: String, singer: String,
+        interval: Int = 0,
         completion: @escaping (Song?) -> Void
     ) {
         guard LXCompatEngine.shared.isPlatformAvailable(source) else {
@@ -301,7 +307,7 @@ final class SourceSwitcher {
                     return
                 }
                 let songs = rawList.compactMap { Song(from: $0, source: source) }
-                completion(SourceSwitcher.bestMatch(in: songs, name: name, singer: singer))
+                completion(SourceSwitcher.bestMatch(in: songs, name: name, singer: singer, targetInterval: interval))
             }
         }
     }
@@ -322,7 +328,11 @@ final class SourceSwitcher {
     /// - 歌名从「子串沾边就算」改为「归一化后完全相等，或只差版本后缀（Live/伴奏/版…）」，
     ///   杜绝「晴天娃娃」靠 contains 命中「晴天」这类撞名错播。
     /// - 语言防线：目标歌名含中日韩文字时，候选必须同样含中日韩文字（反之亦然）。
-    static func bestMatch(in songs: [Song], name: String, singer: String) -> Song? {
+    /// v1.0.94：targetInterval —— 目标歌曲的权威时长（秒，桌面同步/本地已知时传）。
+    /// 候选带时长且与目标偏差超过 max(12s, 目标10%) 的直接出局：
+    /// 翻唱/错版/伴奏版与原曲的时长普遍差几十秒，是「赤旗版播成原版」之外的
+    /// 又一道硬防线。
+    static func bestMatch(in songs: [Song], name: String, singer: String, targetInterval: Int = 0) -> Song? {
         guard !songs.isEmpty else { return nil }
 
         let targetName = normalize(name)
@@ -330,6 +340,8 @@ final class SourceSwitcher {
         // v1.0.91：版本标记（赤旗版/爆燃版 等实义改编版）——目标带标记时，
         // 候选必须含同样标记，否则弃选（搜「水手（赤旗版）」不能拿原版水手充数）
         let targetEditions = editionMarkers(in: name)
+        let intervalTolerance = targetInterval > 0
+            ? max(12.0, Double(targetInterval) * 0.10) : 0
 
         var best: (song: Song, score: Int)?
 
@@ -337,6 +349,11 @@ final class SourceSwitcher {
             let n = normalize(song.name)
             // v1.0.88：语言防线 —— 显示中文歌名播外语歌的主通道
             guard languageCompatible(target: targetName, candidate: n) else { continue }
+            // v1.0.94：时长接近度
+            if intervalTolerance > 0, song.interval > 0,
+               abs(Double(song.interval - targetInterval)) > intervalTolerance {
+                continue
+            }
             // v1.0.89：语言版本标记一致性 —— 在剥括号前的原始名上检查。
             // 「当那一天来临 (English Ver.)」归一化剥括号后与「当那一天来临」完全同形，
             // 会绕过上面的 CJK 防线并拿到「精确同名」满分，实测导致赤旗版搜出英文歌。

@@ -104,8 +104,15 @@ final class SourceSwitcher {
 
         // 关键词带上歌手，提高匹配准确度
         // v1.0.83：歌名先去括号（不把 (Live)/（伴奏）带进搜索词），否则引擎倾向返回现场版/伴奏版
+        // v1.0.91：版本标记（赤旗版/爆燃版 等实义改编版）要带进搜索词 —— 这类版本
+        // 是真实存在的音源条目，不带标记搜出来全是原版
         let cleanName = Self.cleanSearchName(name)
-        let keyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
+        let editions = Self.editionMarkers(in: name)
+        var baseKeyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
+        if !editions.isEmpty {
+            baseKeyword += " " + editions.joined(separator: " ")
+        }
+        let keyword = baseKeyword
 
         // v1.0.90：同平台「内置源 + LX 社区脚本」并行竞速，先到先得；
         // 两路都失败才换下一个平台。
@@ -226,9 +233,14 @@ final class SourceSwitcher {
             return
         }
 
-        // v1.0.83：同上，搜索词用干净歌名
+        // v1.0.83：搜索词用干净歌名；v1.0.91：版本标记（X版）补回搜索词
         let cleanName = Self.cleanSearchName(name)
-        let keyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
+        let editions = Self.editionMarkers(in: name)
+        var baseKeyword = singer.isEmpty || singer == "未知歌手" ? cleanName : "\(cleanName) \(singer)"
+        if !editions.isEmpty {
+            baseKeyword += " " + editions.joined(separator: " ")
+        }
+        let keyword = baseKeyword
         var idx = 0
 
         func step() {
@@ -315,6 +327,9 @@ final class SourceSwitcher {
 
         let targetName = normalize(name)
         let targetSingers = singerTokens(singer)
+        // v1.0.91：版本标记（赤旗版/爆燃版 等实义改编版）——目标带标记时，
+        // 候选必须含同样标记，否则弃选（搜「水手（赤旗版）」不能拿原版水手充数）
+        let targetEditions = editionMarkers(in: name)
 
         var best: (song: Song, score: Int)?
 
@@ -326,6 +341,11 @@ final class SourceSwitcher {
             // 「当那一天来临 (English Ver.)」归一化剥括号后与「当那一天来临」完全同形，
             // 会绕过上面的 CJK 防线并拿到「精确同名」满分，实测导致赤旗版搜出英文歌。
             guard languageMarkers(in: name) == languageMarkers(in: song.name) else { continue }
+            // v1.0.91：版本标记一致性
+            if !targetEditions.isEmpty {
+                let cn = song.name.lowercased()
+                guard targetEditions.allSatisfy({ cn.contains($0) }) else { continue }
+            }
 
             var score: Int
             switch nameRelation(candidate: n, target: targetName, targetSingers: targetSingers) {
@@ -436,6 +456,37 @@ final class SourceSwitcher {
             result.insert(lang)
         }
         return result
+    }
+
+    // MARK: - v1.0.91 版本标记（赤旗版 / 爆燃版 / DJ版 等）
+
+    /// 提取歌名括号里的「实义版本标记」：X版（X 为 1~6 个字且不是语言标记），
+    /// 或含 remix/dj 的括号内容。语言版（英文版/粤语版…）归 v1.0.89 的 languageMarkers 管，
+    /// 这里刻意排除。用于①拼进搜索词②bestMatch 强制候选含同样标记。
+    static func editionMarkers(in rawName: String) -> [String] {
+        let patterns = ["\\([^)]*\\)", "（[^）]*）", "\\[[^\\]]*\\]", "【[^】]*】"]
+        var result: [String] = []
+        for p in patterns {
+            for seg in matches(of: p, in: rawName) {
+                let inner = String(seg.dropFirst().dropLast())
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                guard !inner.isEmpty else { continue }
+                if languageMarkerMap.contains(where: { inner.contains($0.marker) }) { continue }
+                let isEdition = (inner.hasSuffix("版") && inner.count >= 2 && inner.count <= 8)
+                    || inner.contains("remix") || inner.contains("dj")
+                if isEdition { result.append(inner) }
+            }
+        }
+        return result
+    }
+
+    /// 正则提取（返回完整匹配串数组）
+    private static func matches(of pattern: String, in s: String) -> [Substring] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = s as NSString
+        return regex.matches(in: s, range: NSRange(location: 0, length: ns.length))
+            .map { ns.substring(with: $0.range) }
     }
 
     private static func containsCJK(_ s: String) -> Bool {

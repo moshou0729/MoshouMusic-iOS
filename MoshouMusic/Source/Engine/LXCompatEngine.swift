@@ -122,6 +122,11 @@ final class LXCompatEngine {
             Logger.warn("LXCompat: 已屏蔽试用/赞助版脚本加载 (\(id)/\(displayName))")
             return
         }
+        // v1.0.86：内容级拦截 —— 改名导入的试用脚本（id 不含关键词）按脚本内容拒绝
+        if SourceGuard.isBlockedScriptContent(es5Code) {
+            Logger.warn("LXCompat: 脚本内容命中试用/赞助版黑名单，拒载 id=\(id)")
+            return
+        }
         guard let shim = shimCode, !es5Code.isEmpty else {
             Logger.error("LX[\(id)] 缺少 shim 或脚本代码，跳过")
             return
@@ -146,6 +151,10 @@ final class LXCompatEngine {
         if let regen = regenCode { ctx.evaluateScript(regen) }
         if let promise = promiseCode { ctx.evaluateScript(promise) }
         ctx.evaluateScript(shim)
+        // v1.0.86：注入 lx.currentScriptInfo（含逐字节 rawScript）。
+        // 独家音源 v5+ 等服务端下发脚本用 rawScript 计算完整性签名，缺失或内容
+        // 与实际执行的脚本不一致时服务端一律 403「脚本完整性验证失败」。
+        injectCurrentScriptInfo(into: ctx, scriptId: id, displayName: displayName, code: es5Code)
         ctx.evaluateScript(es5Code)
 
         let platforms = parsePlatforms(from: capturedInited)
@@ -161,6 +170,48 @@ final class LXCompatEngine {
             platformIndex[p, default: []].append(id)
         }
         Logger.info("LX 音源已加载: \(displayName) 平台=\(platforms.joined(separator: ","))")
+    }
+
+    // MARK: - currentScriptInfo 注入
+
+    /// 解析脚本头注释的 @name/@description/@version/@author/@homepage 元数据
+    private func parseScriptMeta(_ code: String) -> (name: String?, description: String?, version: String?, author: String?, homepage: String?) {
+        let head = String(code.prefix(2048))
+        func value(_ key: String) -> String? {
+            for rawLine in head.components(separatedBy: "\n") {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                let patterns = ["* @\(key) ", "/*@\(key) ", "@\(key) "]
+                for p in patterns {
+                    if line.hasPrefix(p) {
+                        let v = String(line.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
+                        if !v.isEmpty { return v }
+                    }
+                }
+                // 行内形式：xxx @key value
+                if let r = line.range(of: "@\(key) ") {
+                    let v = String(line[r.upperBound...]).trimmingCharacters(in: .whitespaces)
+                    if !v.isEmpty { return v }
+                }
+            }
+            return nil
+        }
+        return (value("name"), value("description"), value("version"), value("author"), value("homepage"))
+    }
+
+    /// 在 shim 加载后、脚本执行前注入 lx.currentScriptInfo。
+    /// rawScript 必须与随后 evaluateScript 的字符串逐字节一致（服务端完整性校验锚点）。
+    private func injectCurrentScriptInfo(into ctx: JSContext, scriptId: String, displayName: String, code: String) {
+        guard let lx = ctx.objectForKeyedSubscript("lx"), !lx.isUndefined else { return }
+        let meta = parseScriptMeta(code)
+        let csi = JSValue(newObjectIn: ctx)
+        csi?.setObject(meta.name ?? displayName, forKeyed: "name")
+        csi?.setObject(meta.description ?? "", forKeyed: "description")
+        csi?.setObject(meta.version ?? "", forKeyed: "version")
+        csi?.setObject(meta.author ?? "", forKeyed: "author")
+        csi?.setObject(meta.homepage ?? "", forKeyed: "homepage")
+        csi?.setObject(code, forKeyed: "rawScript")
+        lx.setObject(csi!, forKeyed: "currentScriptInfo")
+        Logger.info("LXCompat: 已注入 currentScriptInfo rawScript \(code.count) 字符 id=\(scriptId)")
     }
 
     // MARK: - 桥接注入
@@ -558,7 +609,15 @@ final class LXCompatEngine {
     func importUserScript(id: String, displayName: String, rawCode: String,
                           completion: @escaping (Bool, [String]) -> Void) {
         ensureLoaded()
-        let es5 = transpile(rawCode) ?? rawCode
+        // v1.0.86：纯 ES5 脚本跳过 Babel —— 转译会改变内容，服务端完整性校验
+        // （独家音源 v5+ 等）按 rawScript 逐字节比对，转译后必然 403。
+        let es5: String
+        if isPureES5(rawCode) {
+            es5 = rawCode
+            Logger.info("LXCompat: \(id) 为纯 ES5，跳过 Babel 以保持完整性校验一致")
+        } else {
+            es5 = transpile(rawCode) ?? rawCode
+        }
         // 先尝试注册，确认能声明平台
         registerScript(id: id, es5Code: es5, displayName: displayName, isUser: true)
         if let inst = instances[id] {
@@ -579,6 +638,12 @@ final class LXCompatEngine {
         } else {
             completion(false, [])
         }
+    }
+
+    /// 纯 ES5 粗判：不含 async/箭头函数/模板串/let/const/class 即可直接执行
+    private func isPureES5(_ code: String) -> Bool {
+        return !code.contains("async") && !code.contains("=>") && !code.contains("`")
+            && !code.contains("let ") && !code.contains("const ") && !code.contains("class ")
     }
 
     private func loadUserCachedScripts() {

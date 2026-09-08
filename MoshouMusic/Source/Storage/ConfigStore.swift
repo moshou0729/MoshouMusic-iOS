@@ -27,6 +27,7 @@ class ConfigStore {
         static let lxSyncMode = "lxSyncMode"
         static let lxLastSyncDate = "lxLastSyncDate"
         static let preferredLXScriptID = "preferredLXScriptID"
+        static let lxSongmidFixV1Done = "lxSongmidFixV1Done"
     }
 
     // MARK: - 路径
@@ -122,6 +123,12 @@ class ConfigStore {
     }
 
     // MARK: - LX Music 桌面版同步
+
+    /// v1.0.91 一次性迁移标记：修复存量同步歌曲的 songmid（旧版把 LX 内部 id 当 songmid）
+    var lxSongmidFixV1Done: Bool {
+        get { defaults.bool(forKey: Keys.lxSongmidFixV1Done) }
+        set { defaults.set(newValue, forKey: Keys.lxSongmidFixV1Done) }
+    }
 
     /// 同步服务地址 (LX 桌面版 v2.4+ / 独立版 sync-server v2.0+)
     /// 格式: http://192.168.x.x:23332 或 https://example.com/lxsync

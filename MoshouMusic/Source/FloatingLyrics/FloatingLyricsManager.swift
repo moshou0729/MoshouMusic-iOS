@@ -170,16 +170,50 @@ final class FloatingLyricsManager: NSObject {
         view.bounds = CGRect(origin: .zero, size: size)
         view.fontSize = ConfigStore.shared.floatingFontSize
         if !isLocked {
-            view.backgroundColor = UIColor.black
-                .withAlphaComponent(CGFloat(ConfigStore.shared.floatingOpacity))
+            view.backgroundColor = configuredBgColor()
         }
+    }
+
+    // MARK: - 外观配置与强制重合成
+
+    /// 配置的背景颜色 = 用户选的色 + 透明度滑杆
+    private func configuredBgColor(alphaOverride: CGFloat? = nil) -> UIColor {
+        let alpha = alphaOverride ?? CGFloat(ConfigStore.shared.floatingOpacity)
+        return UIColor(hex: ConfigStore.shared.floatingBgColorHex, alpha: alpha)
+    }
+
+    /// 设置页选色后调用（选色是离散动作，直接强制重合成保证立即生效）
+    func updateBgColor(hex: UInt32) {
+        ConfigStore.shared.floatingBgColorHex = hex
+        if !isLocked {
+            lyricsView?.backgroundColor = configuredBgColor()
+        }
+        forceRecomposite()
     }
 
     /// 实时更新悬浮歌词透明度
     func updateOpacity(_ value: Float) {
         ConfigStore.shared.floatingOpacity = value
         if !isLocked {
-            lyricsView?.backgroundColor = UIColor.black.withAlphaComponent(CGFloat(value))
+            lyricsView?.backgroundColor = configuredBgColor(alphaOverride: CGFloat(value))
+        }
+    }
+
+    /// 🚨 强制 SpringBoard 全量重合成窗口内容
+    ///
+    /// 注册进 SB 的窗口 context 采用脏区差分：字号 / 透明度 / 尺寸这类「整面变化」
+    /// 之后旧像素会残留在合成层里（重影），而截屏会触发全量重合成所以「一截屏就好了」。
+    /// 这里用「短暂隐藏再恢复窗口」达到同样的全量重合成效果（60~80ms，肉眼几乎无感）。
+    /// 注册绑定的是 contextId，隐藏/恢复不会掉注册，也不违反「注册后绝不再动」。
+    func forceRecomposite() {
+        guard let window = floatingWindow, !window.isHidden else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.commit()
+        window.isHidden = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            self?.floatingWindow?.isHidden = false
+            self?.lyricsView?.refreshHard()
         }
     }
 
@@ -256,6 +290,7 @@ final class FloatingLyricsManager: NSObject {
             ConfigStore.shared.floatingFontSize = lyricsView?.fontSize ?? ConfigStore.shared.floatingFontSize
             pinchStartFrame = nil
             pinchStartSpan = nil
+            forceRecomposite()
 
         default:
             pinchStartFrame = nil

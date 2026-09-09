@@ -22,6 +22,7 @@ class ConfigStore {
         static let floatingPosX = "floatingPosX"
         static let floatingPosY = "floatingPosY"
         static let floatingFontSize = "floatingFontSize"
+        static let floatingBgColorHex = "floatingBgColorHex"
         static let isDarkMode = "isDarkMode"
         static let cacheSize = "cacheSize"
         static let currentSource = "currentSource"
@@ -294,6 +295,15 @@ class ConfigStore {
             return v == 0 ? 16 : CGFloat(v)
         }
         set { defaults.set(Float(newValue), forKey: Keys.floatingFontSize) }
+    }
+
+    /// 悬浮歌词背景颜色（RGB hex，如 0x000000 黑 / 0xFFFFFF 白；默认黑）
+    var floatingBgColorHex: UInt32 {
+        get {
+            let v = defaults.object(forKey: Keys.floatingBgColorHex) as? Int
+            return v.map(UInt32.init) ?? 0x000000
+        }
+        set { defaults.set(Int(newValue), forKey: Keys.floatingBgColorHex) }
     }
 
     /// 恢复默认位置与尺寸

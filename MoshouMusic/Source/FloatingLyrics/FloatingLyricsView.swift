@@ -66,6 +66,17 @@ final class FloatingLyricsView: UIView {
             label.font = UIFont.systemFont(ofSize: size,
                                            weight: index == 1 ? .semibold : .regular)
         }
+        refreshHard()
+    }
+
+    /// 强制全部 label 全量重绘（配合 manager.forceRecomposite 消除注册窗口的渲染残影）
+    func refreshHard() {
+        setNeedsLayout()
+        layoutIfNeeded()
+        labels.forEach {
+            $0.setNeedsDisplay()
+            $0.layer.setNeedsDisplay()
+        }
     }
 
     // MARK: - 歌词更新

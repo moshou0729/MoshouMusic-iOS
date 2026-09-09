@@ -8,6 +8,9 @@ import UIKit
 /// 2. 通过 SBSAccessibilityWindowHostingController 把窗口注册到 SpringBoard 的
 ///    辅助功能窗口托管服务 —— 这才是跨应用（主屏 / 其他 App / 锁屏）显示的关键；
 /// 3. 退后台后多次「保活」重试：重新声明窗口层级并补注册。
+///
+/// ⚠️ 触摸处理：系统安全窗口参与触摸路由会吃掉整屏事件（App 内按钮全失效），
+/// 因此显示窗口设置 `_ignoresHitTest = YES`，拖拽 / 缩放改由一块普通 overlay 窗口承担。
 final class FloatingLyricsManager: NSObject {
 
     static let shared = FloatingLyricsManager()
@@ -19,6 +22,11 @@ final class FloatingLyricsManager: NSObject {
     private var rootView: FloatingRootView?
     private var lyricsView: FloatingLyricsView?
 
+    /// 交互层窗口（普通窗口，仅用于接收手势；不参与跨应用显示）
+    private var overlayWindow: UIWindow?
+    /// 交互层上的透明热区，位置尺寸与歌词框保持一致
+    private var gestureView: UIView?
+
     private var hostingRegistered = false
     private var lyricsIndex: Int = -1
     private var isLocked = false
@@ -26,6 +34,7 @@ final class FloatingLyricsManager: NSObject {
 
     private var pinchStartSize: CGSize?
     private var pinchStartFont: CGFloat = 16
+    private var pinchStartSpan: (x: CGFloat, y: CGFloat)?
 
     /// 是否已成功注册为系统级（跨应用）窗口
     private(set) var isGlobalWindowReady = false
@@ -41,6 +50,7 @@ final class FloatingLyricsManager: NSObject {
     func show() {
         if let window = floatingWindow {
             window.isHidden = false
+            overlayWindow?.isHidden = false
             applySettings()
             registerHostingIfNeeded()
             refreshPlaceholder()
@@ -48,13 +58,13 @@ final class FloatingLyricsManager: NSObject {
         }
 
         let screen = UIScreen.main.bounds
+
+        // —— 显示窗口：系统级，跨应用可见，不接收触摸 ——
         let window = FloatingSystemWindow(frame: screen)
         window.windowLevel = UIWindow.Level(rawValue: windowLevel)
         window.backgroundColor = .clear
         window.isOpaque = false
-        // iOS 13+ 需要关联 scene，否则窗口不显示
-        if let scene = UIApplication.shared.connectedScenes
-            .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
+        if let scene = activeScene() {
             window.windowScene = scene
         }
 
@@ -84,6 +94,9 @@ final class FloatingLyricsManager: NSObject {
         window.makeKeyAndVisible()
         previousKey?.makeKey()
 
+        // —— 交互窗口：普通窗口，负责拖拽 / 缩放 / 双击 ——
+        setupOverlayWindow(frame: lyricView.frame, scene: activeScene())
+
         setupGestures()
         registerHostingIfNeeded()
         observeNotifications()
@@ -96,31 +109,67 @@ final class FloatingLyricsManager: NSObject {
     }
 
     func hide() {
-        guard let window = floatingWindow else { return }
-        if hostingRegistered {
+        if let window = floatingWindow, hostingRegistered {
             FloatingWindowHosting.unregister(window: window)
             hostingRegistered = false
             isGlobalWindowReady = false
         }
-        window.isHidden = true
+        floatingWindow?.isHidden = true
+        overlayWindow?.isHidden = true
     }
 
     func toggle() {
         isShowing ? hide() : show()
     }
 
+    // MARK: - 交互窗口
+
+    private func setupOverlayWindow(frame: CGRect, scene: UIWindowScene?) {
+        let overlay = UIWindow(frame: UIScreen.main.bounds)
+        overlay.windowLevel = UIWindow.Level.alert + 1
+        overlay.backgroundColor = .clear
+        overlay.isOpaque = false
+        if let scene = scene {
+            overlay.windowScene = scene
+        }
+        let root = FloatingRootView(frame: UIScreen.main.bounds)
+        root.backgroundColor = .clear
+        let vc = UIViewController()
+        vc.view = root
+
+        let hot = UIView(frame: frame)
+        hot.backgroundColor = .clear
+        hot.isUserInteractionEnabled = true
+        root.addSubview(hot)
+
+        overlay.rootViewController = vc
+        overlay.isHidden = false
+
+        self.overlayWindow = overlay
+        self.gestureView = hot
+    }
+
+    private func activeScene() -> UIWindowScene? {
+        UIApplication.shared.connectedScenes
+            .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene
+    }
+
     /// 设置页改动后立即生效（尺寸 / 字号 / 透明度 / 位置）
     func applySettings() {
-        guard let view = lyricsView else { return }
+        guard let view = lyricsView, let hot = gestureView else { return }
         let size = ConfigStore.shared.floatingSize
         view.bounds = CGRect(origin: .zero, size: size)
-        view.frame.origin = ConfigStore.shared.floatingOrigin
+        hot.bounds = CGRect(origin: .zero, size: size)
+        let origin = ConfigStore.shared.floatingOrigin
+        view.frame.origin = origin
+        hot.frame.origin = origin
         view.fontSize = ConfigStore.shared.floatingFontSize
         if !isLocked {
             view.backgroundColor = UIColor.black
                 .withAlphaComponent(CGFloat(ConfigStore.shared.floatingOpacity))
         }
         clampIntoScreen(view)
+        hot.frame = view.frame
     }
 
     /// 实时更新悬浮歌词透明度
@@ -154,58 +203,98 @@ final class FloatingLyricsManager: NSObject {
     // MARK: - 手势
 
     private func setupGestures() {
-        guard let view = lyricsView else { return }
+        guard let hot = gestureView else { return }
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        view.addGestureRecognizer(pan)
+        hot.addGestureRecognizer(pan)
 
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        view.addGestureRecognizer(pinch)
+        hot.addGestureRecognizer(pinch)
 
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
         doubleTap.numberOfTapsRequired = 2
-        view.addGestureRecognizer(doubleTap)
+        hot.addGestureRecognizer(doubleTap)
+    }
 
-        view.isUserInteractionEnabled = true
+    /// 手势改变了热区后，把歌词框同步到同一位置尺寸
+    private func syncLyricsFrame() {
+        guard let view = lyricsView, let hot = gestureView else { return }
+        view.frame = hot.frame
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard !isLocked, let view = lyricsView else { return }
-        let translation = gesture.translation(in: view.superview)
-        view.center = CGPoint(x: view.center.x + translation.x,
-                              y: view.center.y + translation.y)
-        gesture.setTranslation(.zero, in: view.superview)
+        guard !isLocked, let hot = gestureView else { return }
+        let translation = gesture.translation(in: hot.superview)
+        hot.center = CGPoint(x: hot.center.x + translation.x,
+                             y: hot.center.y + translation.y)
+        gesture.setTranslation(.zero, in: hot.superview)
+        syncLyricsFrame()
 
         if gesture.state == .ended {
-            clampIntoScreen(view)
-            ConfigStore.shared.floatingOrigin = view.frame.origin
+            clampIntoScreen(hot)
+            syncLyricsFrame()
+            ConfigStore.shared.floatingOrigin = hot.frame.origin
         }
     }
 
+    /// 捏合缩放：按双指的横向 / 纵向位移分量分别缩放宽高
+    /// —— 竖直拉只改高度，横向拉只改宽度，斜着拉等比缩放
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        guard !isLocked, let view = lyricsView else { return }
+        guard !isLocked, let hot = gestureView else { return }
+        let screenW = UIScreen.main.bounds.width
 
         switch gesture.state {
         case .began:
-            pinchStartSize = view.bounds.size
+            pinchStartSize = hot.bounds.size
             pinchStartFont = ConfigStore.shared.floatingFontSize
+            pinchStartSpan = pinchSpan(gesture)
+
         case .changed:
             guard let start = pinchStartSize else { break }
-            let width = clamp(start.width * gesture.scale, min: 140,
-                              max: UIScreen.main.bounds.width - 16)
-            let height = clamp(start.height * gesture.scale, min: 72, max: 360)
-            view.bounds = CGRect(origin: .zero, size: CGSize(width: width, height: height))
+            var width = start.width
+            var height = start.height
+
+            if let span = pinchStartSpan, let now = pinchSpan(gesture),
+               span.x > 8 || span.y > 8 {
+                // 分量缩放：只按手指确实移动的那个方向改变对应边
+                if span.x > 8 {
+                    width = clamp(start.width * (now.x / span.x), min: 140, max: screenW - 16)
+                }
+                if span.y > 8 {
+                    height = clamp(start.height * (now.y / span.y), min: 72, max: 360)
+                }
+            } else {
+                // 退化（单指/间距过小）：等比缩放
+                width = clamp(start.width * gesture.scale, min: 140, max: screenW - 16)
+                height = clamp(start.height * gesture.scale, min: 72, max: 360)
+            }
+
+            hot.bounds = CGRect(origin: .zero, size: CGSize(width: width, height: height))
             let ratio = height / max(1, start.height)
-            view.fontSize = clamp(pinchStartFont * ratio, min: 10, max: 34)
+            lyricsView?.fontSize = clamp(pinchStartFont * ratio, min: 10, max: 34)
+            syncLyricsFrame()
+
         case .ended, .cancelled:
-            ConfigStore.shared.floatingSize = view.bounds.size
-            ConfigStore.shared.floatingFontSize = view.fontSize
-            clampIntoScreen(view)
-            ConfigStore.shared.floatingOrigin = view.frame.origin
+            ConfigStore.shared.floatingSize = hot.bounds.size
+            ConfigStore.shared.floatingFontSize = lyricsView?.fontSize ?? ConfigStore.shared.floatingFontSize
+            clampIntoScreen(hot)
+            syncLyricsFrame()
+            ConfigStore.shared.floatingOrigin = hot.frame.origin
             pinchStartSize = nil
+            pinchStartSpan = nil
+
         default:
             pinchStartSize = nil
+            pinchStartSpan = nil
         }
+    }
+
+    /// 当前双指的横向 / 纵向间距
+    private func pinchSpan(_ gesture: UIPinchGestureRecognizer) -> (x: CGFloat, y: CGFloat)? {
+        guard gesture.numberOfTouches >= 2 else { return nil }
+        let p0 = gesture.location(ofTouch: 0, in: nil)
+        let p1 = gesture.location(ofTouch: 1, in: nil)
+        return (abs(p0.x - p1.x), abs(p0.y - p1.y))
     }
 
     @objc private func handleDoubleTap() {
@@ -244,6 +333,9 @@ final class FloatingLyricsManager: NSObject {
                            name: .playerStateChanged, object: nil)
     }
 
+    /// 当前歌曲标识，用于判断换歌
+    private var lastSongKey: String?
+
     /// 换歌时重置行号并显示歌名，避免停留上一首的最后一句
     @objc private func playerStateChanged() {
         DispatchQueue.main.async {
@@ -256,9 +348,6 @@ final class FloatingLyricsManager: NSObject {
         }
     }
 
-    /// 当前歌曲标识，用于判断换歌
-    private var lastSongKey: String?
-
     @objc private func appDidEnterBackground() {
         guard isShowing else { return }
         keepVisible()
@@ -269,6 +358,7 @@ final class FloatingLyricsManager: NSObject {
 
     @objc private func appDidBecomeActive() {
         guard isShowing else { return }
+        overlayWindow?.isHidden = false
         keepVisible()
     }
 

@@ -98,6 +98,7 @@ class PlayerManager: NSObject {
         super.init()
         setupPlayer()
         setupRemoteCommand()
+        startPlaybackEndFuse()
         sourceSwitcher = SourceSwitcher()
     }
 
@@ -907,6 +908,43 @@ class PlayerManager: NSObject {
     // MARK: - 播放结束
 
     @objc private func playerItemDidReachEnd(_ notification: Notification) {
+        handlePlaybackEnded(reason: "播放结束通知")
+    }
+
+    // MARK: - 自动切歌（v1.0.103 加保险丝）
+
+    /// 上次自动切歌的时间，用于 2 秒内防重复触发（通知 + 保险丝可能同时到达）
+    private var lastAutoAdvanceAt: Date?
+    private var endFuseTimer: Timer?
+
+    /// 每秒检查一次「已经播到结尾，但 AVPlayerItemDidPlayToEndTime 没送达」的情况。
+    /// 部分音源（尤其是换源得到的流）播完不发送结束通知，旧版就会「播完停住不下一首」。
+    private func startPlaybackEndFuse() {
+        guard endFuseTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.checkPlaybackEndFuse()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        endFuseTimer = timer
+    }
+
+    private func checkPlaybackEndFuse() {
+        guard isPlaying, duration > 1 else { return }
+        guard duration - currentTime <= 0.8 else { return }
+        // 网络缓冲导致的暂停不算播完，避免误切
+        if let item = player.currentItem, player.rate == 0, !item.isPlaybackLikelyToKeepUp { return }
+        handlePlaybackEnded(reason: "结尾保险丝")
+    }
+
+    /// 自动切歌统一入口
+    private func handlePlaybackEnded(reason: String) {
+        if let last = lastAutoAdvanceAt, Date().timeIntervalSince(last) < 2 {
+            Logger.info("自动切歌：2 秒内已处理，忽略重复触发（\(reason)）")
+            return
+        }
+        lastAutoAdvanceAt = Date()
+        Logger.info("自动切歌（\(reason)）：模式=\(playMode.displayName) 队列=\(playQueue.count) 下标=\(queueIndex)")
+
         switch playMode {
         case .singleRepeat:
             seek(to: 0)

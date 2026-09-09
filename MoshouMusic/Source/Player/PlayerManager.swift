@@ -223,18 +223,18 @@ class PlayerManager: NSObject {
     private func attemptInterruptionRecovery(retriesLeft: Int) {
         guard retriesLeft > 0 else { return }
         guard wasPlayingBeforeInterruption, !isPlaying else { return }
-        // 仍在被打断（来电中 / 「恢复音乐」弹窗没关）—— 避让，稍后再试
-        if player.reasonForWaitingToPlay == .interrupted {
+        // 已脱离中断但没人在播（timeControlStatus=.paused）→ .ended 被吞，主动接管；
+        // 正在播/缓冲中则不处理。来电期间恢复尝试会静默失败（setActive 报错被吞），
+        // 状态如实回滚，不会真正干扰通话。
+        if player.timeControlStatus == .paused {
+            Logger.warn("中断后播放未恢复（.ended 未送达），看门狗自动接管")
+            recoverAfterInterruption(reason: "看门狗接管")
+        }
+        if !isPlaying, retriesLeft > 1 {
             let next = DispatchWorkItem { [weak self] in
                 self?.attemptInterruptionRecovery(retriesLeft: retriesLeft - 1)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: next)
-            return
-        }
-        // 已脱离中断但没人在播 —— .ended 被吞，主动接管；正在播/缓冲则不处理
-        if player.timeControlStatus == .paused {
-            Logger.warn("中断后播放未恢复（.ended 未送达），看门狗自动接管")
-            recoverAfterInterruption(reason: "看门狗接管")
         }
     }
 
@@ -351,8 +351,6 @@ class PlayerManager: NSObject {
         resumeVerifyWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.isPlaying else { return }
-            // 仍处中断中（如来电 / 弹窗未关）：等中断结束的通知或看门狗，不动
-            if self.player.reasonForWaitingToPlay == .interrupted { return }
             if self.player.timeControlStatus == .paused {
                 Logger.warn("恢复播放未真正生效(timeControlStatus=.paused)，重新激活会话后重试")
                 self.ensureAudioSessionActive()
@@ -363,7 +361,7 @@ class PlayerManager: NSObject {
                     if self.player.timeControlStatus == .paused {
                         self.isPlaying = false
                         self.notifyStateChanged()
-                    } else if self.player.reasonForWaitingToPlay != .interrupted {
+                    } else {
                         self.wasPlayingBeforeInterruption = false
                         self.interruptionWatchdog?.cancel()
                     }

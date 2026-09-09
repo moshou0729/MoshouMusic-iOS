@@ -15,6 +15,7 @@ final class FloatingSettingsViewController: UIViewController {
                                          min: 10, max: 34) { "\(Int($0)) 号" }
     private lazy var opacityRow = SliderRow(title: "背景透明度", value: ConfigStore.shared.floatingOpacity,
                                             min: 0.1, max: 1.0) { "\(Int($0 * 100))%" }
+    private let colorRow = ColorRow()
 
     private let statusLabel = UILabel()
     private let tipLabel = UILabel()

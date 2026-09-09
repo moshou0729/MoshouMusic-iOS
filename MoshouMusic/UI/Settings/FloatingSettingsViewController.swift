@@ -308,7 +308,7 @@ private final class ColorRow: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    private func refreshSelection() {
+    func refreshSelection() {
         let current = ConfigStore.shared.floatingBgColorHex
         for (index, button) in swatchButtons.enumerated() {
             let selected = Self.presets.indices.contains(index) && Self.presets[index].1 == current

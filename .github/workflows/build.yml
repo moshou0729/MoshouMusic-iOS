@@ -100,13 +100,14 @@ jobs:
             || codesign --force --sign - --entitlements MoshouMusic.entitlements \
                    --timestamp=none "$APP_PATH"
           echo "--- embedded entitlements ---"
-          codesign -d --entitlements :- "$APP_PATH" | head -60
-          # 校验：主二进制里必须能搜到关键 entitlement 字符串
-          BIN_NAME=$(basename "$APP_PATH" .app)
-          HITS=$(strings -a "$APP_PATH/$BIN_NAME" | grep -c "accessibility-window-hosting" || true)
-          echo "entitlement string hits: $HITS"
+          ENT_OUT=$(codesign -d --entitlements :- "$APP_PATH" 2>/dev/null || true)
+          echo "$ENT_OUT" | head -60
+          # 校验：解码出的 entitlements 必须包含关键权限
+          # （Xcode 15.4 的 codesign 以 DER 形式嵌入，不能在二进制里 strings 搜纯文本）
+          HITS=$(printf '%s' "$ENT_OUT" | grep -c "accessibility-window-hosting" || true)
+          echo "entitlement check hits: $HITS"
           if [ "$HITS" -lt 1 ]; then
-            echo "::error::entitlements NOT embedded into binary!"
+            echo "::error::entitlements NOT embedded into signature!"
             exit 1
           fi
 

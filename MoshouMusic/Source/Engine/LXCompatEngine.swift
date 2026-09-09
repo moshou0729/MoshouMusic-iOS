@@ -178,7 +178,7 @@ final class LXCompatEngine {
                 Thread.sleep(forTimeInterval: 0.1)
                 waited += 0.1
             }
-            let plats = parsePlatforms(from: initedBox.get())
+            let plats = self?.parsePlatforms(from: initedBox.get()) ?? []
             DispatchQueue.main.async {
                 self?.completeRegistration(id: id, displayName: displayName, isUser: isUser,
                                            context: ctx, platforms: plats)
@@ -279,10 +279,10 @@ final class LXCompatEngine {
             let args = JSContext.currentArguments() ?? []
             if let v = args.first as? JSValue { bridge.cancel(Int32(v.toInt32())) }
         }
-        ctx.setObject(timeoutBlock, forKeyedSubscript: "setTimeout")
-        ctx.setObject(intervalBlock, forKeyedSubscript: "setInterval")
-        ctx.setObject(clearBlock, forKeyedSubscript: "clearTimeout")
-        ctx.setObject(clearBlock, forKeyedSubscript: "clearInterval")
+        ctx.setObject(timeoutBlock, forKeyedSubscript: "setTimeout" as NSString)
+        ctx.setObject(intervalBlock, forKeyedSubscript: "setInterval" as NSString)
+        ctx.setObject(clearBlock, forKeyedSubscript: "clearTimeout" as NSString)
+        ctx.setObject(clearBlock, forKeyedSubscript: "clearInterval" as NSString)
     }
 
     // MARK: - currentScriptInfo 注入

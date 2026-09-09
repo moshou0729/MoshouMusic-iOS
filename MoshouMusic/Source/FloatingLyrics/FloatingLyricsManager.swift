@@ -50,7 +50,41 @@ final class FloatingLyricsManager: NSObject {
 
     // MARK: - 显示 / 隐藏
 
+    /// v1.0.121：App 回前台期间悬浮窗整体隐藏（销毁窗口），切到其他应用/桌面再出现
+    private var suppressedInApp = false
+
+    /// 回前台：销毁系统级窗口（App 内不显示悬浮）
+    func suppressWhileInApp() {
+        suppressedInApp = true
+        hardRefreshWorkItem?.cancel()
+        pulseWorkItem?.cancel()
+        teardownWindow()
+    }
+
+    /// 离开 App（切其他应用 / 回桌面 / 锁屏）：恢复悬浮窗
+    func resumeWhenLeavingApp() {
+        guard suppressedInApp, ConfigStore.shared.isFloatingLyricsOn else { return }
+        suppressedInApp = false
+        Logger.info("离开 App：恢复悬浮歌词窗口")
+        show()
+    }
+
+    /// 拆除系统级窗口（unregister + 释放，不重建）
+    private func teardownWindow() {
+        if let window = floatingWindow, hostingRegistered {
+            FloatingWindowHosting.unregister(window: window)
+            hostingRegistered = false
+            isGlobalWindowReady = false
+            lastContextId = 0
+            window.isHidden = true
+        }
+        floatingWindow = nil
+        lyricsView = nil
+        registerAttempts = 0
+    }
+
     func show() {
+        guard !suppressedInApp else { return }
         if let window = floatingWindow {
             window.isHidden = false
             applySettings()
@@ -270,16 +304,7 @@ final class FloatingLyricsManager: NSObject {
         ConfigStore.shared.floatingOrigin = frame.origin
 
         // 拆除旧窗口（unregister + 释放）
-        if hostingRegistered {
-            FloatingWindowHosting.unregister(window: oldWindow)
-            hostingRegistered = false
-            isGlobalWindowReady = false
-            lastContextId = 0
-        }
-        oldWindow.isHidden = true
-        floatingWindow = nil
-        lyricsView = nil
-        registerAttempts = 0
+        teardownWindow()
         Logger.info("悬浮歌词：设置变更，重建系统级窗口")
 
         // 下一个 runloop 全量重建（show() 走完整创建 + 注册重试）
@@ -288,6 +313,34 @@ final class FloatingLyricsManager: NSObject {
             self.show()
             if wasCollapsed {
                 self.collapseWindow()
+            }
+        }
+    }
+
+    // MARK: - 内容刷新脉冲（v1.0.121）
+
+    private var pulseWorkItem: DispatchWorkItem?
+
+    /// 🚨 换句/换歌后的内容刷新：view 内部 transform 动画 SB 不感知（实测要点一下
+    /// 才刷新），只有 window 级几何变化驱动 SB 跨应用重合成（折叠/展开动画实测实时可见）。
+    /// 对 window.frame 做一次 2pt 往复动画（0.32s，肉眼几乎无感）驱动重合成。
+    func pulseRecomposite() {
+        guard let window = floatingWindow, !isCollapsed, !suppressedInApp else { return }
+        pulseWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.performPulse(window: window) }
+        pulseWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private func performPulse(window: FloatingSystemWindow) {
+        guard window === floatingWindow, !isCollapsed else { return }
+        let original = window.frame
+        UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseInOut]) {
+            window.frame = original.offsetBy(dx: 0, dy: -2)
+        } completion: { _ in
+            guard window === self.floatingWindow else { return }
+            UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseInOut]) {
+                window.frame = original
             }
         }
     }
@@ -497,6 +550,7 @@ final class FloatingLyricsManager: NSObject {
     // MARK: - 歌词
 
     private func refreshPlaceholder() {
+        defer { pulseRecomposite() }
         guard let song = PlayerManager.shared.currentSong else {
             lyricsView?.setLines(["", "墨守music", ""], animated: false)
             return
@@ -525,6 +579,7 @@ final class FloatingLyricsManager: NSObject {
             let current = line.text
             let next = safeIndex + 1 < lines.count ? lines[safeIndex + 1].text : ""
             self.lyricsView?.setLines([prev, current, next], animated: animated)
+            self.pulseRecomposite()
         }
     }
 }

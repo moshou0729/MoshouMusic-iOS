@@ -150,6 +150,8 @@ class PlayerManager: NSObject {
             name: AVAudioSession.mediaServicesWereResetNotification,
             object: nil
         )
+        // v1.0.121：亮屏 Darwin 通知 —— 亮屏瞬间 mediaserverd 的媒体仲裁中断随之而来
+        registerDisplayStatusObserver()
     }
 
     /// 中断前是否在播（来电 / 系统弹窗打断 → 结束后按此恢复）
@@ -175,15 +177,15 @@ class PlayerManager: NSObject {
                     self.pause()
                 }
                 // 🚨 v1.0.115：中断后进程失去后台音频保活资格会被挂起，先申请后台任务
+                self.recoveryKeepAliveRenewed = false
                 self.beginRecoveryKeepAlive()
                 // 🚨 v1.0.112：「恢复音乐？」弹窗在亮屏瞬间弹出 → 中断 .began；
                 // 但 .ended 在弹窗被丢弃/吞掉时永远不来 → 音乐永远停着。
                 // 看门狗：3s 后开始接管恢复（若仍在 .interrupted 会自动避让，不与来电抢）。
                 self.scheduleInterruptionWatchdog()
             case .ended:
-                let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-                let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
-                let delay: TimeInterval = options.contains(.shouldResume) ? 0.3 : 1.0
+                // v1.0.121：统一 0.2s 立即抢回（shouldResume 与否都先试，恢复入口自带守卫）
+                let delay: TimeInterval = 0.2
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                     guard let self = self, self.wasPlayingBeforeInterruption, !self.isPlaying else { return }
                     self.recoverAfterInterruption(reason: "中断结束通知")
@@ -249,7 +251,20 @@ class PlayerManager: NSObject {
     private func beginRecoveryKeepAlive() {
         endRecoveryKeepAlive()
         recoveryBgTask = UIApplication.shared.beginBackgroundTask(withName: "interruption-recovery") { [weak self] in
-            self?.endRecoveryKeepAlive()
+            guard let self = self, self.wasPlayingBeforeInterruption, !self.isPlaying else {
+                self?.endRecoveryKeepAlive()
+                return
+            }
+            // v1.0.121：到期仍处中断未恢复 → 续期一次（总恢复窗口 ~60s），
+            // 覆盖「亮屏后长时间停在锁屏 / 其他应用」的场景
+            if self.recoveryKeepAliveRenewed {
+                Logger.warn("恢复保活二次到期仍中断未恢复，停止续期")
+                self.endRecoveryKeepAlive()
+                return
+            }
+            self.recoveryKeepAliveRenewed = true
+            Logger.info("恢复保活到期仍中断未恢复，续期后台任务")
+            self.beginRecoveryKeepAlive()
         }
     }
 
@@ -260,6 +275,42 @@ class PlayerManager: NSObject {
     }
 
     private var recoveryBgTask: UIBackgroundTaskIdentifier = .invalid
+    /// 恢复保活是否已续期过一次（防无限续期）
+    private var recoveryKeepAliveRenewed = false
+
+    // MARK: - 亮屏侦测（v1.0.121）
+
+    private var displayStatusRegistered = false
+
+    /// 监听 Darwin 通知 com.apple.iokit.hid.displayStatus（亮屏/灭屏，后台也送达）
+    private func registerDisplayStatusObserver() {
+        guard !displayStatusRegistered else { return }
+        displayStatusRegistered = true
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            nil,
+            { _, _, _, _, _ in
+                DispatchQueue.main.async {
+                    PlayerManager.shared.handleScreenWoke()
+                }
+            },
+            "com.apple.iokit.hid.displayStatus" as CFString,
+            nil,
+            .deliverImmediately
+        )
+    }
+
+    /// 亮屏回调：mediaserverd 仲裁中断往往紧随其后 —— 备好保活并缩短看门狗首检
+    func handleScreenWoke() {
+        beginRecoveryKeepAlive()
+        if wasPlayingBeforeInterruption && !isPlaying {
+            Logger.info("亮屏：检测到中断未恢复，立即进入恢复节奏")
+            attemptInterruptionRecovery(retriesLeft: 8)
+        } else {
+            // 中断通常在亮屏后几百毫秒才到：看门狗首检提前到 1.2s
+            scheduleInterruptionWatchdog(firstDelay: 1.2)
+        }
+    }
 
     /// 确保音频会话处于激活状态（幂等，激活状态下调用无害）
     @discardableResult
@@ -282,13 +333,13 @@ class PlayerManager: NSObject {
     /// 看门狗：中断 .began 后周期性检查。若播放器已脱离 .interrupted 但仍暂停
     /// （说明 .ended 通知被吞），主动接管恢复；仍在 .interrupted（来电/弹窗未关）
     /// 则避让并稍后重试，最多 6 轮（3s 起跑 + 6×4s ≈ 27s，覆盖后台任务窗口）。
-    private func scheduleInterruptionWatchdog() {
+    private func scheduleInterruptionWatchdog(firstDelay: Double = 3.0) {
         interruptionWatchdog?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.attemptInterruptionRecovery(retriesLeft: 6)
         }
         interruptionWatchdog = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + firstDelay, execute: work)
     }
 
     private func attemptInterruptionRecovery(retriesLeft: Int) {

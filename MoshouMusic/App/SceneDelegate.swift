@@ -22,26 +22,26 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.overrideUserInterfaceStyle = ConfigStore.shared.isDarkMode ? .dark : .light
 
         // 上次开启过悬浮歌词则自动恢复（此前重启后不会自动显示，容易被当成「悬浮坏了」）
-        if ConfigStore.shared.isFloatingLyricsOn {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                FloatingLyricsManager.shared.show()
-            }
-        }
+        // v1.0.121：启动时 App 在前台 —— 悬浮窗隐藏，切到其他应用/桌面自动出现
+        FloatingLyricsManager.shared.suppressWhileInApp()
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
         // 🚨 v1.0.116：参考网易云式占坑 —— 回前台立即抢占音频会话恢复被中断的播放
         PlayerManager.shared.recoverIfInterruptedOnForeground()
-        if ConfigStore.shared.isFloatingLyricsOn {
-            // v1.0.116：进程后台挂起期间 SB 托管窗口内容冻结在旧帧，回前台后
-            // 销毁重建窗口（微扰/重合成实测无效，只有新 context 能保证全量刷新）
-            FloatingLyricsManager.shared.hardRefresh()
-        }
+        // v1.0.121：App 内不显示悬浮 —— 销毁窗口，切出去时自动恢复
+        FloatingLyricsManager.shared.suppressWhileInApp()
+    }
+
+    /// v1.0.121：离开 App（切其他应用 / 回桌面）→ 悬浮窗自动出现
+    func sceneWillResignActive(_ scene: UIScene) {
+        FloatingLyricsManager.shared.resumeWhenLeavingApp()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
         // 保存数据
         ConfigStore.shared.save()
+        FloatingLyricsManager.shared.resumeWhenLeavingApp()
     }
 
     // MARK: - 文件导入（从 Files / 分享菜单「墨守music」打开 .lxmc / .json）

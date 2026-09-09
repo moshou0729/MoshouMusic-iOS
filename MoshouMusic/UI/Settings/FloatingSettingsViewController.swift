@@ -82,7 +82,7 @@ final class FloatingSettingsViewController: UIViewController {
         tipLabel.font = UIFont.systemFont(ofSize: 12)
         tipLabel.textColor = .tertiaryLabel
         tipLabel.numberOfLines = 0
-        tipLabel.text = "拖动移动位置；双指捏合缩放（竖拉只改高度）；双击锁定；上/下滑折叠成小圆点，点按圆点展开。"
+        tipLabel.text = "App 内自动隐藏，切到桌面或其他应用时自动显示。拖动移动；双指捏合缩放（竖拉只改高度）；双击锁定；上/下滑折叠成圆点。"
 
         resetButton.setTitle("恢复默认大小与位置", for: .normal)
         resetButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .medium)

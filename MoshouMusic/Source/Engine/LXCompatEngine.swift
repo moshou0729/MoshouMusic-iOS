@@ -146,7 +146,8 @@ final class LXCompatEngine {
         // v1.0.118：inited 可能从定时器队列异步回调，改用线程安全容器
         let initedBox = InitedBox()
         injectBridges(into: ctx, scriptId: id) { name, data in
-            if name == "inited", let d = data.toDictionary() as? [String: Any] {
+            if name == "inited", data.isObject,
+              let d = data.toDictionary() as? [String: Any] {
                 initedBox.set(d)
             }
         }
@@ -349,7 +350,8 @@ final class LXCompatEngine {
     }
 
     private func handleRequest(url: String, options: JSValue, callback: JSValue, in ctx: JSContext) {
-        let opts = options.toDictionary() as? [String: Any] ?? [:]
+        // v1.0.120：options 为原始值时 toDictionary 抛 ObjC 异常中止回调，先守卫
+        let opts = (options.isObject ? options.toDictionary() : nil) as? [String: Any] ?? [:]
         let method = opts["method"] as? String ?? "GET"
         let headers = opts["headers"] as? [String: String] ?? [:]
         let body = opts["body"] as? String
@@ -588,8 +590,14 @@ final class LXCompatEngine {
                 finish(.success(data))
             } else {
                 var msg = "脚本错误"
-                if let d = err.toDictionary(), let m = d["message"] as? String, !m.isEmpty { msg = m }
-                else if let s = err.toString(), !s.isEmpty, s != "undefined" { msg = s }
+                // v1.0.120：脚本常 reject 原始字符串 —— err 非对象时 toDictionary 会抛
+                // ObjC 异常（Cannot convert primitive to NSDictionary）中止回调
+                if err.isObject, let d = err.toDictionary() as? [String: Any],
+                   let m = d["message"] as? String, !m.isEmpty {
+                    msg = m
+                } else if let s = err.toString(), !s.isEmpty, s != "undefined", s != "null" {
+                    msg = s
+                }
                 finish(.failure(LXError.script("\(inst.id): \(msg)")))
             }
         }
@@ -735,14 +743,18 @@ final class LXCompatEngine {
     // MARK: - 结果提取
 
     private static func extractList(from data: JSValue) -> [[String: Any]] {
-        if let d = data.toDictionary() as? [String: Any] {
-            if let list = d["list"] as? [[String: Any]] { return list }
-            if let inner = d["data"] as? [String: Any],
-               let list = inner["list"] as? [[String: Any]] { return list }
-            // JS 数组经 toDictionary 有时会退化为 [Any]
-            if let raw = d["list"] as? [Any] {
-                return raw.compactMap { $0 as? [String: Any] }
-            }
+        // v1.0.120：部分脚本搜索直接返回 JS 数组（或原始值）—— toDictionary 对
+        // 非普通对象抛 ObjC 异常中止回调，导致「搜索无结果」。数组先走 toArray。
+        if data.isArray, let arr = data.toArray() {
+            if let list = arr as? [[String: Any]] { return list }
+            return arr.compactMap { $0 as? [String: Any] }
+        }
+        guard data.isObject, let d = data.toDictionary() as? [String: Any] else { return [] }
+        if let list = d["list"] as? [[String: Any]] { return list }
+        if let inner = d["data"] as? [String: Any],
+           let list = inner["list"] as? [[String: Any]] { return list }
+        if let raw = d["list"] as? [Any] {
+            return raw.compactMap { $0 as? [String: Any] }
         }
         return []
     }
@@ -750,7 +762,8 @@ final class LXCompatEngine {
     // MARK: - 结果提取
 
     private static func extractUrl(from data: JSValue) -> String? {
-        if let d = data.toDictionary() as? [String: Any] {
+        // v1.0.120：原始值（直接返回 URL 字符串）先落到下方 toString 分支
+        if data.isObject, let d = data.toDictionary() as? [String: Any] {
             if let u = d["url"] as? String, u.hasPrefix("http") { return u }
             if let inner = d["data"] as? [String: Any],
                let u = inner["url"] as? String, u.hasPrefix("http") { return u }
@@ -762,7 +775,7 @@ final class LXCompatEngine {
     }
 
     private static func extractLyric(from data: JSValue) -> String {
-        if let d = data.toDictionary() as? [String: Any] {
+        if data.isObject, let d = data.toDictionary() as? [String: Any] {
             let l = (d["lyric"] as? String) ?? ""
             let t = (d["tlyric"] as? String) ?? ""
             return l + (t.isEmpty ? "" : "\n" + t)

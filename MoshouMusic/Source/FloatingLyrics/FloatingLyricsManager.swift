@@ -239,7 +239,19 @@ final class FloatingLyricsManager: NSObject {
     ///
     /// 代价：约 0.3~1s 的重建窗口期（注册带重试），设置变更（离散动作）可接受；
     /// 手势拖动 / 折叠 / 展开仍走轻量的 forceRecomposite（触摸驱动，本就有效）。
+    private var hardRefreshWorkItem: DispatchWorkItem?
+
+    /// v1.0.120：0.3s 防抖合并 —— 日志实测连续调硬刷新会引发「重建风暴」
+    /// （2 分钟 25 次销毁重建），合并窗口内的多次调用为一次重建。
     func hardRefresh() {
+        hardRefreshWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.performHardRefresh() }
+        hardRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    /// 原 hardRefresh 主体：销毁重建系统级窗口
+    private func performHardRefresh() {
         guard let oldWindow = floatingWindow else {
             // 窗口从未创建过（首次回前台等场景）：按开关状态直接创建
             if ConfigStore.shared.isFloatingLyricsOn { show() }

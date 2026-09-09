@@ -793,10 +793,11 @@ class PlayerManager: NSObject {
                 currentLyricIndex = newIndex
                 onLyricsChanged?(newIndex, currentLyrics)
 
-                // 通知悬浮歌词
+                // 通知悬浮歌词（带 index，供三行歌词取上/下句）
                 NotificationCenter.default.post(
                     name: .lyricsLineChanged,
-                    object: currentLyrics[newIndex]
+                    object: currentLyrics[newIndex],
+                    userInfo: ["index": newIndex]
                 )
             }
         }

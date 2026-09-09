@@ -17,6 +17,11 @@ class ConfigStore {
         static let searchHistory = "searchHistory"
         static let isFloatingLyricsOn = "isFloatingLyricsOn"
         static let floatingOpacity = "floatingOpacity"
+        static let floatingWidth = "floatingWidth"
+        static let floatingHeight = "floatingHeight"
+        static let floatingPosX = "floatingPosX"
+        static let floatingPosY = "floatingPosY"
+        static let floatingFontSize = "floatingFontSize"
         static let isDarkMode = "isDarkMode"
         static let cacheSize = "cacheSize"
         static let currentSource = "currentSource"
@@ -247,6 +252,57 @@ class ConfigStore {
             return v == 0 ? 0.85 : v
         }
         set { defaults.set(newValue, forKey: Keys.floatingOpacity) }
+    }
+
+    /// 悬浮窗尺寸（默认 300 × 126）
+    var floatingSize: CGSize {
+        get {
+            let w = defaults.float(forKey: Keys.floatingWidth)
+            let h = defaults.float(forKey: Keys.floatingHeight)
+            return CGSize(width: w == 0 ? 300 : CGFloat(w),
+                          height: h == 0 ? 126 : CGFloat(h))
+        }
+        set {
+            defaults.set(Float(newValue.width), forKey: Keys.floatingWidth)
+            defaults.set(Float(newValue.height), forKey: Keys.floatingHeight)
+        }
+    }
+
+    /// 悬浮窗左上角位置（默认右上角偏下）
+    var floatingOrigin: CGPoint {
+        get {
+            let hasX = defaults.object(forKey: Keys.floatingPosX) != nil
+            let hasY = defaults.object(forKey: Keys.floatingPosY) != nil
+            let x = defaults.float(forKey: Keys.floatingPosX)
+            let y = defaults.float(forKey: Keys.floatingPosY)
+            if !hasX || !hasY {
+                let screenW = UIScreen.main.bounds.width
+                return CGPoint(x: max(8, screenW - floatingSize.width - 12), y: 140)
+            }
+            return CGPoint(x: CGFloat(x), y: CGFloat(y))
+        }
+        set {
+            defaults.set(Float(newValue.x), forKey: Keys.floatingPosX)
+            defaults.set(Float(newValue.y), forKey: Keys.floatingPosY)
+        }
+    }
+
+    /// 悬浮歌词字号（中间行，默认 16）
+    var floatingFontSize: CGFloat {
+        get {
+            let v = defaults.float(forKey: Keys.floatingFontSize)
+            return v == 0 ? 16 : CGFloat(v)
+        }
+        set { defaults.set(Float(newValue), forKey: Keys.floatingFontSize) }
+    }
+
+    /// 恢复默认位置与尺寸
+    func resetFloatingLayout() {
+        defaults.removeObject(forKey: Keys.floatingPosX)
+        defaults.removeObject(forKey: Keys.floatingPosY)
+        defaults.removeObject(forKey: Keys.floatingWidth)
+        defaults.removeObject(forKey: Keys.floatingHeight)
+        defaults.removeObject(forKey: Keys.floatingFontSize)
     }
 
     // MARK: - 外观设置

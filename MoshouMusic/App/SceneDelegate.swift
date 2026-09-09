@@ -20,6 +20,20 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // 防止系统深色模式下系统控件变黑导致黑底黑字）
         Theme.applyAppearance()
         window.overrideUserInterfaceStyle = ConfigStore.shared.isDarkMode ? .dark : .light
+
+        // 上次开启过悬浮歌词则自动恢复（此前重启后不会自动显示，容易被当成「悬浮坏了」）
+        if ConfigStore.shared.isFloatingLyricsOn {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                FloatingLyricsManager.shared.show()
+            }
+        }
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        // 回到前台时补一次系统级窗口注册，防止被系统重置
+        if ConfigStore.shared.isFloatingLyricsOn {
+            FloatingLyricsManager.shared.show()
+        }
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {

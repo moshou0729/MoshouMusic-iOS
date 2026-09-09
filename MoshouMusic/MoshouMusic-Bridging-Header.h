@@ -4,3 +4,6 @@
 //
 
 #import <zlib.h>
+
+// TrollStore 系统级全局悬浮窗（OC 私有 API 桥接）
+#import "FloatingSystemWindow.h"

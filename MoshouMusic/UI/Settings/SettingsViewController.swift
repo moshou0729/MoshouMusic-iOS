@@ -22,6 +22,12 @@ class SettingsViewController: UIViewController {
         return "已启用 \(enabled.count)/\(all.count) 个 · 可用 \(ready.count) 个"
     }
 
+    /// 悬浮歌词当前布局摘要（尺寸 / 字号 / 透明度）
+    private var floatingLayoutSummary: String {
+        let size = ConfigStore.shared.floatingSize
+        return "\(Int(size.width))×\(Int(size.height)) · \(Int(ConfigStore.shared.floatingFontSize))号 · \(Int(ConfigStore.shared.floatingOpacity * 100))%"
+    }
+
     /// LX 同步状态副标题（实时反映 LXSyncService 状态）
     private func lxSyncStatusSubtitle() -> String {
         let url = ConfigStore.shared.lxSyncServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,7 +77,7 @@ class SettingsViewController: UIViewController {
         ]),
         SettingSection(title: "悬浮歌词", items: [
             SettingItem(icon: "rectangle.expand.vertical", iconColor: Theme.primary, title: "悬浮歌词", subtitle: nil, type: .toggle(ConfigStore.shared.isFloatingLyricsOn)),
-            SettingItem(icon: "circle.lefthalf.filled", iconColor: Theme.tertiary, title: "歌词透明度", subtitle: "\(Int(ConfigStore.shared.floatingOpacity * 100))%", type: .navigate),
+            SettingItem(icon: "circle.lefthalf.filled", iconColor: Theme.tertiary, title: "悬浮歌词设置", subtitle: floatingLayoutSummary, type: .navigate),
         ]),
         SettingSection(title: "外观", items: [
             SettingItem(icon: "moon", iconColor: Theme.primary, title: "深色模式", subtitle: nil, type: .toggle(ConfigStore.shared.isDarkMode)),
@@ -265,8 +271,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             navigationController?.pushViewController(QualityPickerViewController(), animated: true)
         case "播放模式":
             navigationController?.pushViewController(PlayModePickerViewController(), animated: true)
-        case "歌词透明度":
-            navigationController?.pushViewController(OpacityViewController(), animated: true)
+        case "悬浮歌词设置":
+            navigationController?.pushViewController(FloatingSettingsViewController(), animated: true)
         case "关于墨守music":
             navigationController?.pushViewController(AboutViewController(), animated: true)
         case "清除缓存":

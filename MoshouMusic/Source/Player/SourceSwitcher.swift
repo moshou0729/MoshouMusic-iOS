@@ -406,8 +406,11 @@ final class SourceSwitcher {
         // v1.0.91：版本标记（赤旗版/爆燃版 等实义改编版）——目标带标记时，
         // 候选必须含同样标记，否则弃选（搜「水手（赤旗版）」不能拿原版水手充数）
         let targetEditions = editionMarkers(in: name)
+        // v1.0.98：容差放宽 max(12s, 10%) → max(20s, 12%)。
+        // 实测「大花轿 (燃爆版)」187s，网易云同歌手版 207s（差 20s）被旧容差 18.7s
+        // 卡掉 1.3 秒而全军覆没；放宽后仍拦得住原版 246s（差 59s），防线不失效。
         let intervalTolerance = targetInterval > 0
-            ? max(12.0, Double(targetInterval) * 0.10) : 0
+            ? max(20.0, Double(targetInterval) * 0.12) : 0
 
         var best: (song: Song, score: Int)?
 
@@ -429,19 +432,22 @@ final class SourceSwitcher {
             // 各源对改编版的命名不一，宁播时长对得上的同名同歌手候选也不至于完全不播；
             // 出声前还有音频时长预检把最后一道关）。没有时长佐证的一律出局。
             var editionPenalty = 0
+            var editionBonus = 0
             if !targetEditions.isEmpty {
                 let cn = song.name.lowercased()
-                if !targetEditions.allSatisfy({ cn.contains($0) }) {
-                    if lenientEditions {
-                        // v1.0.96：兜底轮 —— 宁播「同名同歌手、时长对得上」的原版/近似版，
-                        // 也不至于完全不播（桌面端同策略：1 秒匹配到其他源的同一首歌）。
-                        editionPenalty = 60
-                    } else {
-                        guard intervalTolerance > 0, song.interval > 0,
-                              abs(Double(song.interval - targetInterval)) <= intervalTolerance
-                        else { continue }
-                        editionPenalty = 40
-                    }
+                if targetEditions.allSatisfy({ cn.contains($0) }) {
+                    // v1.0.98：候选真的带目标版本标记（如「大花轿 (燃爆版) (Cover 大头针)」）→
+                    // 强力加分，确保它压过只是时长接近的原版填充项。
+                    editionBonus = 40
+                } else if lenientEditions {
+                    // v1.0.96：兜底轮 —— 宁播「同名同歌手、时长对得上」的原版/近似版，
+                    // 也不至于完全不播（桌面端同策略：1 秒匹配到其他源的同一首歌）。
+                    editionPenalty = 60
+                } else {
+                    guard intervalTolerance > 0, song.interval > 0,
+                          abs(Double(song.interval - targetInterval)) <= intervalTolerance
+                    else { continue }
+                    editionPenalty = 40
                 }
             }
 
@@ -457,12 +463,19 @@ final class SourceSwitcher {
 
             if !targetSingers.isEmpty {
                 let s = singerTokens(song.singer)
-                // v1.0.83：目标歌手非空时，**歌手无关的候选直接出局**——
-                // 旧逻辑只对歌手轻微加分，可能让「歌手对不上的同名翻唱」靠歌名满分胜出，
-                // 播出来歌手跟歌单对不上。现在只允许「与目标有共同歌手」的候选参与竞争。
-                guard !s.isEmpty, !s.isDisjoint(with: targetSingers) else { continue }
-                // 候选歌手覆盖全部目标歌手更强（不漏合作者）
-                score += s.isSuperset(of: targetSingers) ? 40 : 20
+                if s.isEmpty || s.isDisjoint(with: targetSingers) {
+                    // v1.0.98：翻唱署名豁免 —— 候选**原名**里点名了目标歌手
+                    // （「大花轿 (燃爆版) (Cover 大头针)」对目标歌手「大头针 Official」、
+                    //   「大花轿 (翻自 火风)」对「火风」）说明是同一脉络的改编/翻唱，
+                    // 不该当撞名歌硬杀。旧逻辑一律 continue，实测把真·燃爆版候选
+                    // 全部剔除，是「大花轿放不了」的直接原因。降权 30 参赛，
+                    // 真歌手对得上的候选（+20/+40）仍然优先。
+                    guard creditsTargetSinger(in: song.name, targetSingers: targetSingers) else { continue }
+                    score -= 30
+                } else {
+                    // 候选歌手覆盖全部目标歌手更强（不漏合作者）
+                    score += s.isSuperset(of: targetSingers) ? 40 : 20
+                }
             }
 
             // v1.0.83：原版启发式 —— 原唱/原版加分，live/翻唱/伴奏/remix 降权，
@@ -471,9 +484,16 @@ final class SourceSwitcher {
 
             // v1.0.95：版本标记宽限通道的候选降权，有严格标记匹配的候选时让位
             score -= editionPenalty
+            // v1.0.98：版本标记命中加分（真·赤旗版/燃爆版候选优先）
+            score += editionBonus
 
             // 有时长信息的更可信
             if song.interval > 0 { score += 5 }
+
+            // v1.0.98：时长越接近目标越可能是同一个版本（最多 +12，每差 5s 减 1）
+            if targetInterval > 0, song.interval > 0 {
+                score += max(0, 12 - Int(abs(Double(song.interval - targetInterval)) / 5.0))
+            }
 
             if best == nil || score > best!.score {
                 best = (song, score)
@@ -514,6 +534,14 @@ final class SourceSwitcher {
                         "inst", "ver", "version", "版", "现场", "翻唱", "伴奏", "钢琴",
                         "吉他", "演奏", "弹唱", "纯音乐", "清唱", "慢摇", "电音", "混音"]
         return keywords.contains { s.contains($0) }
+    }
+
+    /// v1.0.98：候选原名里是否「署名」了目标歌手 —— (Cover 大头针) / (翻自 火风) 等。
+    /// 只认长度 ≥2 的歌手 token，避免单字误命中。
+    static func creditsTargetSinger(in rawName: String, targetSingers: Set<String>) -> Bool {
+        guard !targetSingers.isEmpty else { return false }
+        let s = rawName.lowercased()
+        return targetSingers.contains { token in token.count >= 2 && s.contains(token) }
     }
 
     /// 尾巴里含目标歌手名（音源把「歌名歌手」连写，如「起风了买辣椒也用券」）

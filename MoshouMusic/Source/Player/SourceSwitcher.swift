@@ -437,12 +437,14 @@ final class SourceSwitcher {
                 let cn = song.name.lowercased()
                 if targetEditions.allSatisfy({ cn.contains($0) }) {
                     // v1.0.98：候选真的带目标版本标记（如「大花轿 (燃爆版) (Cover 大头针)」）→
-                    // 强力加分，确保它压过只是时长接近的原版填充项。
-                    editionBonus = 40
+                    // 加分以压过只是时长接近的凑数项。v1.0.99：40 → 20 —— 原值会盖过
+                    // 「歌手是否本人」，实测把别人的翻唱顶到大头针本人前面。
+                    editionBonus = 20
                 } else if lenientEditions {
                     // v1.0.96：兜底轮 —— 宁播「同名同歌手、时长对得上」的原版/近似版，
                     // 也不至于完全不播（桌面端同策略：1 秒匹配到其他源的同一首歌）。
-                    editionPenalty = 60
+                    // v1.0.99：60 → 45，让「歌手本人」候选在兜底轮也能胜出。
+                    editionPenalty = 45
                 } else {
                     guard intervalTolerance > 0, song.interval > 0,
                           abs(Double(song.interval - targetInterval)) <= intervalTolerance
@@ -468,13 +470,16 @@ final class SourceSwitcher {
                     // （「大花轿 (燃爆版) (Cover 大头针)」对目标歌手「大头针 Official」、
                     //   「大花轿 (翻自 火风)」对「火风」）说明是同一脉络的改编/翻唱，
                     // 不该当撞名歌硬杀。旧逻辑一律 continue，实测把真·燃爆版候选
-                    // 全部剔除，是「大花轿放不了」的直接原因。降权 30 参赛，
-                    // 真歌手对得上的候选（+20/+40）仍然优先。
+                    // 全部剔除，是「大花轿放不了」的直接原因。
+                    // v1.0.99：降权从 30 提到 50 —— 用户实测「播出来是女声、不是大头针」：
+                    // 30 分的差被版本标记加分（+40）+ 时长加分（+12）反超，导致别人的翻唱
+                    // 压过大头针本人。听感上「谁唱的」优先于「版本标签叫什么」。
                     guard creditsTargetSinger(in: song.name, targetSingers: targetSingers) else { continue }
-                    score -= 30
+                    score -= 50
                 } else {
-                    // 候选歌手覆盖全部目标歌手更强（不漏合作者）
-                    score += s.isSuperset(of: targetSingers) ? 40 : 20
+                    // v1.0.99：歌手对得上的加分提高（+20/+40 → +30/+50），
+                    // 与「翻唱署名」拉开 80 分差，任何版本/时长加分都无法反超。
+                    score += s.isSuperset(of: targetSingers) ? 50 : 30
                 }
             }
 

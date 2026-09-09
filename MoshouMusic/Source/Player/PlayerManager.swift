@@ -1,5 +1,6 @@
 import AVFoundation
 import MediaPlayer
+import UIKit
 import Foundation
 
 // MARK: - 试用/赞助版音源拦截
@@ -157,6 +158,8 @@ class PlayerManager: NSObject {
     private var wasPlayingBeforeInterruption = false
     /// 中断看门狗（.ended 通知被系统吞掉时接管恢复）
     private var interruptionWatchdog: DispatchWorkItem?
+    /// 上次「整链重建重播」兜底的时间（10s 内只兜底一次，防失败循环）
+    private var lastRebuildReplayAt = Date.distantPast
 
     /// 系统中断处理：中断结束后自动续播（系统只打断不恢复，播放器需自行接管）
     @objc private func handleAudioSessionInterruption(_ note: Notification) {
@@ -171,6 +174,8 @@ class PlayerManager: NSObject {
                     Logger.warn("音频会话被系统中断，暂停播放（中断结束后自动续播）")
                     self.pause()
                 }
+                // 🚨 v1.0.115：中断后进程失去后台音频保活资格会被挂起，先申请后台任务
+                self.beginRecoveryKeepAlive()
                 // 🚨 v1.0.112：「恢复音乐？」弹窗在亮屏瞬间弹出 → 中断 .began；
                 // 但 .ended 在弹窗被丢弃/吞掉时永远不来 → 音乐永远停着。
                 // 看门狗：3s 后开始接管恢复（若仍在 .interrupted 会自动避让，不与来电抢）。
@@ -194,18 +199,73 @@ class PlayerManager: NSObject {
     private func recoverAfterInterruption(reason: String) {
         guard wasPlayingBeforeInterruption, !isPlaying else { return }
         Logger.info("中断恢复（\(reason)）：重新激活音频会话后续播")
-        ensureAudioSessionActive()
-        resume()
+        if ensureAudioSessionActive() {
+            resume()
+        } else {
+            // 激活失败（mediaserverd 可能卡在找已删除的「音乐」App）：稍后重试，
+            // 期间由后台任务保活防止进程被挂起、看门狗停摆
+            scheduleActivationRetry(attemptsLeft: 5)
+        }
     }
 
-    /// 确保音频会话处于激活状态（幂等，激活状态下调用无害）
-    private func ensureAudioSessionActive() {
-        let session = AVAudioSession.sharedInstance()
-        if session.category != .playback {
-            try? session.setCategory(.playback, mode: .default,
-                                     options: [.allowBluetooth, .allowAirPlay])
+    private var activationRetryWork: DispatchWorkItem?
+
+    /// 激活失败重试：先 deactivate 回收再 activate（对卡死的会话偶有奇效）
+    private func scheduleActivationRetry(attemptsLeft: Int) {
+        activationRetryWork?.cancel()
+        guard attemptsLeft > 0 else {
+            Logger.error("音频会话激活重试全部失败（mediaserverd 疑似卡死）")
+            return
         }
-        try? session.setActive(true)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.wasPlayingBeforeInterruption, !self.isPlaying else { return }
+            let session = AVAudioSession.sharedInstance()
+            try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+            if self.ensureAudioSessionActive() {
+                Logger.info("音频会话激活重试成功，续播")
+                self.resume()
+            } else {
+                self.scheduleActivationRetry(attemptsLeft: attemptsLeft - 1)
+            }
+        }
+        activationRetryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
+    /// 🚨 v1.0.115：中断期间进程失去「后台音频」保活资格（没在出声），几秒内会被
+    /// iOS 挂起 —— 看门狗/重试全停摆，这就是「关掉弹窗后几秒内不续播」的原因。
+    /// 中断开始即申请 ~30s 后台任务，撑完整个看门狗周期。
+    private func beginRecoveryKeepAlive() {
+        endRecoveryKeepAlive()
+        recoveryBgTask = UIApplication.shared.beginBackgroundTask(withName: "interruption-recovery") { [weak self] in
+            self?.endRecoveryKeepAlive()
+        }
+    }
+
+    private func endRecoveryKeepAlive() {
+        guard recoveryBgTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(recoveryBgTask)
+        recoveryBgTask = .invalid
+    }
+
+    private var recoveryBgTask: UIBackgroundTaskIdentifier = .invalid
+
+    /// 确保音频会话处于激活状态（幂等，激活状态下调用无害）
+    @discardableResult
+    private func ensureAudioSessionActive() -> Bool {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            if session.category != .playback {
+                try session.setCategory(.playback, mode: .default,
+                                        options: [.allowBluetooth, .allowAirPlay])
+            }
+            try session.setActive(true)
+            return true
+        } catch {
+            // 不再吞错误：mediaserverd 卡死 / 会话冲突时这里会抛，留下日志方便定位
+            Logger.error("音频会话激活失败: \(error.localizedDescription)")
+            return false
+        }
     }
 
     /// 看门狗：中断 .began 后周期性检查。若播放器已脱离 .interrupted 但仍暂停
@@ -221,7 +281,10 @@ class PlayerManager: NSObject {
     }
 
     private func attemptInterruptionRecovery(retriesLeft: Int) {
-        guard retriesLeft > 0 else { return }
+        guard retriesLeft > 0 else {
+            endRecoveryKeepAlive()
+            return
+        }
         guard wasPlayingBeforeInterruption, !isPlaying else { return }
         // 已脱离中断但没人在播（timeControlStatus=.paused）→ .ended 被吞，主动接管；
         // 正在播/缓冲中则不处理。来电期间恢复尝试会静默失败（setActive 报错被吞），
@@ -243,6 +306,8 @@ class PlayerManager: NSObject {
     @objc private func handleMediaServicesReset() {
         DispatchQueue.main.async {
             Logger.warn("mediaserverd 已重启，重建音频会话")
+            self.endRecoveryKeepAlive()
+            self.activationRetryWork?.cancel()
             let session = AVAudioSession.sharedInstance()
             try? session.setCategory(.playback, mode: .default,
                                      options: [.allowBluetooth, .allowAirPlay])
@@ -290,6 +355,8 @@ class PlayerManager: NSObject {
         // v1.0.112：主动切歌 = 用户明确意图，清中断恢复标记
         wasPlayingBeforeInterruption = false
         interruptionWatchdog?.cancel()
+        activationRetryWork?.cancel()
+        endRecoveryKeepAlive()
         if let queue = queue, !queue.isEmpty {
             playQueue = queue
             queueIndex = queue.firstIndex(where: { $0.id == song.id }) ?? 0
@@ -361,9 +428,19 @@ class PlayerManager: NSObject {
                     if self.player.timeControlStatus == .paused {
                         self.isPlaying = false
                         self.notifyStateChanged()
+                        // 🚨 v1.0.115：续播两次都没起来 → 会话/播放器管线疑似卡死，
+                        // 整链重建（重新取链 + 新 AVPlayerItem）做最终兜底。
+                        // 10s 内只兜底一次，防失败循环。
+                        if let song = self.currentSong,
+                           Date().timeIntervalSince(self.lastRebuildReplayAt) > 10 {
+                            self.lastRebuildReplayAt = Date()
+                            Logger.warn("续播多次未生效，整链重建重播当前歌：\(song.name)")
+                            self.play(song: song, queue: self.playQueue)
+                        }
                     } else {
                         self.wasPlayingBeforeInterruption = false
                         self.interruptionWatchdog?.cancel()
+                        self.endRecoveryKeepAlive()
                     }
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: retry)
@@ -371,6 +448,7 @@ class PlayerManager: NSObject {
                 // 真正在播（或缓冲中）：中断恢复闭环完成
                 self.wasPlayingBeforeInterruption = false
                 self.interruptionWatchdog?.cancel()
+                self.endRecoveryKeepAlive()
             }
         }
         resumeVerifyWorkItem = work
@@ -390,6 +468,8 @@ class PlayerManager: NSObject {
         // 用户手动操作 = 明确意图，清掉中断恢复标记（防看门狗违背用户意图反复拉起）
         wasPlayingBeforeInterruption = false
         interruptionWatchdog?.cancel()
+        activationRetryWork?.cancel()
+        endRecoveryKeepAlive()
         if isPlaying {
             pause()
         } else {

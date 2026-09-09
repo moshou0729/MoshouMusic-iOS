@@ -207,16 +207,25 @@ final class FloatingLyricsManager: NSObject {
     ///
     /// 注册进 SB 的窗口 context 采用脏区差分：字号 / 透明度 / 尺寸这类「整面变化」
     /// 之后旧像素会残留在合成层里（重影），而截屏会触发全量重合成所以「一截屏就好了」。
-    /// 这里用「短暂隐藏再恢复窗口」达到同样的全量重合成效果（60~80ms，肉眼几乎无感）。
-    /// 注册绑定的是 contextId，隐藏/恢复不会掉注册，也不违反「注册后绝不再动」。
+    ///
+    /// v1.0.115 关键修正：实测 SB 对托管窗口的 **isHidden 翻转不敏感**（可见性由 SB
+    /// 侧接管，App 侧翻转疑似被忽略），而 **几何变化一定触发重合成**（折叠/展开动画
+    /// 能实时跨应用显示就是证据）。这里改为「几何微扰」：frame 外扩 0.5pt 再复原，
+    /// 同时保留 isHidden 快速翻转做双保险。
     func forceRecomposite() {
         guard let window = floatingWindow, !window.isHidden else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         CATransaction.commit()
+
+        let original = window.frame
+        // 几何微扰：外扩 0.5pt（强制 SB 把该窗口区域标记为脏）
         window.isHidden = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-            self?.floatingWindow?.isHidden = false
+        window.frame = original.insetBy(dx: -0.25, dy: -0.25)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let window = self?.floatingWindow else { return }
+            window.frame = original
+            window.isHidden = false
             self?.lyricsView?.refreshHard()
         }
     }

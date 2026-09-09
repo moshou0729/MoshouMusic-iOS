@@ -33,6 +33,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // 回到前台时补一次系统级窗口注册，防止被系统重置
         if ConfigStore.shared.isFloatingLyricsOn {
             FloatingLyricsManager.shared.show()
+            // v1.0.115：进程后台挂起期间 SB 托管窗口内容会被冻结在旧帧，
+            // 回前台后强制重合成一次（否则要等用户点一下悬浮窗才刷新）
+            FloatingLyricsManager.shared.forceRecomposite()
         }
     }
 

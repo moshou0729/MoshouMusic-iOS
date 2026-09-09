@@ -114,11 +114,3 @@ final class FloatingLyricsView: UIView {
         setLines(["", name, singer], animated: false)
     }
 }
-
-/// 悬浮窗根视图：空白处点击穿透到下层应用
-final class FloatingRootView: UIView {
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hit = super.hitTest(point, with: event)
-        return hit === self ? nil : hit
-    }
-}

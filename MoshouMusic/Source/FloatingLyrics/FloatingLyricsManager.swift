@@ -2,16 +2,16 @@ import UIKit
 
 /// 系统级悬浮歌词窗口 — TrollStore 专属能力
 ///
-/// 方案照搬已真机验证的参考实现（TrollSpeed / 墨守提词器）：
-/// 1. FloatingSystemWindow 覆写 UIWindow 私有方法，脱离 WindowServer 托管；
+/// 严格按已真机验证的参考文档实现（TrollSpeed / 墨守提词器方案）：
+/// 1. SystemFloatWindow（OC 子类）覆写 _isSystemWindow=YES、
+///    _isWindowServerHostingManaged=NO，脱离 WindowServer 托管；
 /// 2. dlopen SpringBoardServices 后，把窗口 contextId 注册进 SpringBoard
-///    系统窗口树（跨应用 / 主屏 / 锁屏显示的关键）；
-/// 3. 注册带 0.3s × 4 次重试（contextId 要等下一个 runloop 才生成），
-///    成功后绝不再动 —— 反复重注册反而会让 SpringBoard 把窗口移除；
-/// 4. 失败降级为应用内悬浮，设置页展示诊断串。
-///
-/// 触摸：单窗口方案。根视图空白处 hitTest 返回 nil（点击穿透到下层应用 /
-/// App 主窗口），歌词框区域自身接收拖拽 / 缩放手势。
+///    系统窗口树（registerWindowWithContextID:atLevel:）；
+/// 3. **窗口本身就是悬浮框大小**（不是全屏窗口 + 内部视图）——
+///    窗口只占歌词框那一块，物理上不可能挡住 App 其他区域的触摸；
+/// 4. 注册带 0.3s × 4 次重试（contextId 要等下一个 runloop 才生成），
+///    成功后绝不再动（反复重注册会让 SpringBoard 移除窗口）；
+/// 5. 失败降级为应用内悬浮，设置页展示诊断串。
 final class FloatingLyricsManager: NSObject {
 
     static let shared = FloatingLyricsManager()
@@ -19,8 +19,8 @@ final class FloatingLyricsManager: NSObject {
     /// 与系统 HUD 同级的窗口层级
     private let windowLevel: CGFloat = 10000010.0
 
+    /// 悬浮窗口本身（尺寸 = 歌词框尺寸）
     private var floatingWindow: FloatingSystemWindow?
-    private var rootView: FloatingRootView?
     private var lyricsView: FloatingLyricsView?
 
     private var hostingRegistered = false
@@ -28,7 +28,7 @@ final class FloatingLyricsManager: NSObject {
     private var lyricsIndex: Int = -1
     private var isLocked = false
 
-    private var pinchStartSize: CGSize?
+    private var pinchStartFrame: CGRect?
     private var pinchStartFont: CGFloat = 16
     private var pinchStartSpan: (x: CGFloat, y: CGFloat)?
 
@@ -55,9 +55,10 @@ final class FloatingLyricsManager: NSObject {
             return
         }
 
-        let screen = UIScreen.main.bounds
-
-        let window = FloatingSystemWindow(frame: screen)
+        // —— 文档 3.4：窗口就是悬浮框大小 ——
+        let frame = CGRect(origin: ConfigStore.shared.floatingOrigin,
+                           size: ConfigStore.shared.floatingSize)
+        let window = FloatingSystemWindow(frame: frame)
         window.windowLevel = UIWindow.Level(rawValue: windowLevel)
         window.backgroundColor = .clear
         window.isOpaque = false
@@ -65,25 +66,22 @@ final class FloatingLyricsManager: NSObject {
             window.windowScene = scene
         }
 
-        // 全屏 window + 内部小歌词视图（同参考实现），空白处点击穿透
-        let root = FloatingRootView(frame: screen)
+        // 文档第七节：根视图空白区 hitTest 返回 nil，触摸落到下层
+        let root = FloatingRootView(frame: window.bounds)
         root.backgroundColor = .clear
         let viewController = UIViewController()
         viewController.view = root
         window.rootViewController = viewController
 
-        let lyricView = FloatingLyricsView(
-            frame: CGRect(origin: ConfigStore.shared.floatingOrigin,
-                          size: ConfigStore.shared.floatingSize),
-            fontSize: ConfigStore.shared.floatingFontSize
-        )
+        let lyricView = FloatingLyricsView(frame: window.bounds,
+                                           fontSize: ConfigStore.shared.floatingFontSize)
         lyricView.backgroundColor = UIColor.black
             .withAlphaComponent(CGFloat(ConfigStore.shared.floatingOpacity))
         lyricView.isUserInteractionEnabled = true
+        lyricView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         root.addSubview(lyricView)
 
         self.floatingWindow = window
-        self.rootView = root
         self.lyricsView = lyricView
 
         setupGestures()
@@ -164,16 +162,17 @@ final class FloatingLyricsManager: NSObject {
     // MARK: - 设置同步
 
     /// 设置页改动后立即生效（尺寸 / 字号 / 透明度 / 位置）
+    /// 直接改窗口 frame —— 窗口即悬浮框
     func applySettings() {
-        guard let view = lyricsView else { return }
-        view.bounds = CGRect(origin: .zero, size: ConfigStore.shared.floatingSize)
-        view.frame.origin = ConfigStore.shared.floatingOrigin
+        guard let window = floatingWindow, let view = lyricsView else { return }
+        let size = ConfigStore.shared.floatingSize
+        window.frame = CGRect(origin: ConfigStore.shared.floatingOrigin, size: size)
+        view.bounds = CGRect(origin: .zero, size: size)
         view.fontSize = ConfigStore.shared.floatingFontSize
         if !isLocked {
             view.backgroundColor = UIColor.black
                 .withAlphaComponent(CGFloat(ConfigStore.shared.floatingOpacity))
         }
-        clampIntoScreen(view)
     }
 
     /// 实时更新悬浮歌词透明度
@@ -184,7 +183,7 @@ final class FloatingLyricsManager: NSObject {
         }
     }
 
-    // MARK: - 手势（直接挂在歌词视图上）
+    // MARK: - 手势（窗口即悬浮框：拖动 = 移动窗口，捏合 = 缩放窗口）
 
     private func setupGestures() {
         guard let view = lyricsView else { return }
@@ -201,32 +200,32 @@ final class FloatingLyricsManager: NSObject {
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard !isLocked, let view = lyricsView else { return }
-        let translation = gesture.translation(in: view.superview)
-        view.center = CGPoint(x: view.center.x + translation.x,
-                              y: view.center.y + translation.y)
-        gesture.setTranslation(.zero, in: view.superview)
+        guard !isLocked, let window = floatingWindow else { return }
+        let translation = gesture.translation(in: nil)
+        window.frame.origin.x += translation.x
+        window.frame.origin.y += translation.y
+        gesture.setTranslation(.zero, in: nil)
 
         if gesture.state == .ended {
-            clampIntoScreen(view)
-            ConfigStore.shared.floatingOrigin = view.frame.origin
+            clampWindowIntoScreen(window)
+            ConfigStore.shared.floatingOrigin = window.frame.origin
         }
     }
 
     /// 捏合缩放：按双指的横向 / 纵向位移分量分别缩放宽高
     /// —— 竖直拉只改高度，横向拉只改宽度，斜着拉等比缩放
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        guard !isLocked, let view = lyricsView else { return }
+        guard !isLocked, let window = floatingWindow else { return }
         let screenW = UIScreen.main.bounds.width
 
         switch gesture.state {
         case .began:
-            pinchStartSize = view.bounds.size
+            pinchStartFrame = window.frame
             pinchStartFont = ConfigStore.shared.floatingFontSize
             pinchStartSpan = pinchSpan(gesture)
 
         case .changed:
-            guard let start = pinchStartSize else { break }
+            guard let start = pinchStartFrame else { break }
             var width = start.width
             var height = start.height
 
@@ -245,20 +244,21 @@ final class FloatingLyricsManager: NSObject {
                 height = clamp(start.height * gesture.scale, min: 72, max: 360)
             }
 
-            view.bounds = CGRect(origin: .zero, size: CGSize(width: width, height: height))
+            window.frame = CGRect(origin: start.origin,
+                                  size: CGSize(width: width, height: height))
             let ratio = height / max(1, start.height)
-            view.fontSize = clamp(pinchStartFont * ratio, min: 10, max: 34)
+            lyricsView?.fontSize = clamp(pinchStartFont * ratio, min: 10, max: 34)
 
         case .ended, .cancelled:
-            ConfigStore.shared.floatingSize = view.bounds.size
-            ConfigStore.shared.floatingFontSize = view.fontSize
-            clampIntoScreen(view)
-            ConfigStore.shared.floatingOrigin = view.frame.origin
-            pinchStartSize = nil
+            clampWindowIntoScreen(window)
+            ConfigStore.shared.floatingSize = window.bounds.size
+            ConfigStore.shared.floatingOrigin = window.frame.origin
+            ConfigStore.shared.floatingFontSize = lyricsView?.fontSize ?? ConfigStore.shared.floatingFontSize
+            pinchStartFrame = nil
             pinchStartSpan = nil
 
         default:
-            pinchStartSize = nil
+            pinchStartFrame = nil
             pinchStartSpan = nil
         }
     }
@@ -284,13 +284,13 @@ final class FloatingLyricsManager: NSObject {
         Swift.min(Swift.max(value, min), max)
     }
 
-    /// 保证悬浮框完整留在屏幕内
-    private func clampIntoScreen(_ view: UIView) {
+    /// 保证悬浮窗完整留在屏幕内
+    private func clampWindowIntoScreen(_ window: UIWindow) {
         let screen = UIScreen.main.bounds
-        let maxX = Swift.max(6, screen.width - view.bounds.width - 6)
-        let maxY = Swift.max(6, screen.height - view.bounds.height - 6)
-        view.frame.origin = CGPoint(x: clamp(view.frame.origin.x, min: 6, max: maxX),
-                                    y: clamp(view.frame.origin.y, min: 6, max: maxY))
+        let maxX = Swift.max(6, screen.width - window.frame.width - 6)
+        let maxY = Swift.max(6, screen.height - window.frame.height - 6)
+        window.frame.origin = CGPoint(x: clamp(window.frame.origin.x, min: 6, max: maxX),
+                                      y: clamp(window.frame.origin.y, min: 6, max: maxY))
     }
 
     // MARK: - 通知
@@ -350,5 +350,13 @@ final class FloatingLyricsManager: NSObject {
             let next = safeIndex + 1 < lines.count ? lines[safeIndex + 1].text : ""
             self.lyricsView?.setLines([prev, current, next], animated: animated)
         }
+    }
+}
+
+/// 悬浮窗根视图 —— 文档第七节：空白区点击穿透（触摸落到下层应用 / App 主窗口）
+final class FloatingRootView: UIView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
     }
 }

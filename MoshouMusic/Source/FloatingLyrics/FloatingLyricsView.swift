@@ -10,6 +10,7 @@ final class FloatingLyricsView: UIView {
 
     private let container = UIView()
     private let labels: [UILabel] = (0..<3).map { _ in UILabel() }
+    private var noteIcon: UIImageView?
 
     /// 中间行字号；侧行自动小一号
     var fontSize: CGFloat {
@@ -123,5 +124,30 @@ final class FloatingLyricsView: UIView {
     /// 无歌词时的占位显示（上：空 / 中：歌名 / 下：歌手）
     func setPlaceholder(name: String, singer: String) {
         setLines(["", name, singer], animated: false)
+    }
+
+    /// 折叠态：隐藏歌词，仅显示音符图标（窗口缩成小圆点时）
+    func setCollapsed(_ collapsed: Bool) {
+        container.isHidden = collapsed
+        if collapsed {
+            if noteIcon == nil {
+                let icon = UIImageView(image: UIImage(systemName: "music.note"))
+                icon.tintColor = .white
+                icon.contentMode = .center
+                addSubview(icon)
+                icon.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+                    icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+                    icon.widthAnchor.constraint(equalToConstant: 26),
+                    icon.heightAnchor.constraint(equalToConstant: 26),
+                ])
+                noteIcon = icon
+            }
+            noteIcon?.isHidden = false
+        } else {
+            noteIcon?.isHidden = true
+            refreshHard()
+        }
     }
 }

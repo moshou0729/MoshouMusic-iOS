@@ -32,6 +32,10 @@ final class FloatingLyricsManager: NSObject {
     private var pinchStartFont: CGFloat = 16
     private var pinchStartSpan: (x: CGFloat, y: CGFloat)?
 
+    /// v1.0.110：折叠态（滑动收成小圆点，点按展开）
+    private var isCollapsed = false
+    private var savedExpandedFrame: CGRect?
+
     /// 是否已成功注册为系统级（跨应用）窗口
     private(set) var isGlobalWindowReady = false
     /// 诊断信息（设置页展示）
@@ -231,6 +235,16 @@ final class FloatingLyricsManager: NSObject {
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
         doubleTap.numberOfTapsRequired = 2
         view.addGestureRecognizer(doubleTap)
+
+        // v1.0.110：上/下滑折叠成小圆点；折叠态点按展开（让位于双击锁定）
+        for direction in [UISwipeGestureRecognizer.Direction.up, .down] {
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeCollapse(_:)))
+            swipe.direction = direction
+            view.addGestureRecognizer(swipe)
+        }
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleCollapsedTap))
+        tap.require(toFail: doubleTap)
+        view.addGestureRecognizer(tap)
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
@@ -242,14 +256,18 @@ final class FloatingLyricsManager: NSObject {
 
         if gesture.state == .ended {
             clampWindowIntoScreen(window)
-            ConfigStore.shared.floatingOrigin = window.frame.origin
+            if isCollapsed {
+                savedExpandedFrame?.origin = window.frame.origin
+            } else {
+                ConfigStore.shared.floatingOrigin = window.frame.origin
+            }
         }
     }
 
     /// 捏合缩放：按双指的横向 / 纵向位移分量分别缩放宽高
     /// —— 竖直拉只改高度，横向拉只改宽度，斜着拉等比缩放
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        guard !isLocked, let window = floatingWindow else { return }
+        guard !isLocked, !isCollapsed, let window = floatingWindow else { return }
         let screenW = UIScreen.main.bounds.width
 
         switch gesture.state {
@@ -310,8 +328,56 @@ final class FloatingLyricsManager: NSObject {
         isLocked.toggle()
         guard let view = lyricsView else { return }
         UIView.animate(withDuration: 0.2) {
-            view.backgroundColor = UIColor.black.withAlphaComponent(
-                self.isLocked ? 0.25 : CGFloat(ConfigStore.shared.floatingOpacity))
+            view.backgroundColor = self.configuredBgColor(alphaOverride: self.isLocked ? 0.25 : nil)
+        }
+    }
+
+    // MARK: - 折叠 / 展开（同播放条：滑动收起，点按展开）
+
+    @objc private func handleSwipeCollapse(_ gesture: UISwipeGestureRecognizer) {
+        guard !isCollapsed, !isLocked else { return }
+        collapseWindow()
+    }
+
+    @objc private func handleCollapsedTap() {
+        guard isCollapsed else { return }
+        expandWindow()
+    }
+
+    /// 折叠：窗口缩成 48×48 圆点（同播放条滑动收起的交互）
+    private func collapseWindow() {
+        guard let window = floatingWindow, !isCollapsed else { return }
+        isCollapsed = true
+        savedExpandedFrame = window.frame
+        let side: CGFloat = 48
+        let screen = UIScreen.main.bounds
+        let origin = CGPoint(x: clamp(window.frame.origin.x, min: 6, max: max(6, screen.width - side - 6)),
+                             y: clamp(window.frame.origin.y, min: 6, max: max(6, screen.height - side - 6)))
+        lyricsView?.setCollapsed(true)
+        Logger.info("悬浮歌词：已折叠成圆点，点按可展开")
+        UIView.animate(withDuration: 0.35, delay: 0,
+                       usingSpringWithDamping: 0.75, initialSpringVelocity: 0.8,
+                       options: [.curveEaseOut, .allowUserInteraction]) {
+            window.frame = CGRect(origin: origin, size: CGSize(width: side, height: side))
+        } completion: { [weak self] _ in
+            self?.forceRecomposite()
+        }
+    }
+
+    /// 展开：恢复折叠前的尺寸与位置
+    private func expandWindow() {
+        guard let window = floatingWindow, isCollapsed else { return }
+        isCollapsed = false
+        let target = savedExpandedFrame ?? CGRect(origin: window.frame.origin,
+                                                  size: ConfigStore.shared.floatingSize)
+        lyricsView?.setCollapsed(false)
+        Logger.info("悬浮歌词：已展开恢复")
+        UIView.animate(withDuration: 0.35, delay: 0,
+                       usingSpringWithDamping: 0.75, initialSpringVelocity: 0.8,
+                       options: [.curveEaseOut, .allowUserInteraction]) {
+            window.frame = target
+        } completion: { [weak self] _ in
+            self?.forceRecomposite()
         }
     }
 

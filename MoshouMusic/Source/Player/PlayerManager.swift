@@ -124,6 +124,75 @@ class PlayerManager: NSObject {
             name: .AVPlayerItemDidPlayToEndTime,
             object: nil
         )
+
+        // v1.0.110：系统中断 / 音频路由变化后自动续播。
+        // 背景：用户删除了自带「音乐」App 后，iOS mediaserverd 在媒体会话恢复 /
+        // 路由切换时仍会尝试唤起「音乐」的上次播放（弹「恢复音乐？」），并顺带
+        // 中断第三方播放。系统只负责打断、不负责恢复 —— 这里补上恢复逻辑。
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioSessionInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
+    }
+
+    /// 中断前是否在播（来电 / 系统弹窗打断 → 结束后按此恢复）
+    private var wasPlayingBeforeInterruption = false
+
+    /// 系统中断处理：中断结束后自动续播（系统只打断不恢复，播放器需自行接管）
+    @objc private func handleAudioSessionInterruption(_ note: Notification) {
+        guard let info = note.userInfo,
+              let typeRaw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
+        switch type {
+        case .began:
+            wasPlayingBeforeInterruption = isPlaying
+            if isPlaying {
+                Logger.warn("音频会话被系统中断，暂停播放（中断结束后自动续播）")
+                pause()
+            }
+        case .ended:
+            let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+            let delay: TimeInterval = options.contains(.shouldResume) ? 0.3 : 1.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self, self.wasPlayingBeforeInterruption, !self.isPlaying else { return }
+                try? AVAudioSession.sharedInstance().setActive(true)
+                self.resume()
+                Logger.info("系统中断结束，已自动续播 (shouldResume=\(options.contains(.shouldResume)))")
+            }
+            wasPlayingBeforeInterruption = false
+        @unknown default:
+            break
+        }
+    }
+
+    /// 音频路由变化：连上新输出设备（蓝牙耳机/车机）且此前在播 → 续播；
+    /// 拔出耳机保持系统默认暂停（防外放尴尬），但记住播放意图
+    @objc private func handleAudioRouteChange(_ note: Notification) {
+        guard let info = note.userInfo,
+              let reasonRaw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw) else { return }
+        switch reason {
+        case .newDeviceAvailable:
+            guard wasPlayingBeforeInterruption || isPlaying else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self = self, !self.isPlaying else { return }
+                self.resume()
+                Logger.info("音频路由切换完成，已自动续播")
+            }
+        case .oldDeviceUnavailable:
+            wasPlayingBeforeInterruption = isPlaying
+        default:
+            break
+        }
     }
 
     // MARK: - 播放控制

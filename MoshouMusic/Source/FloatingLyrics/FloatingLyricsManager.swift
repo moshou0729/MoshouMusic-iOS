@@ -135,7 +135,7 @@ final class FloatingLyricsManager: NSObject {
 
     private func registerHostingIfNeeded() {
         guard let window = floatingWindow, !hostingRegistered else { return }
-        if FloatingWindowHosting.registerWindow(window, level: Double(windowLevel)) {
+        if FloatingWindowHosting.register(window: window, level: Double(windowLevel)) {
             hostingRegistered = true
             isGlobalWindowReady = true
             Logger.info("悬浮歌词：已注册系统级窗口，可跨应用显示")

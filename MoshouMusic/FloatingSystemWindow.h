@@ -26,10 +26,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 把窗口注册到系统托管服务（成功后即可跨应用显示）
 /// @return YES 表示注册成功
-+ (BOOL)registerWindow:(UIWindow *)window level:(double)level;
++ (BOOL)registerWindow:(UIWindow *)window level:(double)level NS_SWIFT_NAME(register(window:level:));
 
 /// 注销窗口（隐藏悬浮窗时调用）
-+ (void)unregisterWindow:(UIWindow *)window;
++ (void)unregisterWindow:(UIWindow *)window NS_SWIFT_NAME(unregister(window:));
 
 @end
 

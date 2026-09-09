@@ -87,11 +87,17 @@ final class FloatingSettingsViewController: UIViewController {
         resetButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .medium)
         resetButton.setTitleColor(Theme.primary, for: .normal)
 
-        [switchRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, resetButton, tipLabel]
+        // v1.0.116：诊断日志入口（前台展示 + 复制，排查续播 / 悬浮问题）
+        logButton.setTitle("诊断日志与恢复记录（点开查看 / 复制）", for: .normal)
+        logButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .medium)
+        logButton.setTitleColor(Theme.primary, for: .normal)
+
+        [switchRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, resetButton, logButton, tipLabel]
             .forEach { stack.addArrangedSubview($0) }
         stack.setCustomSpacing(6, after: switchRow)
         stack.setCustomSpacing(24, after: statusLabel)
         stack.setCustomSpacing(24, after: colorInputRow)
+        stack.setCustomSpacing(24, after: logButton)
         colorRow.heightAnchor.constraint(equalToConstant: 52).isActive = true
     }
 
@@ -141,6 +147,14 @@ final class FloatingSettingsViewController: UIViewController {
             self.present(picker, animated: true)
         }
         resetButton.addTarget(self, action: #selector(resetLayout), for: .touchUpInside)
+        logButton.addTarget(self, action: #selector(openLogs), for: .touchUpInside)
+    }
+
+    @objc private func openLogs() {
+        let vc = DiagnosticsLogViewController()
+        let nav = UINavigationController(rootViewController: vc)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true)
     }
 
     private func apply() {

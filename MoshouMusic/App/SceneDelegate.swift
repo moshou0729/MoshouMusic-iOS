@@ -30,12 +30,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        // 回到前台时补一次系统级窗口注册，防止被系统重置
+        // 🚨 v1.0.116：参考网易云式占坑 —— 回前台立即抢占音频会话恢复被中断的播放
+        PlayerManager.shared.recoverIfInterruptedOnForeground()
         if ConfigStore.shared.isFloatingLyricsOn {
-            FloatingLyricsManager.shared.show()
-            // v1.0.115：进程后台挂起期间 SB 托管窗口内容会被冻结在旧帧，
-            // 回前台后强制重合成一次（否则要等用户点一下悬浮窗才刷新）
-            FloatingLyricsManager.shared.forceRecomposite()
+            // v1.0.116：进程后台挂起期间 SB 托管窗口内容冻结在旧帧，回前台后
+            // 销毁重建窗口（微扰/重合成实测无效，只有新 context 能保证全量刷新）
+            FloatingLyricsManager.shared.hardRefresh()
         }
     }
 

@@ -192,7 +192,7 @@ final class FloatingLyricsManager: NSObject {
         if !isLocked {
             lyricsView?.backgroundColor = configuredBgColor()
         }
-        forceRecomposite()
+        hardRefresh()
     }
 
     /// 实时更新悬浮歌词透明度
@@ -227,6 +227,56 @@ final class FloatingLyricsManager: NSObject {
             window.frame = original
             window.isHidden = false
             self?.lyricsView?.refreshHard()
+        }
+    }
+
+    /// 🚨 v1.0.116：彻底重建窗口（设置变更后的「硬刷新」）
+    ///
+    /// 实测 SpringBoard 对托管 context 的内容更新极度惰性：只有触摸 / 截屏 /
+    /// 大幅几何动画才触发重合成；0.5pt 微扰 + isHidden 翻转对尺寸 / 颜色这类
+    /// 「内容变化」一律无效（v1.0.115 已证伪）。唯一确定生效的办法：销毁旧窗口、
+    /// 重新创建并注册 —— 新 context 的首次合成必然是全量的。
+    ///
+    /// 代价：约 0.3~1s 的重建窗口期（注册带重试），设置变更（离散动作）可接受；
+    /// 手势拖动 / 折叠 / 展开仍走轻量的 forceRecomposite（触摸驱动，本就有效）。
+    func hardRefresh() {
+        guard let oldWindow = floatingWindow else {
+            // 窗口从未创建过（首次回前台等场景）：按开关状态直接创建
+            if ConfigStore.shared.isFloatingLyricsOn { show() }
+            return
+        }
+        let wasCollapsed = isCollapsed
+        let frame = wasCollapsed ? (savedExpandedFrame ?? oldWindow.frame) : oldWindow.frame
+
+        // 折叠态重建后以展开态恢复（配置里存的本来就是展开尺寸/位置）
+        if wasCollapsed {
+            isCollapsed = false
+            savedExpandedFrame = nil
+            lyricsView?.setCollapsed(false)
+        }
+        ConfigStore.shared.floatingSize = frame.size
+        ConfigStore.shared.floatingOrigin = frame.origin
+
+        // 拆除旧窗口（unregister + 释放）
+        if hostingRegistered {
+            FloatingWindowHosting.unregister(window: oldWindow)
+            hostingRegistered = false
+            isGlobalWindowReady = false
+            lastContextId = 0
+        }
+        oldWindow.isHidden = true
+        floatingWindow = nil
+        lyricsView = nil
+        registerAttempts = 0
+        Logger.info("悬浮歌词：设置变更，重建系统级窗口")
+
+        // 下一个 runloop 全量重建（show() 走完整创建 + 注册重试）
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.show()
+            if wasCollapsed {
+                self.collapseWindow()
+            }
         }
     }
 
@@ -407,6 +457,10 @@ final class FloatingLyricsManager: NSObject {
 
     private func observeNotifications() {
         let center = NotificationCenter.default
+        // 幂等：hardRefresh 重建窗口会重复走 show() → observeNotifications，
+        // 不先移除会导致通知重复投递
+        center.removeObserver(self, name: .lyricsLineChanged, object: nil)
+        center.removeObserver(self, name: .playerStateChanged, object: nil)
         center.addObserver(self, selector: #selector(lyricsLineChanged(_:)),
                            name: .lyricsLineChanged, object: nil)
         center.addObserver(self, selector: #selector(playerStateChanged),

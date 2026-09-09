@@ -63,7 +63,8 @@ final class FloatingLyricsView: UIView {
 
     private func applyStyle() {
         for (index, label) in labels.enumerated() {
-            let size = index == 1 ? fontSize : max(10, fontSize - 2)
+            // v1.0.116：上下两行 = 中间行的 70%（原来是固定小 2pt）
+            let size = index == 1 ? fontSize : max(9, fontSize * 0.7)
             label.font = UIFont.systemFont(ofSize: size,
                                            weight: index == 1 ? .semibold : .regular)
         }

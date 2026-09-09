@@ -270,11 +270,11 @@ class PlayerManager: NSObject {
 
     /// 看门狗：中断 .began 后周期性检查。若播放器已脱离 .interrupted 但仍暂停
     /// （说明 .ended 通知被吞），主动接管恢复；仍在 .interrupted（来电/弹窗未关）
-    /// 则避让并稍后重试，最多 4 轮。
+    /// 则避让并稍后重试，最多 6 轮（3s 起跑 + 6×4s ≈ 27s，覆盖后台任务窗口）。
     private func scheduleInterruptionWatchdog() {
         interruptionWatchdog?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.attemptInterruptionRecovery(retriesLeft: 4)
+            self?.attemptInterruptionRecovery(retriesLeft: 6)
         }
         interruptionWatchdog = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: work)

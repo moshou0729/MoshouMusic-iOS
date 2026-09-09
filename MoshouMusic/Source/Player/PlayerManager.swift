@@ -223,21 +223,18 @@ class PlayerManager: NSObject {
     private func attemptInterruptionRecovery(retriesLeft: Int) {
         guard retriesLeft > 0 else { return }
         guard wasPlayingBeforeInterruption, !isPlaying else { return }
-        switch player.timeControlStatus {
-        case .interrupted:
-            // 还在被打断（来电中 / 「恢复音乐」弹窗没关）—— 避让，稍后再试
+        // 仍在被打断（来电中 / 「恢复音乐」弹窗没关）—— 避让，稍后再试
+        if player.reasonForWaitingToPlay == .interrupted {
             let next = DispatchWorkItem { [weak self] in
                 self?.attemptInterruptionRecovery(retriesLeft: retriesLeft - 1)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: next)
-        case .paused:
-            // 已脱离中断但没人在播 —— .ended 被吞，主动接管
+            return
+        }
+        // 已脱离中断但没人在播 —— .ended 被吞，主动接管；正在播/缓冲则不处理
+        if player.timeControlStatus == .paused {
             Logger.warn("中断后播放未恢复（.ended 未送达），看门狗自动接管")
             recoverAfterInterruption(reason: "看门狗接管")
-        case .playing, .waiting:
-            break // 已经在播（含缓冲），无需处理
-        @unknown default:
-            break
         }
     }
 
@@ -354,29 +351,29 @@ class PlayerManager: NSObject {
         resumeVerifyWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.isPlaying else { return }
-            guard self.player.timeControlStatus == .paused else {
-                if self.player.timeControlStatus != .interrupted {
-                    // 真正在播（或缓冲中）：中断恢复闭环完成
-                    self.wasPlayingBeforeInterruption = false
-                    self.interruptionWatchdog?.cancel()
+            // 仍处中断中（如来电 / 弹窗未关）：等中断结束的通知或看门狗，不动
+            if self.player.reasonForWaitingToPlay == .interrupted { return }
+            if self.player.timeControlStatus == .paused {
+                Logger.warn("恢复播放未真正生效(timeControlStatus=.paused)，重新激活会话后重试")
+                self.ensureAudioSessionActive()
+                self.player.play()
+                // 再给一次机会，若仍 paused 则如实回滚状态（UI 显示停止，看门狗可再接管）
+                let retry = DispatchWorkItem { [weak self] in
+                    guard let self = self, self.isPlaying else { return }
+                    if self.player.timeControlStatus == .paused {
+                        self.isPlaying = false
+                        self.notifyStateChanged()
+                    } else if self.player.reasonForWaitingToPlay != .interrupted {
+                        self.wasPlayingBeforeInterruption = false
+                        self.interruptionWatchdog?.cancel()
+                    }
                 }
-                return
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: retry)
+            } else {
+                // 真正在播（或缓冲中）：中断恢复闭环完成
+                self.wasPlayingBeforeInterruption = false
+                self.interruptionWatchdog?.cancel()
             }
-            Logger.warn("恢复播放未真正生效(timeControlStatus=.paused)，重新激活会话后重试")
-            self.ensureAudioSessionActive()
-            self.player.play()
-            // 再给一次机会，若仍 paused 则如实回滚状态（UI 显示停止，看门狗可再接管）
-            let retry = DispatchWorkItem { [weak self] in
-                guard let self = self, self.isPlaying else { return }
-                if self.player.timeControlStatus == .paused {
-                    self.isPlaying = false
-                    self.notifyStateChanged()
-                } else if self.player.timeControlStatus != .interrupted {
-                    self.wasPlayingBeforeInterruption = false
-                    self.interruptionWatchdog?.cancel()
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: retry)
         }
         resumeVerifyWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)

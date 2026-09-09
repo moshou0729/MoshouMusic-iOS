@@ -98,7 +98,7 @@ final class FloatingLyricsManager: NSObject {
     func hide() {
         guard let window = floatingWindow else { return }
         if hostingRegistered {
-            FloatingWindowHosting.unregisterWindow(window)
+            FloatingWindowHosting.unregister(window: window)
             hostingRegistered = false
             isGlobalWindowReady = false
         }

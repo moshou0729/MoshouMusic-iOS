@@ -141,36 +141,121 @@ class PlayerManager: NSObject {
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+        // v1.0.112：mediaserverd 被系统重启（「恢复音乐」弹窗场景高发）后，
+        // 音频会话被强制反激活、AVPlayer 管线失效 → 「进 App 也播不了」。
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesReset),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil
+        )
     }
 
     /// 中断前是否在播（来电 / 系统弹窗打断 → 结束后按此恢复）
+    /// 🚨 v1.0.112：只在「确实在播时被打断」置 true，且**收到 .ended 不清、验证真正续播成功才清**——
+    /// 「恢复音乐？」弹窗型中断的 .ended 经常不送达，过早清标记会让恢复链路彻底断掉。
     private var wasPlayingBeforeInterruption = false
+    /// 中断看门狗（.ended 通知被系统吞掉时接管恢复）
+    private var interruptionWatchdog: DispatchWorkItem?
 
     /// 系统中断处理：中断结束后自动续播（系统只打断不恢复，播放器需自行接管）
     @objc private func handleAudioSessionInterruption(_ note: Notification) {
         guard let info = note.userInfo,
               let typeRaw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
-        switch type {
-        case .began:
-            wasPlayingBeforeInterruption = isPlaying
-            if isPlaying {
-                Logger.warn("音频会话被系统中断，暂停播放（中断结束后自动续播）")
-                pause()
+        DispatchQueue.main.async {
+            switch type {
+            case .began:
+                if self.isPlaying {
+                    self.wasPlayingBeforeInterruption = true
+                    Logger.warn("音频会话被系统中断，暂停播放（中断结束后自动续播）")
+                    self.pause()
+                }
+                // 🚨 v1.0.112：「恢复音乐？」弹窗在亮屏瞬间弹出 → 中断 .began；
+                // 但 .ended 在弹窗被丢弃/吞掉时永远不来 → 音乐永远停着。
+                // 看门狗：3s 后开始接管恢复（若仍在 .interrupted 会自动避让，不与来电抢）。
+                self.scheduleInterruptionWatchdog()
+            case .ended:
+                let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+                let delay: TimeInterval = options.contains(.shouldResume) ? 0.3 : 1.0
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self = self, self.wasPlayingBeforeInterruption, !self.isPlaying else { return }
+                    self.recoverAfterInterruption(reason: "中断结束通知")
+                }
+            @unknown default:
+                break
             }
-        case .ended:
-            let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
-            let delay: TimeInterval = options.contains(.shouldResume) ? 0.3 : 1.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self = self, self.wasPlayingBeforeInterruption, !self.isPlaying else { return }
-                try? AVAudioSession.sharedInstance().setActive(true)
-                self.resume()
-                Logger.info("系统中断结束，已自动续播 (shouldResume=\(options.contains(.shouldResume)))")
+        }
+    }
+
+    /// 中断后统一恢复入口：先重新激活会话（被系统中断后 session 处于反激活状态，
+    /// 不激活就 play() 会静默无声 —— 「进 App 点播放也没反应」的真凶），再续播
+    private func recoverAfterInterruption(reason: String) {
+        guard wasPlayingBeforeInterruption, !isPlaying else { return }
+        Logger.info("中断恢复（\(reason)）：重新激活音频会话后续播")
+        ensureAudioSessionActive()
+        resume()
+    }
+
+    /// 确保音频会话处于激活状态（幂等，激活状态下调用无害）
+    private func ensureAudioSessionActive() {
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playback {
+            try? session.setCategory(.playback, mode: .default,
+                                     options: [.allowBluetooth, .allowAirPlay])
+        }
+        try? session.setActive(true)
+    }
+
+    /// 看门狗：中断 .began 后周期性检查。若播放器已脱离 .interrupted 但仍暂停
+    /// （说明 .ended 通知被吞），主动接管恢复；仍在 .interrupted（来电/弹窗未关）
+    /// 则避让并稍后重试，最多 4 轮。
+    private func scheduleInterruptionWatchdog() {
+        interruptionWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.attemptInterruptionRecovery(retriesLeft: 4)
+        }
+        interruptionWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: work)
+    }
+
+    private func attemptInterruptionRecovery(retriesLeft: Int) {
+        guard retriesLeft > 0 else { return }
+        guard wasPlayingBeforeInterruption, !isPlaying else { return }
+        switch player.timeControlStatus {
+        case .interrupted:
+            // 还在被打断（来电中 / 「恢复音乐」弹窗没关）—— 避让，稍后再试
+            let next = DispatchWorkItem { [weak self] in
+                self?.attemptInterruptionRecovery(retriesLeft: retriesLeft - 1)
             }
-            wasPlayingBeforeInterruption = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: next)
+        case .paused:
+            // 已脱离中断但没人在播 —— .ended 被吞，主动接管
+            Logger.warn("中断后播放未恢复（.ended 未送达），看门狗自动接管")
+            recoverAfterInterruption(reason: "看门狗接管")
+        case .playing, .waiting:
+            break // 已经在播（含缓冲），无需处理
         @unknown default:
             break
+        }
+    }
+
+    /// mediaserverd 重启（系统级媒体服务崩溃/复位）：会话反激活、播放器失效。
+    /// 重建会话；若此前在播，自动重播当前歌（走完整取链链路）。
+    @objc private func handleMediaServicesReset() {
+        DispatchQueue.main.async {
+            Logger.warn("mediaserverd 已重启，重建音频会话")
+            let session = AVAudioSession.sharedInstance()
+            try? session.setCategory(.playback, mode: .default,
+                                     options: [.allowBluetooth, .allowAirPlay])
+            try? session.setActive(true)
+            let shouldReplay = self.wasPlayingBeforeInterruption || self.isPlaying
+            self.wasPlayingBeforeInterruption = false
+            self.interruptionWatchdog?.cancel()
+            guard shouldReplay, let song = self.currentSong else { return }
+            self.isPlaying = false
+            self.play(song: song, queue: self.playQueue)
         }
     }
 
@@ -180,18 +265,21 @@ class PlayerManager: NSObject {
         guard let info = note.userInfo,
               let reasonRaw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw) else { return }
-        switch reason {
-        case .newDeviceAvailable:
-            guard wasPlayingBeforeInterruption || isPlaying else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                guard let self = self, !self.isPlaying else { return }
-                self.resume()
-                Logger.info("音频路由切换完成，已自动续播")
+        DispatchQueue.main.async {
+            switch reason {
+            case .newDeviceAvailable:
+                guard self.wasPlayingBeforeInterruption || self.isPlaying else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    guard let self = self, !self.isPlaying else { return }
+                    self.recoverAfterInterruption(reason: "音频路由切换")
+                }
+            case .oldDeviceUnavailable:
+                if self.isPlaying {
+                    self.wasPlayingBeforeInterruption = true
+                }
+            default:
+                break
             }
-        case .oldDeviceUnavailable:
-            wasPlayingBeforeInterruption = isPlaying
-        default:
-            break
         }
     }
 
@@ -202,6 +290,9 @@ class PlayerManager: NSObject {
         // v1.0.88：作废上一条还在路上的取链链路（其 completion 会因令牌不符被丢弃）
         playGeneration += 1
         playbackCommitted = false
+        // v1.0.112：主动切歌 = 用户明确意图，清中断恢复标记
+        wasPlayingBeforeInterruption = false
+        interruptionWatchdog?.cancel()
         if let queue = queue, !queue.isEmpty {
             playQueue = queue
             queueIndex = queue.firstIndex(where: { $0.id == song.id }) ?? 0
@@ -245,10 +336,50 @@ class PlayerManager: NSObject {
         // v1.0.88：没有可恢复的播放项（刚切歌还在取链 / 上一首已因失败被摘除）时，
         // 不要把可能残留的旧音频放出来
         guard observedItem != nil else { return }
+        // 🚨 v1.0.112：系统中断（尤其「恢复音乐？」弹窗型）后 session 处于反激活状态，
+        // 且 .ended 可能不送达；不重新激活就 play() 会静默无声 —— 用户「点播放没反应」的真凶。
+        ensureAudioSessionActive()
         player.play()
         isPlaying = true
         updateNowPlayingInfo()
         notifyStateChanged()
+        verifyResumeStarted()
+    }
+
+    /// v1.0.112：0.8s 后核对播放是否真正起来了（不信任 isPlaying 标记，以
+    /// AVPlayer.timeControlStatus 为准）。没起来 → 回滚状态 + 重新激活再试一次。
+    private var resumeVerifyWorkItem: DispatchWorkItem?
+
+    private func verifyResumeStarted() {
+        resumeVerifyWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.isPlaying else { return }
+            guard self.player.timeControlStatus == .paused else {
+                if self.player.timeControlStatus != .interrupted {
+                    // 真正在播（或缓冲中）：中断恢复闭环完成
+                    self.wasPlayingBeforeInterruption = false
+                    self.interruptionWatchdog?.cancel()
+                }
+                return
+            }
+            Logger.warn("恢复播放未真正生效(timeControlStatus=.paused)，重新激活会话后重试")
+            self.ensureAudioSessionActive()
+            self.player.play()
+            // 再给一次机会，若仍 paused 则如实回滚状态（UI 显示停止，看门狗可再接管）
+            let retry = DispatchWorkItem { [weak self] in
+                guard let self = self, self.isPlaying else { return }
+                if self.player.timeControlStatus == .paused {
+                    self.isPlaying = false
+                    self.notifyStateChanged()
+                } else if self.player.timeControlStatus != .interrupted {
+                    self.wasPlayingBeforeInterruption = false
+                    self.interruptionWatchdog?.cancel()
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: retry)
+        }
+        resumeVerifyWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
 
     /// 暂停
@@ -261,6 +392,9 @@ class PlayerManager: NSObject {
 
     /// 切换播放/暂停
     func togglePlayPause() {
+        // 用户手动操作 = 明确意图，清掉中断恢复标记（防看门狗违背用户意图反复拉起）
+        wasPlayingBeforeInterruption = false
+        interruptionWatchdog?.cancel()
         if isPlaying {
             pause()
         } else {
@@ -638,12 +772,15 @@ class PlayerManager: NSObject {
         )
 
         player.replaceCurrentItem(with: item)
+        // v1.0.112：开播前确保会话激活（mediaserverd 重启/中断后 session 可能仍反激活）
+        ensureAudioSessionActive()
         player.play()
         isPlaying = true
         updateNowPlayingInfo()
         fetchLyrics()
         fetchArtwork()
         notifyStateChanged()
+        verifyResumeStarted()
     }
 
     /// 把音源返回的原始报错转成更易读的中文

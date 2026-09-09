@@ -28,6 +28,8 @@ final class LXCompatEngine {
     }
 
     private var instances: [String: Instance] = [:]
+    /// v1.0.118：各脚本的 JSContext 定时器桥（setTimeout/setInterval 生命周期）
+    private var timerBridges: [String: TimerBridge] = [:]
     // v1.0.83：platform -> 提供它的脚本 id 列表（同平台多脚本并存，逐个轮询，
     // 修复「第一个注册脚本失效时，hyw/yuxi 等其它同平台脚本再无机会」的问题）
     private var platformIndex: [String: [String]] = [:]
@@ -141,12 +143,16 @@ final class LXCompatEngine {
             Logger.error("LX[\(id)] JS异常: \(ex?.description ?? "")")
         }
 
-        var capturedInited: [String: Any]?
+        // v1.0.118：inited 可能从定时器队列异步回调，改用线程安全容器
+        let initedBox = InitedBox()
         injectBridges(into: ctx, scriptId: id) { name, data in
             if name == "inited", let d = data.toDictionary() as? [String: Any] {
-                capturedInited = d
+                initedBox.set(d)
             }
         }
+        // v1.0.118：注入 JSContext 缺失的定时器 API —— 独家音源 v5 等脚本的
+        // 异步 init 依赖 setTimeout，缺失即 ReferenceError 初始化失败被跳过
+        injectTimers(into: ctx, scriptId: id)
 
         if let regen = regenCode { ctx.evaluateScript(regen) }
         if let promise = promiseCode { ctx.evaluateScript(promise) }
@@ -157,19 +163,126 @@ final class LXCompatEngine {
         injectCurrentScriptInfo(into: ctx, scriptId: id, displayName: displayName, code: es5Code)
         ctx.evaluateScript(es5Code)
 
-        let platforms = parsePlatforms(from: capturedInited)
+        let platforms = parsePlatforms(from: initedBox.get())
+        if !platforms.isEmpty {
+            completeRegistration(id: id, displayName: displayName, isUser: isUser,
+                                 context: ctx, platforms: platforms)
+            return
+        }
+        // v1.0.118：定时器注入后脚本可走异步 init —— inited 可能延迟数百毫秒
+        // 才回调（独家音源 v5 等服务端脚本）。后台等待最多 3s，主线程完成注册。
+        Logger.info("LX[\(id)] inited 未同步回调，等待异步声明（最多 3s）…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var waited = 0.0
+            while initedBox.get() == nil && waited < 3.0 {
+                Thread.sleep(forTimeInterval: 0.1)
+                waited += 0.1
+            }
+            let plats = parsePlatforms(from: initedBox.get())
+            DispatchQueue.main.async {
+                self?.completeRegistration(id: id, displayName: displayName, isUser: isUser,
+                                           context: ctx, platforms: plats)
+            }
+        }
+    }
+
+    /// 注册收尾：写入 instances / platformIndex（必须在主线程，与查询同队列）
+    private func completeRegistration(id: String, displayName: String, isUser: Bool,
+                                      context: JSContext, platforms: [String]) {
+        guard instances[id] == nil else { return }
         guard !platforms.isEmpty else {
             Logger.warn("LX[\(id)] 未声明任何可用平台，跳过（可能是服务端脚本或已失效）")
             return
         }
-
-        let inst = Instance(id: id, displayName: displayName, context: ctx,
+        let inst = Instance(id: id, displayName: displayName, context: context,
                             platforms: platforms, isUser: isUser)
         instances[id] = inst
         for p in platforms {
             platformIndex[p, default: []].append(id)
         }
         Logger.info("LX 音源已加载: \(displayName) 平台=\(platforms.joined(separator: ","))")
+    }
+
+    // MARK: - JSContext 定时器桥（v1.0.118）
+
+    /// JSContext 默认没有 setTimeout/setInterval（那是浏览器 / Node 宿主的 API），
+    /// 而 LX 音源脚本的异步初始化与重试逻辑普遍依赖它们 —— 缺失即
+    /// 「ReferenceError: Can't find variable: setTimeout」，独家音源 v5 因此被跳过。
+    private final class TimerBridge {
+        private let queue = DispatchQueue(label: "lx.compat.timers", qos: .userInitiated)
+        private let lock = NSLock()
+        /// 定时器 id -> 当前代数（interval 重排续代，cancel 置空即失效）
+        private var live: [Int32: Int] = [:]
+        private var nextId: Int32 = 0
+
+        func schedule(args: [Any], repeating: Bool) -> Int32 {
+            guard let cb = args.first as? JSValue else { return 0 }
+            let ms = args.count > 1 ? (args[1] as? JSValue)?.toInt32() ?? 0 : 0
+            lock.lock()
+            nextId += 1
+            let id = nextId
+            live[id] = 1
+            lock.unlock()
+            scheduleLeg(cb: cb, ms: max(0, Int(ms)), id: id, gen: 1, repeating: repeating)
+            return id
+        }
+
+        func cancel(_ id: Int32) {
+            lock.lock()
+            live[id] = nil
+            lock.unlock()
+        }
+
+        private func scheduleLeg(cb: JSValue, ms: Int, id: Int32, gen: Int, repeating: Bool) {
+            queue.asyncAfter(deadline: .now() + Double(ms) / 1000.0) { [weak self] in
+                guard let self = self else { return }
+                self.lock.lock()
+                let alive = self.live[id] == gen
+                if alive, !repeating { self.live[id] = nil }
+                let stillRepeat = alive && repeating
+                self.lock.unlock()
+                guard alive else { return }
+                cb.call(withArguments: [])
+                guard stillRepeat else { return }
+                self.lock.lock()
+                let nextGen = self.live[id] == gen ? gen + 1 : 0
+                if nextGen > 0 { self.live[id] = nextGen }
+                self.lock.unlock()
+                if nextGen > 0 {
+                    self.scheduleLeg(cb: cb, ms: ms, id: id, gen: nextGen, repeating: true)
+                }
+            }
+        }
+    }
+
+    /// inited 回调的线程安全容器（脚本可能从定时器队列异步回调）
+    private final class InitedBox {
+        private let lock = NSLock()
+        private var value: [String: Any]?
+        func set(_ v: [String: Any]) { lock.lock(); value = v; lock.unlock() }
+        func get() -> [String: Any]? { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    /// 把定时器 API 注入脚本全局（每脚本独立 VM，回调经专用串行队列派发）
+    private func injectTimers(into ctx: JSContext, scriptId: String) {
+        let bridge = TimerBridge()
+        timerBridges[scriptId] = bridge
+        let timeoutBlock: @convention(block) () -> JSValue = {
+            let args = JSContext.currentArguments() ?? []
+            return JSValue(int32: bridge.schedule(args: args, repeating: false), in: ctx)
+        }
+        let intervalBlock: @convention(block) () -> JSValue = {
+            let args = JSContext.currentArguments() ?? []
+            return JSValue(int32: bridge.schedule(args: args, repeating: true), in: ctx)
+        }
+        let clearBlock: @convention(block) () -> Void = {
+            let args = JSContext.currentArguments() ?? []
+            if let v = args.first as? JSValue { bridge.cancel(Int32(v.toInt32())) }
+        }
+        ctx.setObject(timeoutBlock, forKeyedSubscript: "setTimeout")
+        ctx.setObject(intervalBlock, forKeyedSubscript: "setInterval")
+        ctx.setObject(clearBlock, forKeyedSubscript: "clearTimeout")
+        ctx.setObject(clearBlock, forKeyedSubscript: "clearInterval")
     }
 
     // MARK: - currentScriptInfo 注入
@@ -715,7 +828,25 @@ final class LXCompatEngine {
             promotePreferredScript()
             completion(true, inst.platforms)
         } else {
-            completion(false, [])
+            // v1.0.118：setTimeout 注入后脚本可能走异步 init —— 等 3.2s 再判定成败
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3.2) { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self = self else { completion(false, []); return }
+                    guard let inst = self.instances[id] else { completion(false, []); return }
+                    try? FileManager.default.createDirectory(at: self.userDir(), withIntermediateDirectories: true)
+                    try? es5.write(to: self.userDir().appendingPathComponent("\(id).es5.js"),
+                                  atomically: true, encoding: .utf8)
+                    try? rawCode.write(to: self.userDir().appendingPathComponent("\(id).js"),
+                                       atomically: true, encoding: .utf8)
+                    var list = self.readRegistry()
+                    if !list.contains(where: { $0["id"] == id }) {
+                        list.append(["id": id, "displayName": displayName])
+                        self.writeRegistry(list)
+                    }
+                    self.promotePreferredScript()
+                    completion(true, inst.platforms)
+                }
+            }
         }
     }
 

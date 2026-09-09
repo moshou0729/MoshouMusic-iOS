@@ -75,6 +75,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             Logger.info("AudioSession 配置成功")
         } catch {
             Logger.error("AudioSession 配置失败: \(error)")
+            // v1.0.118：'what'(0x77686174) 多为 mediaserverd 忙于恢复其它会话
+            //（如已删除「音乐」App 的残留状态）—— 稍后重试一次；播放路径的
+            // ensureAudioSessionActive 还会继续兜底
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                let s = AVAudioSession.sharedInstance()
+                do {
+                    if s.category != .playback {
+                        try s.setCategory(.playback, mode: .default,
+                                         options: [.allowBluetooth, .allowAirPlay])
+                    }
+                    try s.setActive(true)
+                    Logger.info("AudioSession 二次配置成功")
+                } catch {
+                    Logger.error("AudioSession 二次配置仍失败: \(error)（播放时会再次兜底激活）")
+                }
+            }
         }
     }
 

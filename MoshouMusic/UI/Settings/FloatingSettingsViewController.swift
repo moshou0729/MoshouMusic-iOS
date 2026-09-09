@@ -149,16 +149,10 @@ final class FloatingSettingsViewController: UIViewController {
     }
 
     private func refreshStatus() {
-        if FloatingLyricsManager.shared.isGlobalWindowReady {
-            statusLabel.text = "状态：已注册系统级窗口，切到其他应用 / 主屏 / 锁屏后依然显示。"
-            statusLabel.textColor = Theme.primary
-        } else if ConfigStore.shared.isFloatingLyricsOn {
-            statusLabel.text = "状态：未取得系统级窗口权限，悬浮歌词仅在应用内可见（需 TrollStore 安装）。"
-            statusLabel.textColor = .secondaryLabel
-        } else {
-            statusLabel.text = "状态：未启用。"
-            statusLabel.textColor = .secondaryLabel
-        }
+        let text = FloatingLyricsManager.shared.diagnosticText()
+        statusLabel.text = text
+        statusLabel.textColor = FloatingLyricsManager.shared.isGlobalWindowReady
+            ? Theme.primary : .secondaryLabel
     }
 }
 

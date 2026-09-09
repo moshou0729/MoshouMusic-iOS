@@ -2,30 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>com.apple.developer.avfoundation.allow-background-audio</key>
-    <true/>
-    <key>UIBackgroundModes</key>
-    <array>
-        <string>audio</string>
-        <string>fetch</string>
-        <string>processing</string>
-    </array>
-    <key>platform-application</key>
-    <true/>
-    <key>com.apple.private.security.no-sandbox</key>
-    <true/>
-    <key>com.apple.private.security.no-container</key>
-    <true/>
-	<key>com.apple.frontboard.launchapplications</key>
+	<!-- 音乐 App 必需：后台播放 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>com.apple.developer.avfoundation.allow-background-audio</key>
 	<true/>
-	<key>com.apple.private.security.container-required</key>
-	<false/>
-	<!-- 以下为 TrollStore 系统级全局悬浮窗所需（参考 Helium / TrollSpeed） -->
+	<!-- 系统级悬浮窗（已真机验证清单，参考 TrollSpeed / 墨守提词器） -->
+	<!-- 注册窗口的钥匙：没有它 SpringBoard 静默拒绝 -->
 	<key>com.apple.springboard.accessibility-window-hosting</key>
-	<true/>
-	<key>com.apple.accessibility.api</key>
-	<true/>
-	<key>com.apple.assistivetouch.daemon</key>
 	<true/>
 	<key>com.apple.QuartzCore.displayable-context</key>
 	<true/>
@@ -33,26 +21,28 @@
 	<true/>
 	<key>com.apple.backboard.client</key>
 	<true/>
-	<key>com.apple.backboardd.launchapplications</key>
+	<!-- HID 事件族 5 项：跨 App 触摸路由（浮窗能点） -->
+	<key>com.apple.private.hid.client.event-dispatch</key>
 	<true/>
-	<key>com.apple.frontboard.debugapplications</key>
+	<key>com.apple.private.hid.client.event-filter</key>
 	<true/>
-	<key>com.apple.springboard.launchapplications</key>
+	<key>com.apple.private.hid.client.event-monitor</key>
 	<true/>
-	<key>com.apple.springboard-ui.client</key>
+	<key>com.apple.private.hid.client.service-protected</key>
 	<true/>
-	<key>com.apple.springboard.appbackgroundstyle</key>
+	<key>com.apple.private.hid.manager.client</key>
 	<true/>
-	<key>com.apple.system-task-ports</key>
+	<key>platform-application</key>
 	<true/>
-	<key>run-unsigned-code</key>
+	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
-	<key>task_for_pid-allow</key>
+	<!-- 脱沙后必须补容器存储访问，否则写不了自己的容器 -->
+	<key>com.apple.private.security.storage.AppDataContainers</key>
 	<true/>
-	<key>com.apple.security.iokit-user-client-class</key>
-	<array>
-		<string>IOSurfaceRootUserClient</string>
-		<string>AGXDeviceUserClient</string>
-	</array>
+	<!-- 保住 NSUserDefaults -->
+	<key>com.apple.private.user-preference-read</key>
+	<true/>
+	<key>com.apple.private.user-preference-write</key>
+	<true/>
 </dict>
 </plist>

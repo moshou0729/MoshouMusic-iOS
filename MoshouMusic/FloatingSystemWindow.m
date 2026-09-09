@@ -2,115 +2,130 @@
 //  FloatingSystemWindow.m
 //  墨守music
 //
+//  方案照搬已真机验证的实现（TrollSpeed / 墨守提词器，iOS 14.7.1）。
+//
 
 #import "FloatingSystemWindow.h"
 
-#import <objc/runtime.h>
-#import <objc/message.h>
+#include <dlfcn.h>
 
 @implementation FloatingSystemWindow
 
-// 声明为系统窗口：backboardd 不会因为应用进入后台而隐藏它
+// 系统窗口：退后台不被 backboardd 撤除
 + (BOOL)_isSystemWindow
 {
     return YES;
 }
 
-// 窗口上下文不由 window server 托管（交由 SpringBoard 的辅助功能托管服务管理）
+// ★脱离 WindowServer 托管 —— 不做这条，应用退后台 1 秒窗口就消失
 - (BOOL)_isWindowServerHostingManaged
 {
     return NO;
 }
 
-// 不参与命中测试。系统安全窗口一旦参与触摸路由，会吃掉整屏事件
-// （表现为 App 里所有按钮点不动）。悬浮框的拖拽 / 缩放改由普通 overlay 窗口承担。
+// 参与命中测试。跨应用触摸由 HID entitlement + SpringBoard 托管路由负责；
+// 空白处穿透由根视图 hitTest 返回 nil 实现（点击落到下层应用 / App 主窗口）。
 - (BOOL)_ignoresHitTest
 {
-    return YES;
+    return NO;
 }
 
-// 安全窗口：可以在锁屏/其他应用内容之上合成
+// 非安全上下文。⚠️ 安全上下文（YES）会破坏事件路由——
+// 实测表现为整个界面（包括 App 自己的按钮）全部点不动。防录屏才用 YES。
 - (BOOL)_isSecure
 {
-    return YES;
+    return NO;
 }
 
 - (BOOL)_shouldCreateContextAsSecure
 {
-    return YES;
+    return NO;
 }
 
 @end
 
+
 @implementation FloatingWindowHosting
 
-/// 共享的托管控制器（注册与注销必须是同一个实例）
-+ (id)sharedHostingController
+// 托管控制器必须强引用，否则失效
+static id gHostingController = nil;
+
++ (void)initialize
 {
-    Class hostingClass = NSClassFromString(@"SBSAccessibilityWindowHostingController");
-    if (hostingClass == Nil) {
-        return nil;
+    if (self == [FloatingWindowHosting class]) {
+        // SpringBoardServices 默认不加载；不 dlopen，NSClassFromString 返回 nil
+        dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",
+               RTLD_NOW);
     }
-    static id hostingController = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        hostingController = [[hostingClass alloc] init];
-    });
-    return hostingController;
 }
 
-/// 读取窗口的 contextId，取不到返回 0
++ (BOOL)isAvailable
+{
+    return NSClassFromString(@"SBSAccessibilityWindowHostingController") != nil;
+}
+
 + (unsigned int)contextIdOfWindow:(UIWindow *)window
 {
-    SEL contextSelector = NSSelectorFromString(@"_contextId");
-    if (![window respondsToSelector:contextSelector]) {
+    SEL sel = NSSelectorFromString(@"_contextId");
+    if (![window respondsToSelector:sel]) {
         return 0;
     }
-    unsigned int (*contextIdIMP)(id, SEL) = (unsigned int (*)(id, SEL))objc_msgSend;
-    return contextIdIMP(window, contextSelector);
+    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:"I@:"];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.selector = sel;
+    [inv setTarget:window];
+    [inv invoke];
+    unsigned int ctx = 0;
+    [inv getReturnValue:&ctx];
+    return ctx;
 }
 
 + (BOOL)registerWindow:(UIWindow *)window level:(double)level
 {
-    id hostingController = [self sharedHostingController];
-    if (hostingController == nil) {
+    Class cls = NSClassFromString(@"SBSAccessibilityWindowHostingController");
+    if (!cls) {
         return NO;
     }
-
-    // UIWindow 私有属性 _contextId —— 窗口显示后才有有效值
-    unsigned int contextId = [self contextIdOfWindow:window];
-    if (contextId == 0) {
+    unsigned int ctx = [self contextIdOfWindow:window];
+    if (ctx == 0) {
         return NO;
     }
-
-    SEL registerSelector = NSSelectorFromString(@"registerWindowWithContextID:atLevel:");
-    if (![hostingController respondsToSelector:registerSelector]) {
+    if (gHostingController == nil) {
+        gHostingController = [[cls alloc] init];
+    }
+    SEL sel = NSSelectorFromString(@"registerWindowWithContextID:atLevel:");
+    if (![gHostingController respondsToSelector:sel]) {
         return NO;
     }
-    void (*registerIMP)(id, SEL, unsigned int, double) = (void (*)(id, SEL, unsigned int, double))objc_msgSend;
-    registerIMP(hostingController, registerSelector, contextId, level);
-
+    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:"v@:Id"];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.selector = sel;
+    [inv setTarget:gHostingController];
+    [inv setArgument:&ctx atIndex:2];
+    [inv setArgument:&level atIndex:3];
+    [inv invoke];
     return YES;
 }
 
 + (void)unregisterWindow:(UIWindow *)window
 {
-    id hostingController = [self sharedHostingController];
-    if (hostingController == nil) {
+    if (!gHostingController) {
         return;
     }
-
-    unsigned int contextId = [self contextIdOfWindow:window];
-    if (contextId == 0) {
+    unsigned int ctx = [self contextIdOfWindow:window];
+    if (ctx == 0) {
         return;
     }
-
-    SEL unregisterSelector = NSSelectorFromString(@"unregisterWindowWithContextID:");
-    if (![hostingController respondsToSelector:unregisterSelector]) {
+    SEL sel = NSSelectorFromString(@"unregisterWindowWithContextID:");
+    if (![gHostingController respondsToSelector:sel]) {
         return;
     }
-    void (*unregisterIMP)(id, SEL, unsigned int) = (void (*)(id, SEL, unsigned int))objc_msgSend;
-    unregisterIMP(hostingController, unregisterSelector, contextId);
+    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:"v@:I"];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.selector = sel;
+    [inv setTarget:gHostingController];
+    [inv setArgument:&ctx atIndex:2];
+    [inv invoke];
 }
 
 @end

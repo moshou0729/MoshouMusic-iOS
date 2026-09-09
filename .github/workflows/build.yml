@@ -89,6 +89,27 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             -derivedDataPath build 2>&1 | tee build.log | tail -200
 
+      - name: Inject entitlements (required for system floating window)
+        # CODE_SIGNING_ALLOWED=NO 构建不会嵌 entitlements；
+        # TrollStore 安装时保留 ad-hoc 签名里注入的权限。
+        run: |
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "Injecting entitlements into $APP_PATH"
+          codesign --force --sign - --entitlements MoshouMusic.entitlements \
+                   --timestamp=none --generate-entitlement-der "$APP_PATH" \
+            || codesign --force --sign - --entitlements MoshouMusic.entitlements \
+                   --timestamp=none "$APP_PATH"
+          echo "--- embedded entitlements ---"
+          codesign -d --entitlements :- "$APP_PATH" | head -60
+          # 校验：主二进制里必须能搜到关键 entitlement 字符串
+          BIN_NAME=$(basename "$APP_PATH" .app)
+          HITS=$(strings -a "$APP_PATH/$BIN_NAME" | grep -c "accessibility-window-hosting" || true)
+          echo "entitlement string hits: $HITS"
+          if [ "$HITS" -lt 1 ]; then
+            echo "::error::entitlements NOT embedded into binary!"
+            exit 1
+          fi
+
       - name: Create IPA
         id: create-ipa
         run: |

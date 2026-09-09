@@ -21,6 +21,7 @@ final class FloatingSettingsViewController: UIViewController {
     private let statusLabel = UILabel()
     private let tipLabel = UILabel()
     private let resetButton = UIButton(type: .system)
+    private let logButton = UIButton(type: .system)
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -125,7 +126,7 @@ final class FloatingSettingsViewController: UIViewController {
         }
         // 滑杆拖动中只做局部更新；松手时强制 SB 全量重合成，消除脏区残影
         [widthRow, heightRow, fontRow, opacityRow].forEach { row in
-            row.onEnded = { FloatingLyricsManager.shared.forceRecomposite() }
+            row.onEnded = { FloatingLyricsManager.shared.hardRefresh() }
         }
         colorRow.onSelect = { [weak self] hex in
             FloatingLyricsManager.shared.updateBgColor(hex: hex)
@@ -186,7 +187,7 @@ final class FloatingSettingsViewController: UIViewController {
         heightRow.set(value: Float(ConfigStore.shared.floatingSize.height))
         fontRow.set(value: Float(ConfigStore.shared.floatingFontSize))
         apply()
-        FloatingLyricsManager.shared.forceRecomposite()
+        FloatingLyricsManager.shared.hardRefresh()
     }
 
     private func refreshStatus() {

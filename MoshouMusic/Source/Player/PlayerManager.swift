@@ -207,6 +207,17 @@ class PlayerManager: NSObject {
             scheduleActivationRetry(attemptsLeft: 5)
         }
     }
+    /// 🚨 v1.0.116：参考主流音乐 App（网易云等）的「占坑」策略 —— 回前台立即
+    /// 抢占会话恢复播放。「恢复音乐？」弹窗关闭后系统不会通知我们，但用户解锁
+    /// 回到 App 这个动作本身就是可靠的恢复时机，主动接管，不再只依赖看门狗。
+    func recoverIfInterruptedOnForeground() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard self.wasPlayingBeforeInterruption, !self.isPlaying else { return }
+            Logger.info("回前台：接管被中断的播放（网易云式占坑）")
+            self.recoverAfterInterruption(reason: "回前台接管")
+        }
+    }
 
     private var activationRetryWork: DispatchWorkItem?
 

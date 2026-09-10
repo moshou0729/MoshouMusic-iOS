@@ -12,6 +12,8 @@ final class FloatingLyricsView: UIView {
     private let labels: [UILabel] = (0..<3).map { _ in UILabel() }
     private var noteIcon: UIImageView?
     private var artworkIcon: UIImageView?
+    /// 折叠态（视图自身状态，供 setArtwork 判断圆点显隐）
+    private(set) var isCollapsedState = false
     /// v1.0.141：底部频谱条（音乐可视化，开关控制可见）
     let spectrumView = SpectrumBarsView()
 
@@ -141,6 +143,7 @@ final class FloatingLyricsView: UIView {
 
     /// 折叠态：隐藏歌词，显示封面图（无封面时回退音符图标）
     func setCollapsed(_ collapsed: Bool) {
+        isCollapsedState = collapsed
         container.isHidden = collapsed
         if collapsed {
             if noteIcon == nil {
@@ -186,7 +189,7 @@ final class FloatingLyricsView: UIView {
     /// v1.0.141：折叠圆点显示歌曲封面（无封面回退音符）
     func setArtwork(_ image: UIImage?) {
         artworkIcon?.image = image
-        if isCollapsed {
+        if isCollapsedState {
             noteIcon?.isHidden = (image != nil)
             artworkIcon?.isHidden = (image == nil)
         }

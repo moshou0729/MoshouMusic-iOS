@@ -77,18 +77,10 @@ final class AudioEqualizer {
         /// 10 段频谱电平（0~1，峰值保持 + 衰减平滑），悬浮窗频谱条每帧读取
         var levels: [Float] = Array(repeating: 0, count: 10)
         var lock = os_unfair_lock_s()
-        var abl: UnsafeMutableRawPointer
 
         init() {
-            // AudioBufferList 变长尾部：多预留 3 个 AudioBuffer（最多 2 声道用不完也不怕）
-            let size = MemoryLayout<AudioBufferList>.size + 3 * MemoryLayout<AudioBuffer>.size
-            abl = UnsafeMutableRawPointer.allocate(byteCount: size,
-                                                   alignment: MemoryLayout<AudioBufferList>.alignment)
-            memset(abl, 0, size)
             rebuild(sampleRate: 44100, channels: 2, interleaved: false)
         }
-
-        deinit { abl.deallocate() }
 
         func rebuild(sampleRate: Float, channels: Int, interleaved: Bool) {
             self.sampleRate = sampleRate
@@ -115,7 +107,7 @@ final class AudioEqualizer {
     }
 
     private var currentContext: TapContext?
-    private var currentTap: Unmanaged<MTAudioProcessingTap>?
+    private var currentTapObject: MTAudioProcessingTap?
     private var attachedItemId: Int = 0
 
     /// 频谱条当前电平（主线程 CADisplayLink 读取）
@@ -148,7 +140,7 @@ final class AudioEqualizer {
             return
         }
         detach()
-        attachedItemId = Int(bitPattern: ObjectIdentifier(item).hashValue)
+        attachedItemId = ObjectIdentifier(item).hashValue
         let asset = item.asset
         asset.loadValuesAsynchronously(forKeys: ["tracks"]) { [weak self] in
             var err: NSError?
@@ -163,7 +155,7 @@ final class AudioEqualizer {
             }
             DispatchQueue.main.async {
                 guard let self = self,
-                      self.attachedItemId == Int(bitPattern: ObjectIdentifier(item).hashValue) else { return }
+                      self.attachedItemId == ObjectIdentifier(item).hashValue else { return }
                 self.mount(item: item, track: track)
             }
         }
@@ -175,29 +167,29 @@ final class AudioEqualizer {
         ctx.gainsDirty = true
         var callbacks = AudioEqualizer.tapCallbacks
         let clientInfo = Unmanaged.passRetained(ctx).toOpaque()
-        guard let tap = MTAudioProcessingTapCreate(
+        var tapOut: Unmanaged<MTAudioProcessingTap>?
+        let err = MTAudioProcessingTapCreate(
             kCFAllocatorDefault, &callbacks,
-            kMTAudioProcessingTapCreationFlag_PreEffects, clientInfo)?.takeRetainedValue() else {
+            kMTAudioProcessingTapCreationFlag_PreEffects, &tapOut)
+        guard err == noErr, let tapRef = tapOut else {
             Unmanaged.passUnretained(ctx).release()
-            Logger.warn("均衡器音轨挂载失败：MTAudioProcessingTapCreate 失败")
+            Logger.warn("均衡器音轨挂载失败：MTAudioProcessingTapCreate 失败(\(err))")
             return
         }
+        let tap = tapRef.takeRetainedValue()
         let params = AVMutableAudioMixInputParameters(track: track)
-        params.audioTapProcessor = Unmanaged.passUnretained(tap)
+        params.audioTapProcessor = tap
         let mix = AVMutableAudioMix()
         mix.inputParameters = [params]
         item.audioMix = mix
         currentContext = ctx
-        currentTap = Unmanaged.passRetained(tap)
+        currentTapObject = tap
         Logger.info("EQ tap 已挂载（track \(track.trackID)，均衡器\(ConfigStore.shared.eqEnabled ? "开" : "关")，频谱\(ConfigStore.shared.floatingSpectrumOn ? "开" : "关")）")
     }
 
     private func detach() {
         attachedItemId = 0
-        if let tap = currentTap {
-            _ = tap.takeRetainedValue()
-        }
-        currentTap = nil
+        currentTapObject = nil
         currentContext = nil
     }
 
@@ -217,12 +209,16 @@ final class AudioEqualizer {
         prepare: { tap, _, format in
             guard let p = MTAudioProcessingTapGetStorage(tap) else { return }
             let ctx = Unmanaged<TapContext>.fromOpaque(p).takeUnretainedValue()
-            // 只处理 Float32 PCM；其余格式直接透传（process 里守卫）
-            ctx.floatFormat = format?.commonFormat == .pcmFormatFloat32
-            if let f = format {
-                ctx.rebuild(sampleRate: Float(f.sampleRate),
-                            channels: Int(f.channelCount),
-                            interleaved: f.isInterleaved)
+            let asbd = format.pointee
+            // 只处理线性 PCM Float32；其余格式直接透传（process 里守卫）
+            // kAudioFormatLinearPCM='lpcm' kAudioFormatFlagIsFloat=0x1 IsNonInterleaved=0x20
+            let isFloatPCM = asbd.mFormatID == 0x6C70636D && (asbd.mFormatFlags & 0x01) != 0
+            ctx.floatFormat = isFloatPCM
+            if isFloatPCM {
+                let interleaved = (asbd.mFormatFlags & 0x20) == 0
+                ctx.rebuild(sampleRate: Float(asbd.mSampleRate),
+                            channels: Int(max(1, min(asbd.mChannelsPerFrame, 2))),
+                            interleaved: interleaved)
             }
         },
         unprepare: { tap in
@@ -232,24 +228,30 @@ final class AudioEqualizer {
             for c in ctx.analyzer { for b in c { b.reset() } }
             ctx.levels = Array(repeating: 0, count: 10)
         },
-        process: { tap, numberFrames, _ in
+        process: { tap, numberFrames, _, bufferListInOut, numberFramesOut, _ in
             guard let p = MTAudioProcessingTapGetStorage(tap) else { return }
             let ctx = Unmanaged<TapContext>.fromOpaque(p).takeUnretainedValue()
-            guard ctx.floatFormat, numberFrames > 0 else { return }
+            guard ctx.floatFormat, numberFrames > 0 else {
+                numberFramesOut.pointee = 0
+                return
+            }
             if ctx.gainsDirty { ctx.refreshCoefficients() }
 
-            let abl = ctx.abl.assumingMemoryBound(to: AudioBufferList.self)
-            var flags: MTAudioProcessingTapFlags = 0
+            var srcFlags: MTAudioProcessingTapFlags = 0
             let status = MTAudioProcessingTapGetSourceAudio(
-                tap, numberFrames, abl, &flags, nil, abl)
-            guard status == noErr else { return }
+                tap, numberFrames, bufferListInOut, &srcFlags, nil, nil)
+            guard status == noErr else {
+                numberFramesOut.pointee = 0
+                return
+            }
+            numberFramesOut.pointee = numberFrames
 
             let n = Int(numberFrames)
             var energy = Array(repeating: Float(0), count: 10)
             let useEQ = ctx.gains.contains { $0 != 0 }
 
-            withUnsafeMutablePointer(to: &abl.pointee.mBuffers) { firstBuf in
-                let bufCount = Int(abl.pointee.mNumberBuffers)
+            withUnsafeMutablePointer(to: &bufferListInOut.pointee.mBuffers) { firstBuf in
+                let bufCount = Int(bufferListInOut.pointee.mNumberBuffers)
                 guard bufCount >= 1 else { return }
 
                 func analyzeChannel(_ ch: Int, _ sample: Float) {

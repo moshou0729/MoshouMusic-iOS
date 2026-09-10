@@ -359,11 +359,18 @@ final class LXCompatEngine {
         let isBinary = (opts["isBinary"] as? Bool) ?? false
         let followRedirect = (opts["followRedirect"] as? Bool) ?? true
 
+        let reqStart = Date()
         NetworkManager.shared.request(
             url: url, method: method, headers: headers, body: body,
-            timeout: timeout, isBinary: isBinary, followRedirect: followRedirect
+            timeout: timeout, isBinary: isBinary, followRedirect: followRedirect,
+            useCache: false
         ) { result in
             let invoke: () -> Void = {
+                // v1.0.138：极快回包取证（<300ms = 疑似缓存命中，定位串歌根因用）
+                let costMs = Int(Date().timeIntervalSince(reqStart) * 1000)
+                if costMs < 300 {
+                    Logger.persist("LXHTTP极快(\(costMs)ms)疑似缓存回包: \(String(url.prefix(140)))")
+                }
                 switch result {
                 case .success(let resp):
                     let d: [String: Any] = [
@@ -456,6 +463,31 @@ final class LXCompatEngine {
         }
     }
 
+    // MARK: - v1.0.138 源端串歌治理：胜出脚本记录 + 惩罚降级
+
+    /// 各平台最近一次竞速胜出的脚本 id 与时间（供串歌防线定位责任源）
+    private var lastWinner: [String: String] = [:]
+    private var lastWinnerAt: [String: Date] = [:]
+    /// 被惩罚脚本的解禁时间（key = platform:scriptId）
+    private var penalizedUntil: [String: Date] = [:]
+
+    private func isPenalized(_ platform: String, _ id: String) -> Bool {
+        if let until = penalizedUntil[platform + ":" + id], until > Date() {
+            return true
+        }
+        return false
+    }
+
+    /// 惩罚降级：该平台最近 60s 内胜出并返回过错误音频的脚本，10 分钟内
+    /// 在同平台 provider 队列中排到队尾（仍保留兜底资格，不硬拉黑）。
+    func penalizeLastWinner(platform: String, reason: String) {
+        guard let id = lastWinner[platform],
+              let at = lastWinnerAt[platform],
+              Date().timeIntervalSince(at) < 60 else { return }
+        penalizedUntil[platform + ":" + id] = Date().addingTimeInterval(600)
+        Logger.persist("LXCompat惩罚降级：源 \(id) 在 \(platform) \(reason)，10分钟内排到该平台队尾")
+    }
+
     // v1.0.88：同平台多脚本「错峰竞速」——首选脚本立即发出（保留 dujia 等首选音源
     // 的优先权），其余脚本每隔 stagger 秒陆续跟上，任一脚本返回有效结果即胜出。
     // 旧版串行轮询中，一个挂掉的脚本要拖满整个 timeout（22s）才轮到下一个，
@@ -471,7 +503,11 @@ final class LXCompatEngine {
         completion: @escaping (Result<JSValue, Error>) -> Void
     ) {
         // 过滤黑名单与缺失实例，保持首选置顶后的顺序
-        let ordered = ids.filter { !SourceGuard.isBlockedSource($0) && instances[$0] != nil }
+        let filtered = ids.filter { !SourceGuard.isBlockedSource($0) && instances[$0] != nil }
+        // v1.0.138：被惩罚（返回过错误音频）的脚本排到队尾，仍保留兜底资格
+        let clean = filtered.filter { !isPenalized(platform, $0) }
+        let ordered = clean.isEmpty ? filtered
+                                    : clean + filtered.filter { isPenalized(platform, $0) }
         guard !ordered.isEmpty else {
             completion(.failure(LXError.noProvider(platform)))
             return
@@ -493,6 +529,9 @@ final class LXCompatEngine {
                         if validate?(data) ?? true {
                             if box.settle(success: true) {
                                 Logger.info("LXCompat: 竞速胜出 \(inst.id) \(action)/\(platform)")
+                                // v1.0.138：记录胜出脚本（串歌防线惩罚时定位责任源）
+                                lastWinner[platform] = inst.id
+                                lastWinnerAt[platform] = Date()
                                 completion(.success(data))
                             }
                         } else {
@@ -651,6 +690,8 @@ final class LXCompatEngine {
             return
         }
         let info = buildInfo(songId: songId, quality: quality, extra: extra, source: platform)
+        // v1.0.138：取链派发取证 —— 对照后续回包耗时定位缓存层
+        Logger.info("LXCompat: 请求 musicUrl/\(platform) mid=\(songId) q=\(quality)")
         // v1.0.88：错峰竞速（超时 22s→10s，错峰 3s），首选脚本仍最先发出
         dispatchRace(platform: platform, ids: ids,
                                 action: "musicUrl", info: info, timeout: 10, stagger: 3.0,

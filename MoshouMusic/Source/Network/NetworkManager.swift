@@ -66,6 +66,7 @@ class NetworkManager {
         timeout: Double = 30,
         isBinary: Bool = false,
         followRedirect: Bool = true,
+        useCache: Bool = true,
         completion: @escaping (Result<NetworkResponse, Error>) -> Void
     ) {
         guard let requestUrl = URL(string: url) else {
@@ -80,6 +81,11 @@ class NetworkManager {
         var request = URLRequest(url: requestUrl)
         request.httpMethod = method.uppercased()
         request.timeoutInterval = min(timeout, 120)
+        // v1.0.138：LX 脚本请求禁用 URLSession 共享 URLCache —— 实测不同歌曲 78ms
+        // 拿到同一播放链接（串歌《唯一》），default 会话自带缓存是嫌疑层之一
+        if !useCache {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
 
         // Headers
         for (key, value) in headers {

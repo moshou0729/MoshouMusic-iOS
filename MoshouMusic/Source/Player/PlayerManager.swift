@@ -98,11 +98,16 @@ class PlayerManager: NSObject {
     /// 不同歌曲解析到同一 URL。正常场景不同歌绝无相同 URL，二次绑定 = 错源，拦截换源。
     private var committedUrlBindings: [String: String] = [:]
     private var committedUrlOrder: [String] = []
+    /// v1.0.138：绑定表跨会话持久化 —— 毒 URL（如《唯一》错误音频）重启后仍能拦截
+    private static let urlBindingMapKey = "moshou_url_binding_map_v1"
+    private static let urlBindingOrderKey = "moshou_url_binding_order_v1"
+    private static let urlBindingCapacity = 32
 
     // MARK: - Init
 
     override init() {
         super.init()
+        loadCommittedUrlBindings()
         setupPlayer()
         setupRemoteCommand()
         startPlaybackEndFuse()
@@ -892,6 +897,9 @@ class PlayerManager: NSObject {
         // v1.0.136：串歌防线 —— 该 URL 已绑定过其他歌曲 = 源端返回了默认/错误音频
         if let bound = committedUrlBindings[url.absoluteString], bound != song.songmid {
             Logger.persist("串歌防线：该 URL 已绑定其他歌曲(\(bound))，拦截 \(song.name) [\(currentSource)]")
+            // v1.0.138：定位并惩罚返回错误音频的源（10 分钟内排到同平台队尾）
+            LXCompatEngine.shared.penalizeLastWinner(platform: song.source,
+                                                     reason: "返回过已绑定其他歌曲的URL")
             handlePlayFailure(song: song, reason: "音源返回了错误音频，已自动切换其他音源",
                               completion: { _ in })
             return
@@ -924,6 +932,8 @@ class PlayerManager: NSObject {
                     self.commitStartPlayback(url: url, song: song)
                 } else {
                     Logger.warn("LX PlayerManager: 音频时长与目标不符（目标 \(Int(expected))s），拦截错版音频并换源")
+                    LXCompatEngine.shared.penalizeLastWinner(platform: song.source,
+                                                             reason: "返回过时长不符的音频")
                     self.handlePlayFailure(
                         song: song,
                         reason: "音源返回的音频与歌曲时长不符，已拦截并尝试其他音源",
@@ -948,6 +958,25 @@ class PlayerManager: NSObject {
         }
     }
 
+    /// v1.0.138：绑定表持久化（UserDefaults），App 重启后毒 URL 仍会被拦截
+    private func loadCommittedUrlBindings() {
+        let d = UserDefaults.standard.dictionary(forKey: Self.urlBindingMapKey) as? [String: String] ?? [:]
+        committedUrlBindings = d
+        var order = UserDefaults.standard.stringArray(forKey: Self.urlBindingOrderKey) ?? []
+        order = order.filter { d[$0] != nil }
+        if order.count > Self.urlBindingCapacity {
+            let dropKeys = Array(order.prefix(order.count - Self.urlBindingCapacity))
+            order.removeFirst(order.count - Self.urlBindingCapacity)
+            for k in dropKeys { committedUrlBindings.removeValue(forKey: k) }
+        }
+        committedUrlOrder = order
+    }
+
+    private func saveCommittedUrlBindings() {
+        UserDefaults.standard.set(committedUrlBindings, forKey: Self.urlBindingMapKey)
+        UserDefaults.standard.set(committedUrlOrder, forKey: Self.urlBindingOrderKey)
+    }
+
     private func commitStartPlayback(url: URL, song: Song) {
         // v1.0.95：标记本代已开播；清掉兜底阶段挂出的过渡性错误提示
         playbackCommitted = true
@@ -957,10 +986,11 @@ class PlayerManager: NSObject {
             committedUrlOrder.remove(at: idx)
         }
         committedUrlOrder.append(urlKey)
-        if committedUrlOrder.count > 8 {
+        if committedUrlOrder.count > Self.urlBindingCapacity {
             committedUrlBindings.removeValue(forKey: committedUrlOrder.removeFirst())
         }
         committedUrlBindings[urlKey] = song.songmid
+        saveCommittedUrlBindings()
         lastPlayError = nil
         // 先移除上一个播放项的观察者，避免其释放后被观察而崩溃
         if let old = observedItem {

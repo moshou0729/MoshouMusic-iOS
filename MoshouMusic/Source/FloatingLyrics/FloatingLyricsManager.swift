@@ -493,9 +493,15 @@ final class FloatingLyricsManager: NSObject {
                 collapseWindow()
                 return
             }
-            // v1.0.135：拖动结束补一次几何微扰，清 SpringBoard 端拖动残影
-            //（捏合 ended 一直有此清理，拖动此前漏了）
-            forceRecomposite()
+            // v1.0.138：拖动清理升级 —— 0.5pt 微扰 SB 已证伪不标脏区（v1.0.124/125）。
+            // 后台改用 24pt 底边脉冲（实测可驱动跨应用重合成）；App 内预览态 App 本地
+            // 渲染与 SB 托管合成双通道并存，唯有整窗重建能确定清残留。
+            if UIApplication.shared.applicationState == .active {
+                Logger.info("拖动结束清理：App内重建窗口清残影")
+                hardRefresh()
+            } else {
+                pulseRecomposite()
+            }
             if isCollapsed {
                 savedExpandedFrame?.origin = window.frame.origin
             } else {
@@ -550,7 +556,12 @@ final class FloatingLyricsManager: NSObject {
             ConfigStore.shared.floatingFontSize = lyricsView?.fontSize ?? ConfigStore.shared.floatingFontSize
             pinchStartFrame = nil
             pinchStartSpan = nil
-            forceRecomposite()
+            // v1.0.138：与拖动同理，捏合结束清理升级（见 handlePan）
+            if UIApplication.shared.applicationState == .active {
+                hardRefresh()
+            } else {
+                pulseRecomposite()
+            }
 
         default:
             pinchStartFrame = nil

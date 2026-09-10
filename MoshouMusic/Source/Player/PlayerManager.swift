@@ -185,6 +185,8 @@ class PlayerManager: NSObject {
             self.lyricDriveTick += 1
             if self.lyricDriveTick >= 20 {
                 self.lyricDriveTick = 0
+                // v1.0.140：随心跳持久化播放快照（被杀续播的判定依据）
+                self.savePlaybackSnapshot()
                 if UIApplication.shared.applicationState != .active {
                     Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying)")
                 }
@@ -977,6 +979,42 @@ class PlayerManager: NSObject {
         UserDefaults.standard.set(committedUrlOrder, forKey: Self.urlBindingOrderKey)
     }
 
+    // MARK: - v1.0.140 被杀续播快照
+
+    private static let lastPlaySnapshotKey = "moshou_lastplay_snapshot_v1"
+    /// 续播 seek 目标（commitStartPlayback 挂上 item 后一次性消费）
+    private var pendingResumeSeek: TimeInterval?
+
+    /// 随心跳/开播持久化：正在播的歌 + 进度。进程被系统清杀后音乐不会静默丢场，
+    /// 用户重新打开 App 时按快照自动接续。
+    private func savePlaybackSnapshot() {
+        guard isPlaying, let song = currentSong else { return }
+        let songB64 = (try? JSONEncoder().encode(song).base64EncodedString()) ?? ""
+        guard !songB64.isEmpty else { return }
+        let snap: [String: Any] = [
+            "song": songB64,
+            "position": currentTime,
+            "ts": Date().timeIntervalSince1970
+        ]
+        UserDefaults.standard.set(snap, forKey: Self.lastPlaySnapshotKey)
+    }
+
+    /// v1.0.140：进程被系统强制终止后用户重新打开 App → 自动接续上一首（快照进度 seek）。
+    /// 仅在「本次启动检测到上次异常收尾」且快照 6 小时内时触发（ AppDelegate 调用）。
+    func autoResumeLastPlaybackAfterKill() {
+        guard currentSong == nil, !playbackCommitted else { return }
+        guard let snap = UserDefaults.standard.dictionary(forKey: Self.lastPlaySnapshotKey),
+              let b64 = snap["song"] as? String, !b64.isEmpty,
+              let data = Data(base64Encoded: b64),
+              let song = try? JSONDecoder().decode(Song.self, from: data) else { return }
+        let ts = snap["ts"] as? Double ?? 0
+        guard Date().timeIntervalSince1970 - ts < 6 * 3600 else { return }
+        let pos = snap["position"] as? Double ?? 0
+        Logger.persist("自动续播：上次被杀于播放 \(song.name) - \(song.singer)，从 \(Int(pos))s 接续")
+        if pos > 8 { pendingResumeSeek = pos }
+        play(song: song)
+    }
+
     private func commitStartPlayback(url: URL, song: Song) {
         // v1.0.95：标记本代已开播；清掉兜底阶段挂出的过渡性错误提示
         playbackCommitted = true
@@ -991,6 +1029,8 @@ class PlayerManager: NSObject {
         }
         committedUrlBindings[urlKey] = song.songmid
         saveCommittedUrlBindings()
+        // v1.0.140：开播即更新续播快照（心跳是 10s 粒度，切歌后立刻被杀也接得上）
+        savePlaybackSnapshot()
         lastPlayError = nil
         // 先移除上一个播放项的观察者，避免其释放后被观察而崩溃
         if let old = observedItem {
@@ -1020,6 +1060,11 @@ class PlayerManager: NSObject {
         // v1.0.112：开播前确保会话激活（mediaserverd 重启/中断后 session 可能仍反激活）
         ensureAudioSessionActive()
         player.play()
+        // v1.0.140：被杀续播 seek（快照进度 >8s 才恢复，避免开头重放）
+        if let target = pendingResumeSeek {
+            pendingResumeSeek = nil
+            player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+        }
         isPlaying = true
         updateNowPlayingInfo()
         fetchLyrics()

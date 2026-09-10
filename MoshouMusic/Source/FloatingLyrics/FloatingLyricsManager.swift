@@ -89,7 +89,9 @@ final class FloatingLyricsManager: NSObject {
 
     /// v1.0.134：熄屏自保（强制）—— 亮屏瞬间彻底拆除系统级窗口避开系统清杀。
     /// 根因由 v1.0.132 开关实验坐实：开关打开后熄屏点亮不再停播。
-    /// 拆除 5s 后在后台自动重建（历史观测被杀窗口为亮屏后 1.4~4s，5s 已出危险区）。
+    /// 拆除 8s 后在后台自动重建（被杀检查时刻有漂移：历史 1.4~4s，v1.0.139 实测
+    /// 一例正好 ≈5s 并撞上 5s 重建时刻 —— 重建即暴露窗口即被杀。8s 为 v1.0.134
+    /// 时代多日实测零被杀的延迟）。
     func screenWakeSelfGuardTeardown() {
         settingsPreviewActive = false
         hardRefreshWorkItem?.cancel()
@@ -100,11 +102,11 @@ final class FloatingLyricsManager: NSObject {
             guard let self = self else { return }
             guard !self.suppressedInApp, ConfigStore.shared.isFloatingLyricsOn else { return }
             self.show()
-            Logger.persist("熄屏自保：已延迟重建悬浮窗（亮屏后 5s）")
+            Logger.persist("熄屏自保：已延迟重建悬浮窗（亮屏后 8s）")
         }
         selfGuardReshowWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: work)
-        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，5s 后自动重建")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: work)
+        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，8s 后自动重建")
     }
 
     /// 离开 App（切其他应用 / 回桌面 / 锁屏）：恢复悬浮窗

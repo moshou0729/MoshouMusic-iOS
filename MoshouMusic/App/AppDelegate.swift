@@ -19,6 +19,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: "moshou_session_alive") {
             Logger.persist("⚠️ 检测到上次会话未正常收尾（无崩溃记录）→ 进程曾被系统强制终止")
+            // v1.0.140：被杀续播 —— 用户重新打开 App 时自动接续上一首（快照进度）。
+            // 延后 2.5s 等音频会话二次配置与 LX 音源脚本就绪。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                PlayerManager.shared.autoResumeLastPlaybackAfterKill()
+            }
         }
         defaults.set(true, forKey: "moshou_session_alive")
 

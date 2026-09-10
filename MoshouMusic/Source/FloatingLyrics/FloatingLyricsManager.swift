@@ -323,7 +323,7 @@ final class FloatingLyricsManager: NSObject {
 
     /// 🚨 换句/换歌后的内容刷新：view 内部 transform 动画 SB 不感知（实测要点一下
     /// 才刷新），只有 window 级几何变化驱动 SB 跨应用重合成（折叠/展开动画实测实时可见）。
-    /// 对 window.frame 做一次 2pt 往复动画（0.32s，肉眼几乎无感）驱动重合成。
+    /// 对 window.frame 做一次 3pt 往复动画（0.32s，肉眼几乎无感）驱动重合成。
     func pulseRecomposite() {
         guard let window = floatingWindow, !isCollapsed, !suppressedInApp else { return }
         pulseWorkItem?.cancel()
@@ -336,7 +336,7 @@ final class FloatingLyricsManager: NSObject {
         guard window === floatingWindow, !isCollapsed else { return }
         let original = window.frame
         UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseInOut]) {
-            window.frame = original.offsetBy(dx: 0, dy: -2)
+            window.frame = original.offsetBy(dx: 0, dy: -3)
         } completion: { _ in
             guard window === self.floatingWindow else { return }
             UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseInOut]) {
@@ -555,9 +555,19 @@ final class FloatingLyricsManager: NSObject {
             lyricsView?.setLines(["", "墨守music", ""], animated: false)
             return
         }
-        if PlayerManager.shared.currentLyrics.isEmpty {
+        let lyrics = PlayerManager.shared.currentLyrics
+        if lyrics.isEmpty {
             lyricsView?.setPlaceholder(name: song.name, singer: song.singer)
+            return
         }
+        // v1.0.122：窗口重建后立即恢复当前句 —— 此前歌词非空时什么都不渲染，
+        // 新窗口空白，要等下一句通知才有内容；若后台歌词驱动停摆就永远停在占位。
+        let idx = PlayerManager.shared.currentLyricIndex
+        let safe = idx >= 0 && idx < lyrics.count ? idx : 0
+        lyricsIndex = safe
+        let prevLine = safe > 0 ? lyrics[safe - 1].text : ""
+        let nextLine = safe + 1 < lyrics.count ? lyrics[safe + 1].text : ""
+        lyricsView?.setLines([prevLine, lyrics[safe].text, nextLine], animated: false)
     }
 
     @objc private func lyricsLineChanged(_ notification: Notification) {
@@ -579,6 +589,8 @@ final class FloatingLyricsManager: NSObject {
             let current = line.text
             let next = safeIndex + 1 < lines.count ? lines[safeIndex + 1].text : ""
             self.lyricsView?.setLines([prev, current, next], animated: animated)
+            // v1.0.122 诊断：确认跨应用场景下翻句通知是否送达（每句一条，环形缓冲可承受）
+            Logger.info("悬浮歌词跨应用翻句: idx=\(index)/\(lines.count) 动效=\(animated)")
             self.pulseRecomposite()
         }
     }

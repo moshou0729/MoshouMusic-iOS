@@ -152,6 +152,23 @@ class PlayerManager: NSObject {
         )
         // v1.0.121：亮屏 Darwin 通知 —— 亮屏瞬间 mediaserverd 的媒体仲裁中断随之而来
         registerDisplayStatusObserver()
+        // v1.0.122：后台歌词驱动 —— AVPlayer 周期时间观察者进后台经常停摆（与渲染
+        // 同步挂钩），悬浮歌词随之停在占位不翻句。补一个挂在主 runloop common 模式
+        // 的 0.5s Timer 兜底驱动（后台音频活跃时主 runloop 持续运行，Timer 不熄火）。
+        startLyricDriveTimer()
+    }
+
+    /// v1.0.122：后台歌词驱动 Timer（0.5s，主 runloop common 模式，后台不熄火）
+    private var lyricDriveTimer: Timer?
+
+    private func startLyricDriveTimer() {
+        guard lyricDriveTimer == nil else { return }
+        Logger.info("后台歌词驱动 Timer 已启动(0.5s 主runloop兜底)")
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.updateLyrics()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        lyricDriveTimer = timer
     }
 
     /// 中断前是否在播（来电 / 系统弹窗打断 → 结束后按此恢复）
@@ -332,11 +349,13 @@ class PlayerManager: NSObject {
 
     /// 看门狗：中断 .began 后周期性检查。若播放器已脱离 .interrupted 但仍暂停
     /// （说明 .ended 通知被吞），主动接管恢复；仍在 .interrupted（来电/弹窗未关）
-    /// 则避让并稍后重试，最多 6 轮（3s 起跑 + 6×4s ≈ 27s，覆盖后台任务窗口）。
-    private func scheduleInterruptionWatchdog(firstDelay: Double = 3.0) {
+    /// 则避让并稍后重试。🚨 v1.0.122 提速：首检 3s→1.5s、重试 4s→2s、轮数 6→10
+    /// （约 1.5s + 10×2s ≈ 21s，仍在 ~60s 恢复保活窗口内）——目标：熄屏点亮
+    /// 1~2s 内续播；旧节奏（3s 首检 + 4s 重试）最快也要 3s+ 才恢复。
+    private func scheduleInterruptionWatchdog(firstDelay: Double = 1.5) {
         interruptionWatchdog?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.attemptInterruptionRecovery(retriesLeft: 6)
+            self?.attemptInterruptionRecovery(retriesLeft: 10)
         }
         interruptionWatchdog = work
         DispatchQueue.main.asyncAfter(deadline: .now() + firstDelay, execute: work)
@@ -359,7 +378,7 @@ class PlayerManager: NSObject {
             let next = DispatchWorkItem { [weak self] in
                 self?.attemptInterruptionRecovery(retriesLeft: retriesLeft - 1)
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: next)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: next)
         }
     }
 

@@ -893,7 +893,7 @@ class PlayerManager: NSObject {
         if let bound = committedUrlBindings[url.absoluteString], bound != song.songmid {
             Logger.persist("串歌防线：该 URL 已绑定其他歌曲(\(bound))，拦截 \(song.name) [\(currentSource)]")
             handlePlayFailure(song: song, reason: "音源返回了错误音频，已自动切换其他音源",
-                              generation: generation, completion: { _ in })
+                              completion: { _ in })
             return
         }
 

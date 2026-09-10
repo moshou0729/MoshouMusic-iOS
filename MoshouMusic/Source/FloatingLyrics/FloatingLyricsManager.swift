@@ -346,7 +346,9 @@ final class FloatingLyricsManager: NSObject {
 
     /// 🚨 换句/换歌后的内容刷新：view 内部 transform 动画 SB 不感知（实测要点一下
     /// 才刷新），只有 window 级几何变化驱动 SB 跨应用重合成（折叠/展开动画实测实时可见）。
-    /// 对 window.frame 做一次 3pt 往复动画（0.32s，肉眼几乎无感）驱动重合成。
+    /// 对 window.frame 做一次 20pt 往复动画（0.32s，轻微一抖）驱动重合成。
+    /// 🚨 v1.0.124：2-3pt 微扰实测 SB 不标记脏区（换句后要点一下才变），
+    /// 只有「大幅」几何变化才触发重合成（折叠/展开动画实时可见即为证）。
     func pulseRecomposite() {
         guard let window = floatingWindow, !isCollapsed, !suppressedInApp else { return }
         pulseWorkItem?.cancel()
@@ -359,7 +361,7 @@ final class FloatingLyricsManager: NSObject {
         guard window === floatingWindow, !isCollapsed else { return }
         let original = window.frame
         UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseInOut]) {
-            window.frame = original.offsetBy(dx: 0, dy: -3)
+            window.frame = original.offsetBy(dx: 0, dy: -20)
         } completion: { _ in
             guard window === self.floatingWindow else { return }
             UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseInOut]) {
@@ -549,10 +551,13 @@ final class FloatingLyricsManager: NSObject {
         // 不先移除会导致通知重复投递
         center.removeObserver(self, name: .lyricsLineChanged, object: nil)
         center.removeObserver(self, name: .playerStateChanged, object: nil)
+        center.removeObserver(self, name: .lyricsLoaded, object: nil)
         center.addObserver(self, selector: #selector(lyricsLineChanged(_:)),
                            name: .lyricsLineChanged, object: nil)
         center.addObserver(self, selector: #selector(playerStateChanged),
                            name: .playerStateChanged, object: nil)
+        center.addObserver(self, selector: #selector(lyricsLoadedChanged),
+                           name: .lyricsLoaded, object: nil)
     }
 
     /// 当前歌曲标识，用于判断换歌
@@ -566,6 +571,17 @@ final class FloatingLyricsManager: NSObject {
             guard key != self.lastSongKey else { return }
             self.lastSongKey = key
             self.lyricsIndex = -1
+            Logger.info("悬浮歌词：检测到换歌，硬刷新窗口")
+            self.refreshPlaceholder()
+            // v1.0.124：换歌走硬刷新（低频事件，销毁重建保证 SB 全量重合成；
+            // 仅靠小脉冲实测不够 —— 换歌后悬浮窗停在旧内容要点一下才变）
+            self.hardRefresh()
+        }
+    }
+
+    /// v1.0.124：歌词状态落定（换歌清空 / 新词解析完成 / 无歌词）→ 刷新悬浮窗内容
+    @objc private func lyricsLoadedChanged() {
+        DispatchQueue.main.async {
             self.refreshPlaceholder()
         }
     }

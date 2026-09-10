@@ -1137,6 +1137,11 @@ class PlayerManager: NSObject {
     private func fetchLyrics() {
         guard let song = currentSong else { return }
 
+        // v1.0.124：换歌先清空旧歌词并广播（否则拉词期间悬浮窗残留上一首的句子）
+        currentLyrics = []
+        currentLyricIndex = -1
+        NotificationCenter.default.post(name: .lyricsLoaded, object: nil)
+
         ScriptEngine.shared.getLyrics(
             source: currentSource,
             songId: song.songmid,
@@ -1154,6 +1159,8 @@ class PlayerManager: NSObject {
                     Logger.warn("无歌词")
                     self.currentLyrics = []
                 }
+                // v1.0.124：歌词状态落定，通知悬浮窗刷新（新歌第一句 / 歌名占位）
+                NotificationCenter.default.post(name: .lyricsLoaded, object: nil)
             }
         }
     }
@@ -1454,6 +1461,8 @@ struct PlayerState {
 
 extension Notification.Name {
     static let lyricsLineChanged = Notification.Name("LyricsLineChanged")
+    /// v1.0.124：歌词状态落定（换歌清空 / 解析完成 / 无歌词）
+    static let lyricsLoaded = Notification.Name("MoshouMusicLyricsLoaded")
     static let artworkLoaded = Notification.Name("ArtworkLoaded")
     static let playerStateChanged = Notification.Name("PlayerStateChanged")
     static let playerTimeChanged = Notification.Name("PlayerTimeChanged")

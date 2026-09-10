@@ -32,6 +32,17 @@ final class FloatingSettingsViewController: UIViewController {
         refreshStatus()
     }
 
+    // MARK: - v1.0.123：设置页打开期间显示悬浮窗（实时预览），离开即隐藏
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        FloatingLyricsManager.shared.presentForSettings()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        FloatingLyricsManager.shared.dismissFromSettings()
+    }
+
     // MARK: - UI
 
     private func setupUI() {

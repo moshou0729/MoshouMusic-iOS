@@ -52,9 +52,32 @@ final class FloatingLyricsManager: NSObject {
 
     /// v1.0.121：App 回前台期间悬浮窗整体隐藏（销毁窗口），切到其他应用/桌面再出现
     private var suppressedInApp = false
+    /// v1.0.123：悬浮设置页打开期间临时显示（预览模式，其他页面仍隐藏）
+    private var settingsPreviewActive = false
 
     /// 回前台：销毁系统级窗口（App 内不显示悬浮）
+    /// v1.0.123：悬浮设置页打开期间保持显示（实时预览调参效果），不销毁
     func suppressWhileInApp() {
+        guard !settingsPreviewActive else { return }
+        suppressedInApp = true
+        hardRefreshWorkItem?.cancel()
+        pulseWorkItem?.cancel()
+        teardownWindow()
+    }
+
+    /// v1.0.123：悬浮设置页打开 —— 临时显示窗口供实时预览（App 内其他页面仍隐藏）
+    func presentForSettings() {
+        settingsPreviewActive = true
+        suppressedInApp = false
+        guard ConfigStore.shared.isFloatingLyricsOn else { return }
+        Logger.info("悬浮歌词：设置页打开，临时显示窗口供预览")
+        show()
+    }
+
+    /// v1.0.123：离开悬浮设置页 —— 恢复 App 内隐藏
+    func dismissFromSettings() {
+        guard settingsPreviewActive else { return }
+        settingsPreviewActive = false
         suppressedInApp = true
         hardRefreshWorkItem?.cancel()
         pulseWorkItem?.cancel()
@@ -113,8 +136,8 @@ final class FloatingLyricsManager: NSObject {
 
         let lyricView = FloatingLyricsView(frame: window.bounds,
                                            fontSize: ConfigStore.shared.floatingFontSize)
-        lyricView.backgroundColor = UIColor.black
-            .withAlphaComponent(CGFloat(ConfigStore.shared.floatingOpacity))
+        // v1.0.123：用配置色（此前写死黑色 → 每次销毁重建后用户选的颜色被重置成黑）
+        lyricView.backgroundColor = configuredBgColor()
         lyricView.isUserInteractionEnabled = true
         lyricView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         root.addSubview(lyricView)

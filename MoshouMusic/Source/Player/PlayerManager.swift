@@ -201,6 +201,8 @@ class PlayerManager: NSObject {
                 // 看门狗：3s 后开始接管恢复（若仍在 .interrupted 会自动避让，不与来电抢）。
                 self.scheduleInterruptionWatchdog()
             case .ended:
+                // v1.0.123 诊断：确认 .ended 是否送达（弹窗型中断常被吞，靠看门狗接管）
+                Logger.info("音频会话中断结束通知(.ended)已送达，0.2s 后抢回")
                 // v1.0.121：统一 0.2s 立即抢回（shouldResume 与否都先试，恢复入口自带守卫）
                 let delay: TimeInterval = 0.2
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -259,7 +261,8 @@ class PlayerManager: NSObject {
             }
         }
         activationRetryWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+        // v1.0.123：重试间隔 1.5s→1.0s（mediaserverd 忙是秒级抖动，没必要等 1.5s）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     /// 🚨 v1.0.115：中断期间进程失去「后台音频」保活资格（没在出声），几秒内会被
@@ -323,6 +326,13 @@ class PlayerManager: NSObject {
         if wasPlayingBeforeInterruption && !isPlaying {
             Logger.info("亮屏：检测到中断未恢复，立即进入恢复节奏")
             attemptInterruptionRecovery(retriesLeft: 8)
+        } else if isPlaying {
+            // v1.0.123：亮屏瞬间先抢重激活会话（赶在 mediaserverd 媒体仲裁前占住，
+            // 激活态下重激活无害；若仲裁仍反激活会话，随后 .began 走正常恢复链）
+            if !ensureAudioSessionActive() {
+                Logger.warn("亮屏抢占激活失败，交由中断恢复链接管")
+            }
+            scheduleInterruptionWatchdog(firstDelay: 1.2)
         } else {
             // 中断通常在亮屏后几百毫秒才到：看门狗首检提前到 1.2s
             scheduleInterruptionWatchdog(firstDelay: 1.2)
@@ -349,10 +359,10 @@ class PlayerManager: NSObject {
 
     /// 看门狗：中断 .began 后周期性检查。若播放器已脱离 .interrupted 但仍暂停
     /// （说明 .ended 通知被吞），主动接管恢复；仍在 .interrupted（来电/弹窗未关）
-    /// 则避让并稍后重试。🚨 v1.0.122 提速：首检 3s→1.5s、重试 4s→2s、轮数 6→10
-    /// （约 1.5s + 10×2s ≈ 21s，仍在 ~60s 恢复保活窗口内）——目标：熄屏点亮
+    /// 则避让并稍后重试。🚨 v1.0.122/123 提速：首检 3s→1.2s、重试 4s→2s、轮数 6→10
+    /// （约 1.2s + 10×2s ≈ 21s，仍在 ~60s 恢复保活窗口内）——目标：熄屏点亮
     /// 1~2s 内续播；旧节奏（3s 首检 + 4s 重试）最快也要 3s+ 才恢复。
-    private func scheduleInterruptionWatchdog(firstDelay: Double = 1.5) {
+    private func scheduleInterruptionWatchdog(firstDelay: Double = 1.2) {
         interruptionWatchdog?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.attemptInterruptionRecovery(retriesLeft: 10)

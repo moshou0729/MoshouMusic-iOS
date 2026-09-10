@@ -93,6 +93,12 @@ class PlayerManager: NSObject {
     /// 同代的其余竞速结果（直接取链 / 提前跨源兜底）一律作废，防止重复开播或顶歌。
     private var playbackCommitted = false
 
+    /// v1.0.136 串歌防线：URL -> songmid 绑定表（最近 8 条）。
+    /// 实测「很多歌都播出同一首《唯一》」：源端对失败/异常请求返回同一个默认音频，
+    /// 不同歌曲解析到同一 URL。正常场景不同歌绝无相同 URL，二次绑定 = 错源，拦截换源。
+    private var committedUrlBindings: [String: String] = [:]
+    private var committedUrlOrder: [String] = []
+
     // MARK: - Init
 
     override init() {
@@ -865,7 +871,7 @@ class PlayerManager: NSObject {
     private func startPlayback(url: URL, song: Song) {
         // v1.0.95：本代已开播（提前跨源兜底或直接取链先到者）→ 其余竞速结果作废
         guard !playbackCommitted else { return }
-        Logger.info("开始播放: \(song.name) - \(song.singer) [\(currentSource)]")
+        Logger.info("开始播放: \(song.name) - \(song.singer) [\(currentSource)] mid=\(song.songmid) url=\(url.absoluteString.prefix(110))")
 
         // v1.0.84：入口统一拦截 —— 覆盖「内置源 / LX 兼容层 / 自动换源」所有取链路径
         // （v1.0.90 起内置与 LX 并行竞速，两路的链接都经过这里）。命中已知试用/赞助版
@@ -880,6 +886,14 @@ class PlayerManager: NSObject {
             if let song = currentSong {
                 handlePlayFailure(song: song, reason: "该音源为试用/赞助版，已为你切换其他音源", completion: { _ in })
             }
+            return
+        }
+
+        // v1.0.136：串歌防线 —— 该 URL 已绑定过其他歌曲 = 源端返回了默认/错误音频
+        if let bound = committedUrlBindings[url.absoluteString], bound != song.songmid {
+            Logger.persist("串歌防线：该 URL 已绑定其他歌曲(\(bound))，拦截 \(song.name) [\(currentSource)]")
+            handlePlayFailure(song: song, reason: "音源返回了错误音频，已自动切换其他音源",
+                              generation: generation, completion: { _ in })
             return
         }
 
@@ -937,6 +951,16 @@ class PlayerManager: NSObject {
     private func commitStartPlayback(url: URL, song: Song) {
         // v1.0.95：标记本代已开播；清掉兜底阶段挂出的过渡性错误提示
         playbackCommitted = true
+        // v1.0.136：记录 URL -> songmid 绑定（串歌防线的判定依据，保留最近 8 条）
+        let urlKey = url.absoluteString
+        if let idx = committedUrlOrder.firstIndex(of: urlKey) {
+            committedUrlOrder.remove(at: idx)
+        }
+        committedUrlOrder.append(urlKey)
+        if committedUrlOrder.count > 8 {
+            committedUrlBindings.removeValue(forKey: committedUrlOrder.removeFirst())
+        }
+        committedUrlBindings[urlKey] = song.songmid
         lastPlayError = nil
         // 先移除上一个播放项的观察者，避免其释放后被观察而崩溃
         if let old = observedItem {

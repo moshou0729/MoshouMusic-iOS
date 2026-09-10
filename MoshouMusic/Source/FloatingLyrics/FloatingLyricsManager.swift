@@ -89,7 +89,7 @@ final class FloatingLyricsManager: NSObject {
 
     /// v1.0.134：熄屏自保（强制）—— 亮屏瞬间彻底拆除系统级窗口避开系统清杀。
     /// 根因由 v1.0.132 开关实验坐实：开关打开后熄屏点亮不再停播。
-    /// 拆除 8s 后在后台自动重建（亮屏重组危险窗口已过）。
+    /// 拆除 5s 后在后台自动重建（历史观测被杀窗口为亮屏后 1.4~4s，5s 已出危险区）。
     func screenWakeSelfGuardTeardown() {
         settingsPreviewActive = false
         hardRefreshWorkItem?.cancel()
@@ -100,11 +100,11 @@ final class FloatingLyricsManager: NSObject {
             guard let self = self else { return }
             guard !self.suppressedInApp, ConfigStore.shared.isFloatingLyricsOn else { return }
             self.show()
-            Logger.persist("熄屏自保：已延迟重建悬浮窗（亮屏后 8s，危险窗口已过）")
+            Logger.persist("熄屏自保：已延迟重建悬浮窗（亮屏后 5s）")
         }
         selfGuardReshowWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: work)
-        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，8s 后自动重建")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: work)
+        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，5s 后自动重建")
     }
 
     /// 离开 App（切其他应用 / 回桌面 / 锁屏）：恢复悬浮窗
@@ -368,13 +368,20 @@ final class FloatingLyricsManager: NSObject {
 
     private var pulseWorkItem: DispatchWorkItem?
 
+    /// v1.0.136：用户手势（拖动/捏合/折叠）进行中 —— 期间禁止脉冲动画。
+    /// 🚨 脉冲的 frame 动画会把手势拖到的位置拉回去（=「有时拖不动」），
+    /// 表现层与模型层分离即重影（桌面已被 v1.0.135 settlePulse 治好，
+    /// 治不好的场景都是手势开始后脉冲才被调度出来的）。
+    private var isUserInteracting = false
+
     /// 🚨 换句/换歌后的内容刷新：view 内部 transform 动画 SB 不感知（实测要点一下
     /// 才刷新），只有 window 级几何变化驱动 SB 跨应用重合成（折叠/展开动画实测实时可见）。
     /// 对窗口做一次底边下探 24pt 的往复动画（0.32s）驱动重合成。
     /// 🚨 v1.0.124/125 实测：2-3pt 微扰 SB 不标记脏区（换句后要点一下才变）；整体平移
     /// 20pt 虽有效但观感是「整个悬浮窗往上弹一下」（用户不可接受）→ 改锚定顶边只动底边。
     func pulseRecomposite() {
-        guard let window = floatingWindow, !isCollapsed, !suppressedInApp else { return }
+        guard let window = floatingWindow, !isCollapsed, !suppressedInApp,
+              !isUserInteracting else { return }
         pulseWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.performPulse(window: window) }
         pulseWorkItem = work
@@ -401,7 +408,7 @@ final class FloatingLyricsManager: NSObject {
     }
 
     private func performPulse(window: FloatingSystemWindow) {
-        guard window === floatingWindow, !isCollapsed else { return }
+        guard window === floatingWindow, !isCollapsed, !isUserInteracting else { return }
         let original = window.frame
         // v1.0.128：内容锁定脉冲 v2 —— UIWindow 拉伸根视图不走 layoutSubviews
         //（时序上拉伸动画先跑、纠正后到 = v1.0.127 仍可见「下拉再恢复」的根因），
@@ -468,14 +475,24 @@ final class FloatingLyricsManager: NSObject {
         // 的位置，且表现/模型层分离造成重影）
         if gesture.state == .began {
             settlePulse()
+            isUserInteracting = true
         }
         let translation = gesture.translation(in: nil)
         window.frame.origin.x += translation.x
         window.frame.origin.y += translation.y
         gesture.setTranslation(.zero, in: nil)
 
-        if gesture.state == .ended {
+        if gesture.state == .ended || gesture.state == .cancelled {
             clampWindowIntoScreen(window)
+            isUserInteracting = false
+            // v1.0.136：竖直快速轻扫 = 折叠成圆点。pan 一直在 swipe 之前 begin，
+            // 原 UISwipeGestureRecognizer 永远收不到事件（折叠手势操作不出来的根因）。
+            // 阈值 1000pt/s + 纵向占优：正常的慢速拖动窗口不受影响。
+            let v = gesture.velocity(in: nil)
+            if !isCollapsed, abs(v.y) > 1000, abs(v.y) > abs(v.x) * 1.5 {
+                collapseWindow()
+                return
+            }
             // v1.0.135：拖动结束补一次几何微扰，清 SpringBoard 端拖动残影
             //（捏合 ended 一直有此清理，拖动此前漏了）
             forceRecomposite()
@@ -495,6 +512,8 @@ final class FloatingLyricsManager: NSObject {
 
         switch gesture.state {
         case .began:
+            settlePulse()
+            isUserInteracting = true
             pinchStartFrame = window.frame
             pinchStartFont = ConfigStore.shared.floatingFontSize
             pinchStartSpan = pinchSpan(gesture)
@@ -536,6 +555,7 @@ final class FloatingLyricsManager: NSObject {
         default:
             pinchStartFrame = nil
             pinchStartSpan = nil
+            isUserInteracting = false
         }
     }
 
@@ -570,6 +590,7 @@ final class FloatingLyricsManager: NSObject {
     /// 折叠：窗口缩成 48×48 圆点（同播放条滑动收起的交互）
     private func collapseWindow() {
         guard let window = floatingWindow, !isCollapsed else { return }
+        settlePulse()
         isCollapsed = true
         savedExpandedFrame = window.frame
         let side: CGFloat = 48

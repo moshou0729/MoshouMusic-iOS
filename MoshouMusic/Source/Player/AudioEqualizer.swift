@@ -202,12 +202,11 @@ final class AudioEqualizer {
             tapStorageOut.pointee = clientInfo
         },
         finalize: { tap in
-            if let p = MTAudioProcessingTapGetStorage(tap) {
-                Unmanaged<TapContext>.fromOpaque(p).release()
-            }
+            let p = MTAudioProcessingTapGetStorage(tap)
+            Unmanaged<TapContext>.fromOpaque(p).release()
         },
         prepare: { tap, _, format in
-            guard let p = MTAudioProcessingTapGetStorage(tap) else { return }
+            let p = MTAudioProcessingTapGetStorage(tap)
             let ctx = Unmanaged<TapContext>.fromOpaque(p).takeUnretainedValue()
             let asbd = format.pointee
             // 只处理线性 PCM Float32；其余格式直接透传（process 里守卫）
@@ -222,14 +221,14 @@ final class AudioEqualizer {
             }
         },
         unprepare: { tap in
-            guard let p = MTAudioProcessingTapGetStorage(tap) else { return }
+            let p = MTAudioProcessingTapGetStorage(tap)
             let ctx = Unmanaged<TapContext>.fromOpaque(p).takeUnretainedValue()
             for c in ctx.eqChain { for b in c { b.reset() } }
             for c in ctx.analyzer { for b in c { b.reset() } }
             ctx.levels = Array(repeating: 0, count: 10)
         },
         process: { tap, numberFrames, _, bufferListInOut, numberFramesOut, _ in
-            guard let p = MTAudioProcessingTapGetStorage(tap) else { return }
+            let p = MTAudioProcessingTapGetStorage(tap)
             let ctx = Unmanaged<TapContext>.fromOpaque(p).takeUnretainedValue()
             guard ctx.floatFormat, numberFrames > 0 else {
                 numberFramesOut.pointee = 0

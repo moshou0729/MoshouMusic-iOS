@@ -381,6 +381,25 @@ final class FloatingLyricsManager: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
     }
 
+    /// v1.0.135：手势开始前终止进行中的脉冲动画。
+    /// 🚨 拖动重影根因：performPulse 捕获动画开始时的 frame，其 completion 会把窗口
+    /// 拉回旧 origin —— 若用户在脉冲动画期间开始拖动，CA 表现层仍在旧位置播放
+    /// 动画、模型层已被拖到新位置 = 同一窗口两处影像（重影）。手势开始即取消动画并落定。
+    private func settlePulse() {
+        pulseWorkItem?.cancel()
+        guard let window = floatingWindow else { return }
+        window.pulseContentLock = false
+        // 终止进行中的 frame 动画（表现层立即吸附到模型值 = 当前拖动位置）
+        UIView.performWithoutAnimation {
+            window.layer.removeAllAnimations()
+            window.rootViewController?.view?.layer.removeAllAnimations()
+            let target = window.frame
+            window.frame = target
+            window.rootViewController?.view.frame =
+                CGRect(origin: .zero, size: target.size)
+        }
+    }
+
     private func performPulse(window: FloatingSystemWindow) {
         guard window === floatingWindow, !isCollapsed else { return }
         let original = window.frame
@@ -445,6 +464,11 @@ final class FloatingLyricsManager: NSObject {
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         guard !isLocked, let window = floatingWindow else { return }
+        // v1.0.135：拖动开始先终止脉冲动画（动画 completion 会把窗口拉回拖动前
+        // 的位置，且表现/模型层分离造成重影）
+        if gesture.state == .began {
+            settlePulse()
+        }
         let translation = gesture.translation(in: nil)
         window.frame.origin.x += translation.x
         window.frame.origin.y += translation.y
@@ -452,6 +476,9 @@ final class FloatingLyricsManager: NSObject {
 
         if gesture.state == .ended {
             clampWindowIntoScreen(window)
+            // v1.0.135：拖动结束补一次几何微扰，清 SpringBoard 端拖动残影
+            //（捏合 ended 一直有此清理，拖动此前漏了）
+            forceRecomposite()
             if isCollapsed {
                 savedExpandedFrame?.origin = window.frame.origin
             } else {

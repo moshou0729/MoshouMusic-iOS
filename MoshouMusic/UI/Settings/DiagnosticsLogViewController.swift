@@ -13,8 +13,12 @@ final class DiagnosticsLogViewController: UIViewController {
 
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             title: "关闭", style: .plain, target: self, action: #selector(closeTapped))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "复制全部", style: .plain, target: self, action: #selector(copyTapped))
+        // v1.0.129：拆两个复制 —— 会话缓冲 500 行太长导致剪贴板复制失败，
+        // 排查所需的只是「跨进程事件 + 系统报告」，故「复制关键」为首选
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(title: "复制关键", style: .plain, target: self, action: #selector(copyKeyTapped)),
+            UIBarButtonItem(title: "复制全部", style: .plain, target: self, action: #selector(copyTapped)),
+        ]
 
         textView.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         textView.textColor = .label
@@ -32,7 +36,7 @@ final class DiagnosticsLogViewController: UIViewController {
         ])
 
         let tip = UILabel()
-        tip.text = "复现问题后回本页点「复制全部」：顶部「跨进程事件」段在进程被杀后依然保留，是排查熄屏停播/被杀的关键现场。"
+        tip.text = "复现问题后点「复制关键」发开发者（跨进程事件+系统报告，进程被杀也保留）；「复制全部」含 500 行会话日志，太长可能复制失败。"
         tip.font = UIFont.systemFont(ofSize: 12)
         tip.textColor = .tertiaryLabel
         tip.numberOfLines = 0
@@ -48,6 +52,21 @@ final class DiagnosticsLogViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         reload()
+    }
+
+    /// v1.0.129：关键日志 = 跨进程事件 + 系统报告（排查被杀/停播所需的全部内容，
+    /// 不含 500 行会话缓冲 —— 那段太长会导致剪贴板复制失败）
+    private func keyText() -> String {
+        var full = ""
+        let persist = Logger.dumpPersistText()
+        full += "════ 跨进程事件（进程被杀也保留）════\n" + (persist.isEmpty ? "（暂无）" : persist)
+        let doc = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
+        if let doc = doc,
+           let rep = try? String(contentsOfFile: doc + "/system_report.log", encoding: .utf8),
+           !rep.isEmpty {
+            full += "\n\n════ 系统报告（终止原因取证）════\n" + rep
+        }
+        return full
     }
 
     /// v1.0.126：持久化事件在前、本次会话在后（持久化段跨进程存活，是「上次怎么死的」的现场）
@@ -81,11 +100,22 @@ final class DiagnosticsLogViewController: UIViewController {
         dismiss(animated: true)
     }
 
+    @objc private func copyKeyTapped() {
+        let full = keyText()
+        UIPasteboard.general.string = full
+        let lines = full.split(separator: "\n").count
+        let alert = UIAlertController(title: "已复制关键日志",
+                                      message: "共 \(lines) 行（跨进程事件 + 系统报告），直接粘贴发给开发者",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好的", style: .default))
+        present(alert, animated: true)
+    }
+
     @objc private func copyTapped() {
         let full = compositeText()
         UIPasteboard.general.string = full
-        let alert = UIAlertController(title: "已复制",
-                                      message: "已复制日志到剪贴板（含跨进程事件段）",
+        let alert = UIAlertController(title: "已复制全部",
+                                      message: "内容较长，若粘贴后不完整请改用「复制关键」",
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好的", style: .default))
         present(alert, animated: true)

@@ -58,7 +58,8 @@ final class DiagnosticsLogViewController: UIViewController {
     /// 不含 500 行会话缓冲 —— 那段太长会导致剪贴板复制失败）
     private func keyText() -> String {
         var full = ""
-        let persist = Logger.dumpPersistText()
+        // v1.0.130：只取最近 80 条持久化事件（控制剪贴板体积，保底可复制）
+        let persist = Logger.dumpPersistText(maxLines: 80)
         full += "════ 跨进程事件（进程被杀也保留）════\n" + (persist.isEmpty ? "（暂无）" : persist)
         let doc = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
         if let doc = doc,
@@ -105,7 +106,7 @@ final class DiagnosticsLogViewController: UIViewController {
         UIPasteboard.general.string = full
         let lines = full.split(separator: "\n").count
         let alert = UIAlertController(title: "已复制关键日志",
-                                      message: "共 \(lines) 行（跨进程事件 + 系统报告），直接粘贴发给开发者",
+                                      message: "共 \(lines) 行 / 约 \(full.count) 字符（跨进程事件 + 系统报告），直接粘贴发给开发者",
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好的", style: .default))
         present(alert, animated: true)

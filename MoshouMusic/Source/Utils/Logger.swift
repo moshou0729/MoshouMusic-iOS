@@ -91,8 +91,12 @@ class Logger {
     }
 
     /// 导出持久化事件（跨进程存活；诊断页置于环形缓冲之前展示）
-    static func dumpPersistText() -> String {
-        let entries = UserDefaults.standard.stringArray(forKey: persistKey) ?? []
+    /// v1.0.130：maxLines 支持只取最近 N 条（控制剪贴板体积）
+    static func dumpPersistText(maxLines: Int = Int.max) -> String {
+        var entries = UserDefaults.standard.stringArray(forKey: persistKey) ?? []
+        if entries.count > maxLines {
+            entries = Array(entries.suffix(maxLines))
+        }
         return entries.joined(separator: "\n")
     }
 

@@ -157,7 +157,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             guard let raw = fm.contents(atPath: dir + "/" + name) else { continue }
             let blob = String(data: raw.prefix(512 * 1024), encoding: .utf8) ?? ""
             guard blob.contains("MoshouMusic") else { continue }
-            // 命中：提取终止原因相关行做摘要
+            // 命中：提取终止原因相关行做摘要。
+            // 🚨 v1.0.130：.ips 正文常是一整行巨型 JSON（可达数 MB），原样提取会让
+            // 摘要爆炸 → 剪贴板复制失败。逐行截断 400 字符 + 摘要总量封顶 16KB。
             let keyLines = blob.split(separator: "\n").filter {
                 $0.localizedCaseInsensitiveContains("MoshouMusic") ||
                 $0.localizedCaseInsensitiveContains("exception") ||
@@ -167,8 +169,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 $0.localizedCaseInsensitiveContains("VM Stats") ||
                 $0.localizedCaseInsensitiveContains("rpages") ||
                 $0.localizedCaseInsensitiveContains("kill")
-            }.prefix(30)
-            let summary = "\(name)（\(mtime)）\n" + keyLines.joined(separator: "\n")
+            }.prefix(30).map { line -> String in
+                let l = line.trimmingCharacters(in: .whitespaces)
+                return l.count > 400 ? String(l.prefix(400)) + "…(行截断)" : l
+            }
+            var summary = "\(name)（\(mtime)）\n" + keyLines.joined(separator: "\n")
+            if summary.count > 16 * 1024 {
+                summary = String(summary.prefix(16 * 1024)) + "\n…(摘要超长截断)"
+            }
             Logger.persist("🚨 发现系统报告：\(name)（详情见诊断页底部）")
             try? summary.write(toFile: AppDelegate.systemReportPath, atomically: true, encoding: .utf8)
             return

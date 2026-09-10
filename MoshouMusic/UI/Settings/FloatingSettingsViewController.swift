@@ -86,6 +86,31 @@ final class FloatingSettingsViewController: UIViewController {
             switchRow.heightAnchor.constraint(equalToConstant: 44),
         ])
 
+        // v1.0.131：熄屏自保测试开关（对照实验：亮屏销毁悬浮窗，验证被杀根因）
+        let guardRow = UIView()
+        let guardTitle = UILabel()
+        guardTitle.text = "熄屏自保测试（亮屏时销毁悬浮窗）"
+        guardTitle.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        guardTitle.textColor = .label
+        let guardSwitch = UISwitch()
+        guardSwitch.isOn = ConfigStore.shared.screenWakeSelfGuard
+        guardSwitch.onTintColor = Theme.primary
+        guardRow.addSubview(guardTitle)
+        guardRow.addSubview(guardSwitch)
+        guardTitle.translatesAutoresizingMaskIntoConstraints = false
+        guardSwitch.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            guardTitle.leadingAnchor.constraint(equalTo: guardRow.leadingAnchor),
+            guardTitle.centerYAnchor.constraint(equalTo: guardRow.centerYAnchor),
+            guardSwitch.trailingAnchor.constraint(equalTo: guardRow.trailingAnchor),
+            guardSwitch.centerYAnchor.constraint(equalTo: guardRow.centerYAnchor),
+            guardRow.heightAnchor.constraint(equalToConstant: 44),
+        ])
+        guardSwitch.addAction(UIAction { _ in
+            ConfigStore.shared.screenWakeSelfGuard = guardSwitch.isOn
+            Logger.info("熄屏自保测试开关：\(guardSwitch.isOn ? "开" : "关")")
+        }, for: .valueChanged)
+
         statusLabel.font = UIFont.systemFont(ofSize: 13)
         statusLabel.textColor = .secondaryLabel
         statusLabel.numberOfLines = 0
@@ -104,7 +129,7 @@ final class FloatingSettingsViewController: UIViewController {
         logButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .medium)
         logButton.setTitleColor(Theme.primary, for: .normal)
 
-        [switchRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, resetButton, logButton, tipLabel]
+        [switchRow, guardRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, resetButton, logButton, tipLabel]
             .forEach { stack.addArrangedSubview($0) }
         stack.setCustomSpacing(6, after: switchRow)
         stack.setCustomSpacing(24, after: statusLabel)

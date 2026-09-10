@@ -340,6 +340,14 @@ class PlayerManager: NSObject {
         // v1.0.125 诊断：displayStatus 亮/灭屏都会回调 —— 若复现熄屏停播时连这条都没有，
         // 说明 Darwin 通知根本没送达（观察器失效），是另一个层面的故障
         Logger.persist("displayStatus 通知回调: isPlaying=\(isPlaying) 中断挂起=\(wasPlayingBeforeInterruption)")
+        // v1.0.131 对照实验：熄屏点亮被杀的嫌疑根因 = 亮屏瞬间 SpringBoard 重组时
+        // 发现后台进程托管系统级窗口。开关打开时亮屏立即彻底拆除悬浮窗；
+        // 若被杀随之消失 → 根因坐实；若照旧被杀 → 排除此嫌疑。
+        if isPlaying,
+           UIApplication.shared.applicationState != .active,
+           ConfigStore.shared.screenWakeSelfGuard {
+            FloatingLyricsManager.shared.screenWakeSelfGuardTeardown()
+        }
         beginRecoveryKeepAlive()
         if wasPlayingBeforeInterruption && !isPlaying {
             Logger.info("亮屏：检测到中断未恢复，立即进入恢复节奏")

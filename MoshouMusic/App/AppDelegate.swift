@@ -139,49 +139,75 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             Logger.persist("系统报告目录不可读 /var/mobile/Library/Logs/CrashReporter（no-sandbox 未生效？）")
             return
         }
-        let entries = names
-            .filter { $0.hasSuffix(".ips") }
-            .compactMap { name -> (String, Date)? in
-                let attrs = try? fm.attributesOfItem(atPath: dir + "/" + name)
-                guard let mtime = attrs?[.modificationDate] as? Date else { return nil }
-                return (name, mtime)
+        // v1.0.131：JetsamEvent 报告可能在子目录 → 顶层 + 一层子目录都扫
+        var all: [(String, String, Date)] = []   // (相对路径, 全路径, mtime)
+        var subdirCount = 0
+        for n in names {
+            let p = dir + "/" + n
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue {
+                subdirCount += 1
+                if let sub = try? fm.contentsOfDirectory(atPath: p) {
+                    for s in sub where s.hasSuffix(".ips") {
+                        let sp = p + "/" + s
+                        if let m = try? fm.attributesOfItem(atPath: sp)[.modificationDate] as? Date {
+                            all.append((n + "/" + s, sp, m))
+                        }
+                    }
+                }
+            } else if n.hasSuffix(".ips") {
+                if let m = try? fm.attributesOfItem(atPath: p)[.modificationDate] as? Date {
+                    all.append((n, p, m))
+                }
             }
-            .sorted { $0.1 > $1.1 }
+        }
+        let entries = all.sorted { $0.2 > $1.2 }
         guard !entries.isEmpty else {
-            Logger.persist("系统报告目录为空：\(dir)")
+            Logger.persist("系统报告目录为空：\(dir)（子目录 \(subdirCount) 个）")
             return
         }
-        for (name, mtime) in entries.prefix(40) {
-            // 只关心最近 7 天
-            guard mtime.timeIntervalSinceNow > -7 * 24 * 3600 else { break }
-            guard let raw = fm.contents(atPath: dir + "/" + name) else { continue }
+        // v1.0.131 修两个匹配缺陷：①看门狗报告正文会 dump 全设备进程列表（含我们的
+        // 名字），旧逻辑把别人的报告（如 B 站）误命中；②首个命中就 return，真正的
+        // JetsamEvent 排不上队。新规则：头 2KB（report 自身 procname 所在）含墨守 =
+        // 肯定是我们的；或文件名 JetsamEvent-* 且正文含墨守 = 候选。最多收集 3 份。
+        var matched: [(String, String)] = []   // (名称, 摘要)
+        for (rel, path, mtime) in entries where mtime.timeIntervalSinceNow > -7 * 24 * 3600 {
+            guard matched.count < 3 else { break }
+            guard let raw = fm.contents(atPath: path) else { continue }
             let blob = String(data: raw.prefix(512 * 1024), encoding: .utf8) ?? ""
-            guard blob.contains("MoshouMusic") else { continue }
-            // 命中：提取终止原因相关行做摘要。
-            // 🚨 v1.0.130：.ips 正文常是一整行巨型 JSON（可达数 MB），原样提取会让
-            // 摘要爆炸 → 剪贴板复制失败。逐行截断 400 字符 + 摘要总量封顶 16KB。
+            let header = String(data: raw.prefix(2048), encoding: .utf8) ?? ""
+            let isOurs = header.contains("MoshouMusic")
+            let isJetsamCandidate = !isOurs && rel.contains("JetsamEvent") && blob.contains("MoshouMusic")
+            guard isOurs || isJetsamCandidate else { continue }
+            // 摘要逐行截断 400 字符（.ips 正文常是一整行巨型 JSON）+ 单份 8KB 封顶
             let keyLines = blob.split(separator: "\n").filter {
                 $0.localizedCaseInsensitiveContains("MoshouMusic") ||
                 $0.localizedCaseInsensitiveContains("exception") ||
                 $0.localizedCaseInsensitiveContains("termination") ||
                 $0.localizedCaseInsensitiveContains("per-process") ||
                 $0.localizedCaseInsensitiveContains("reason") ||
-                $0.localizedCaseInsensitiveContains("VM Stats") ||
                 $0.localizedCaseInsensitiveContains("rpages") ||
-                $0.localizedCaseInsensitiveContains("kill")
+                $0.localizedCaseInsensitiveContains("kill") ||
+                $0.localizedCaseInsensitiveContains("procname")
             }.prefix(30).map { line -> String in
                 let l = line.trimmingCharacters(in: .whitespaces)
-                return l.count > 400 ? String(l.prefix(400)) + "…(行截断)" : l
+                return l.count > 400 ? String(l.prefix(400)) + "…(超长行截断)" : l
             }
-            var summary = "\(name)（\(mtime)）\n" + keyLines.joined(separator: "\n")
-            if summary.count > 16 * 1024 {
-                summary = String(summary.prefix(16 * 1024)) + "\n…(摘要超长截断)"
+            var summary = "\(rel)（\(mtime)）\n" + keyLines.joined(separator: "\n")
+            if summary.count > 8 * 1024 {
+                summary = String(summary.prefix(8 * 1024)) + "\n…(单份摘要封顶)"
             }
-            Logger.persist("🚨 发现系统报告：\(name)（详情见诊断页底部）")
-            try? summary.write(toFile: AppDelegate.systemReportPath, atomically: true, encoding: .utf8)
+            matched.append((rel, summary))
+        }
+        if matched.isEmpty {
+            let newest = entries.prefix(10).map { $0.0 }.joined(separator: ", ")
+            Logger.persist("近 7 天系统报告中无墨守music相关条目（共扫描 \(entries.count) 份，子目录 \(subdirCount) 个）。最新文件：\(newest)")
             return
         }
-        Logger.persist("近 7 天系统报告中无与墨守music相关的条目（共扫描 \(min(entries.count, 40)) 份）")
+        var combined = matched.map { $0.1 }.joined(separator: "\n\n----\n\n")
+        if combined.count > 20 * 1024 { combined = String(combined.prefix(20 * 1024)) + "\n…(摘要超长截断)" }
+        Logger.persist("🚨 发现 \(matched.count) 份墨守music相关系统报告：\(matched.map { $0.0 }.joined(separator: "、"))（详情见诊断页底部）")
+        try? combined.write(toFile: AppDelegate.systemReportPath, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Background Fetch

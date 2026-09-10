@@ -16,6 +16,7 @@ class ConfigStore {
         static let volume = "volume"
         static let searchHistory = "searchHistory"
         static let isFloatingLyricsOn = "isFloatingLyricsOn"
+        static let screenWakeSelfGuard = "screenWakeSelfGuard"
         static let floatingOpacity = "floatingOpacity"
         static let floatingWidth = "floatingWidth"
         static let floatingHeight = "floatingHeight"
@@ -245,6 +246,12 @@ class ConfigStore {
     var isFloatingLyricsOn: Bool {
         get { defaults.bool(forKey: Keys.isFloatingLyricsOn) }
         set { defaults.set(newValue, forKey: Keys.isFloatingLyricsOn) }
+    }
+
+    /// v1.0.131：熄屏自保测试开关 —— 亮屏时彻底拆除悬浮窗（对照实验定位被杀根因）
+    var screenWakeSelfGuard: Bool {
+        get { defaults.bool(forKey: Keys.screenWakeSelfGuard) }
+        set { defaults.set(newValue, forKey: Keys.screenWakeSelfGuard) }
     }
 
     var floatingOpacity: Float {

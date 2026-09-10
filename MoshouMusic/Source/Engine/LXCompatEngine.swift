@@ -530,8 +530,8 @@ final class LXCompatEngine {
                             if box.settle(success: true) {
                                 Logger.info("LXCompat: 竞速胜出 \(inst.id) \(action)/\(platform)")
                                 // v1.0.138：记录胜出脚本（串歌防线惩罚时定位责任源）
-                                lastWinner[platform] = inst.id
-                                lastWinnerAt[platform] = Date()
+                                self.lastWinner[platform] = inst.id
+                                self.lastWinnerAt[platform] = Date()
                                 completion(.success(data))
                             }
                         } else {

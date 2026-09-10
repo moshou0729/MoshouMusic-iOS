@@ -17,6 +17,7 @@ final class FloatingSettingsViewController: UIViewController {
                                             min: 0.1, max: 1.0) { "\(Int($0 * 100))%" }
     private let colorRow = ColorRow()
     private let colorInputRow = ColorInputRow()
+    private let spectrumSwitch = UISwitch()
 
     private let statusLabel = UILabel()
     private let tipLabel = UILabel()
@@ -129,8 +130,34 @@ final class FloatingSettingsViewController: UIViewController {
         logButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .medium)
         logButton.setTitleColor(Theme.primary, for: .normal)
 
-        [switchRow, guardRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, resetButton, logButton, tipLabel]
+        // v1.0.141：音乐频谱开关行
+        let spectrumRow = UIView()
+        let spectrumTitle = UILabel()
+        spectrumTitle.text = "音乐频谱（随节奏跳动的频谱条）"
+        spectrumTitle.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        spectrumTitle.textColor = .label
+        spectrumSwitch.isOn = ConfigStore.shared.floatingSpectrumOn
+        spectrumSwitch.onTintColor = Theme.primary
+        spectrumRow.addSubview(spectrumTitle)
+        spectrumRow.addSubview(spectrumSwitch)
+        spectrumTitle.translatesAutoresizingMaskIntoConstraints = false
+        spectrumSwitch.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            spectrumTitle.leadingAnchor.constraint(equalTo: spectrumRow.leadingAnchor),
+            spectrumTitle.centerYAnchor.constraint(equalTo: spectrumRow.centerYAnchor),
+            spectrumSwitch.trailingAnchor.constraint(equalTo: spectrumRow.trailingAnchor),
+            spectrumSwitch.centerYAnchor.constraint(equalTo: spectrumRow.centerYAnchor),
+            spectrumRow.heightAnchor.constraint(equalToConstant: 44),
+        ])
+        spectrumSwitch.addAction(UIAction { [weak self] _ in
+            ConfigStore.shared.floatingSpectrumOn = self?.spectrumSwitch.isOn ?? false
+            FloatingLyricsManager.shared.refreshSpectrumState()
+            FloatingLyricsManager.shared.refreshSpectrumBase()
+        }, for: .valueChanged)
+
+        [switchRow, guardRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, spectrumRow, resetButton, logButton, tipLabel]
             .forEach { stack.addArrangedSubview($0) }
+        stack.setCustomSpacing(6, after: spectrumRow)
         stack.setCustomSpacing(6, after: switchRow)
         stack.setCustomSpacing(24, after: statusLabel)
         stack.setCustomSpacing(24, after: colorInputRow)
@@ -174,14 +201,20 @@ final class FloatingSettingsViewController: UIViewController {
             self?.colorRow.refreshSelection()
             self?.colorInputRow.updatePreview(hex: hex)
         }
+        // v1.0.141：自定义色彩圆盘（色相环 + 饱和度/亮度方盘）
         colorRow.onCustom = { [weak self] in
             guard let self = self else { return }
-            let picker = UIColorPickerViewController()
-            picker.title = "悬浮歌词背景颜色"
-            picker.supportsAlpha = false
-            picker.selectedColor = UIColor(hex: ConfigStore.shared.floatingBgColorHex)
-            picker.delegate = self
-            self.present(picker, animated: true)
+            let wheel = ColorWheelViewController()
+            wheel.onColorChanged = { hex in
+                ConfigStore.shared.floatingBgColorHex = hex
+                FloatingLyricsManager.shared.updateBgColor(hex: hex)
+                self.colorInputRow.updatePreview(hex: hex)
+                self.colorRow.refreshSelection()
+            }
+            wheel.onFinished = { FloatingLyricsManager.shared.hardRefresh() }
+            let nav = UINavigationController(rootViewController: wheel)
+            nav.modalPresentationStyle = .pageSheet
+            self.present(nav, animated: true)
         }
         resetButton.addTarget(self, action: #selector(resetLayout), for: .touchUpInside)
         logButton.addTarget(self, action: #selector(openLogs), for: .touchUpInside)

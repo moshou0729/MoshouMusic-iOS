@@ -1057,6 +1057,8 @@ class PlayerManager: NSObject {
         )
 
         player.replaceCurrentItem(with: item)
+        // v1.0.141：均衡器/频谱 tap（异步等音轨就绪后挂载，失败静默透传）
+        AudioEqualizer.shared.attachIfNeeded(to: item)
         // v1.0.112：开播前确保会话激活（mediaserverd 重启/中断后 session 可能仍反激活）
         ensureAudioSessionActive()
         player.play()

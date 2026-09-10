@@ -138,6 +138,7 @@ final class FloatingLyricsManager: NSObject {
             applySettings()
             registerHostingWithRetry()
             refreshPlaceholder()
+            refreshSpectrumState()
             return
         }
 
@@ -166,6 +167,9 @@ final class FloatingLyricsManager: NSObject {
         lyricView.backgroundColor = configuredBgColor()
         lyricView.isUserInteractionEnabled = true
         lyricView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // v1.0.141：折叠圆点封面 + 频谱可见性恢复
+        lyricView.setArtwork(PlayerManager.shared.currentArtwork)
+        lyricView.setSpectrumVisible(ConfigStore.shared.floatingSpectrumOn)
         root.addSubview(lyricView)
 
         self.floatingWindow = window
@@ -184,6 +188,7 @@ final class FloatingLyricsManager: NSObject {
 
         // contextId 要等下一个 runloop 才生成，注册带重试
         registerHostingWithRetry()
+        refreshSpectrumState()
     }
 
     func hide() {
@@ -382,6 +387,8 @@ final class FloatingLyricsManager: NSObject {
     /// 🚨 v1.0.124/125 实测：2-3pt 微扰 SB 不标记脏区（换句后要点一下才变）；整体平移
     /// 20pt 虽有效但观感是「整个悬浮窗往上弹一下」（用户不可接受）→ 改锚定顶边只动底边。
     func pulseRecomposite() {
+        // v1.0.141：频谱驱动运行中时脉冲让路（几何已连续变化，脉冲会打架）
+        guard spectrumLink == nil else { return }
         guard let window = floatingWindow, !isCollapsed, !suppressedInApp,
               !isUserInteracting else { return }
         pulseWorkItem?.cancel()
@@ -445,6 +452,80 @@ final class FloatingLyricsManager: NSObject {
         }
     }
 
+    // MARK: - v1.0.141 音乐频谱（悬浮窗可视化）
+
+    @objc private func artworkLoaded() {
+        lyricsView?.setArtwork(PlayerManager.shared.currentArtwork)
+    }
+
+    private var spectrumLink: CADisplayLink?
+    private var spectrumBaseFrame: CGRect?
+    private var spectrumPhase: Double = 0
+
+    /// 频谱开关/播放状态变化后调用：启动或停止显示链接
+    func refreshSpectrumState() {
+        let on = ConfigStore.shared.floatingSpectrumOn
+        if on, spectrumLink == nil {
+            lyricsView?.setSpectrumVisible(true)
+            let link = CADisplayLink(target: self, selector: #selector(spectrumTick))
+            link.preferredFramesPerSecond = 20
+            link.add(to: .main, forMode: .common)
+            spectrumLink = link
+            spectrumBaseFrame = nil
+            Logger.persist("频谱驱动已启动")
+        } else if !on, let link = spectrumLink {
+            link.invalidate()
+            spectrumLink = nil
+            restoreSpectrumGeometry()
+            lyricsView?.setSpectrumVisible(false)
+        }
+    }
+
+    /// 手势/重建改了窗口几何后重新捕获频谱基准帧
+    func refreshSpectrumBase() {
+        spectrumBaseFrame = nil
+    }
+
+    @objc private func spectrumTick() {
+        guard let window = floatingWindow, !isCollapsed, !isUserInteracting, !suppressedInApp,
+              PlayerManager.shared.isPlaying else {
+            if spectrumBaseFrame != nil { restoreSpectrumGeometry() }
+            return
+        }
+        // 频谱条数据（EQ tap 的并行带通分析）
+        lyricsView?.spectrumView.levels = AudioEqualizer.shared.currentLevels()
+        // 几何驱动：底边 0~24pt 正弦往复（内容锁钉住根视图 → 视觉零变化），
+        // 连续 window 级几何变化强制 SB 逐帧重合成 → 频谱跨应用实时可见
+        if spectrumBaseFrame == nil {
+            spectrumBaseFrame = window.frame
+        }
+        var base = spectrumBaseFrame!
+        // 手势期间拖动了窗口 → 重新捕获基准
+        if abs(window.frame.origin.x - base.origin.x) > 1
+            || abs(window.frame.origin.y - base.origin.y) > 1
+            || abs(window.frame.width - base.width) > 1 {
+            spectrumBaseFrame = window.frame
+            base = window.frame
+        }
+        spectrumPhase += 0.35
+        if spectrumPhase > .pi * 2 { spectrumPhase -= .pi * 2 }
+        let osc = (0.5 - 0.5 * cos(spectrumPhase)) * 24
+        window.pulseContentLock = true
+        window.pulseContentSize = base.size
+        window.frame = CGRect(origin: base.origin,
+                              size: CGSize(width: base.width, height: base.height + osc))
+    }
+
+    private func restoreSpectrumGeometry() {
+        guard let window = floatingWindow else { spectrumBaseFrame = nil; return }
+        window.pulseContentLock = false
+        if let base = spectrumBaseFrame {
+            UIView.performWithoutAnimation { window.frame = base }
+            window.rootViewController?.view.setNeedsLayout()
+        }
+        spectrumBaseFrame = nil
+    }
+
     // MARK: - 手势（窗口即悬浮框：拖动 = 移动窗口，捏合 = 缩放窗口）
 
     private func setupGestures() {
@@ -487,6 +568,7 @@ final class FloatingLyricsManager: NSObject {
         if gesture.state == .ended || gesture.state == .cancelled {
             clampWindowIntoScreen(window)
             isUserInteracting = false
+            refreshSpectrumBase()
             // v1.0.136：竖直快速轻扫 = 折叠成圆点。pan 一直在 swipe 之前 begin，
             // 原 UISwipeGestureRecognizer 永远收不到事件（折叠手势操作不出来的根因）。
             // 阈值 1000pt/s + 纵向占优：正常的慢速拖动窗口不受影响。
@@ -558,6 +640,7 @@ final class FloatingLyricsManager: NSObject {
             ConfigStore.shared.floatingFontSize = lyricsView?.fontSize ?? ConfigStore.shared.floatingFontSize
             pinchStartFrame = nil
             pinchStartSpan = nil
+            refreshSpectrumBase()
             // v1.0.138：与拖动同理，捏合结束清理升级（见 handlePan）
             if UIApplication.shared.applicationState == .active {
                 hardRefresh()
@@ -660,12 +743,16 @@ final class FloatingLyricsManager: NSObject {
         center.removeObserver(self, name: .lyricsLineChanged, object: nil)
         center.removeObserver(self, name: .playerStateChanged, object: nil)
         center.removeObserver(self, name: .lyricsLoaded, object: nil)
+        center.removeObserver(self, name: .artworkLoaded, object: nil)
         center.addObserver(self, selector: #selector(lyricsLineChanged(_:)),
                            name: .lyricsLineChanged, object: nil)
         center.addObserver(self, selector: #selector(playerStateChanged),
                            name: .playerStateChanged, object: nil)
         center.addObserver(self, selector: #selector(lyricsLoadedChanged),
                            name: .lyricsLoaded, object: nil)
+        // v1.0.141：封面更新 → 折叠圆点换封面
+        center.addObserver(self, selector: #selector(artworkLoaded),
+                           name: .artworkLoaded, object: nil)
     }
 
     /// 当前歌曲标识，用于判断换歌

@@ -71,6 +71,7 @@ class SettingsViewController: UIViewController {
             SettingItem(icon: "music.note", iconColor: Theme.primary, title: "音源管理", subtitle: sourceSummary, type: .navigate),
         ]),
         SettingSection(title: "播放设置", items: [
+            SettingItem(icon: "slider.horizontal.3", iconColor: Theme.primary, title: "均衡器", subtitle: ConfigStore.shared.eqEnabled ? "已开启 · 十段" : "未开启", type: .navigate),
             SettingItem(icon: "music.note.list", iconColor: Theme.secondary, title: "默认音质", subtitle: ConfigStore.shared.defaultQuality, type: .navigate),
             SettingItem(icon: "repeat", iconColor: Theme.warning, title: "播放模式", subtitle: PlayMode(rawValue: ConfigStore.shared.playMode)?.displayName ?? "列表循环", type: .navigate),
             SettingItem(icon: "arrow.triangle.2.circlepath", iconColor: Theme.secondary, title: "自动换源", subtitle: "当前音源播不出时自动换别的源", type: .toggle(ConfigStore.shared.autoSwitchSource)),
@@ -273,6 +274,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             navigationController?.pushViewController(PlayModePickerViewController(), animated: true)
         case "悬浮歌词设置":
             navigationController?.pushViewController(FloatingSettingsViewController(), animated: true)
+        case "均衡器":
+            navigationController?.pushViewController(EqualizerViewController(), animated: true)
         case "关于墨守music":
             navigationController?.pushViewController(AboutViewController(), animated: true)
         case "清除缓存":

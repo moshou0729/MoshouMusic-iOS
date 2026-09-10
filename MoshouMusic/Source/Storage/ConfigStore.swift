@@ -34,6 +34,9 @@ class ConfigStore {
         static let lxSyncMode = "lxSyncMode"
         static let lxLastSyncDate = "lxLastSyncDate"
         static let preferredLXScriptID = "preferredLXScriptID"
+        static let eqEnabled = "eqEnabled"
+        static let eqGains = "eqGains"
+        static let floatingSpectrumOn = "floatingSpectrumOn"
         static let lxSongmidFixV1Done = "lxSongmidFixV1Done"
     }
 
@@ -302,6 +305,25 @@ class ConfigStore {
             return v == 0 ? 16 : CGFloat(v)
         }
         set { defaults.set(Float(newValue), forKey: Keys.floatingFontSize) }
+    }
+
+    /// v1.0.141：十段均衡器开关
+    var eqEnabled: Bool {
+        get { defaults.bool(forKey: Keys.eqEnabled) }
+        set { defaults.set(newValue, forKey: Keys.eqEnabled) }
+    }
+
+    /// v1.0.141：十段均衡器增益（dB，-12~+12，默认全 0）
+    var eqGains: [Float] {
+        get { defaults.array(forKey: Keys.eqGains) as? [Float]
+                ?? Array(repeating: 0, count: 10) }
+        set { defaults.set(newValue, forKey: Keys.eqGains) }
+    }
+
+    /// v1.0.141：悬浮窗音乐频谱开关
+    var floatingSpectrumOn: Bool {
+        get { defaults.bool(forKey: Keys.floatingSpectrumOn) }
+        set { defaults.set(newValue, forKey: Keys.floatingSpectrumOn) }
     }
 
     /// 悬浮歌词背景颜色（RGB hex，如 0x000000 黑 / 0xFFFFFF 白；默认黑）

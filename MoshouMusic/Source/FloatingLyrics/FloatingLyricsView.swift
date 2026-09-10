@@ -11,6 +11,9 @@ final class FloatingLyricsView: UIView {
     private let container = UIView()
     private let labels: [UILabel] = (0..<3).map { _ in UILabel() }
     private var noteIcon: UIImageView?
+    private var artworkIcon: UIImageView?
+    /// v1.0.141：底部频谱条（音乐可视化，开关控制可见）
+    let spectrumView = SpectrumBarsView()
 
     /// 中间行字号；侧行自动小一号
     var fontSize: CGFloat {
@@ -48,6 +51,12 @@ final class FloatingLyricsView: UIView {
             container.addSubview(label)
         }
 
+        // v1.0.141：频谱条垫在歌词层下面
+        spectrumView.isHidden = true
+        spectrumView.alpha = 0.75
+        addSubview(spectrumView)
+        sendSubviewToBack(spectrumView)
+
         applyStyle()
     }
 
@@ -59,6 +68,9 @@ final class FloatingLyricsView: UIView {
             label.frame = CGRect(x: 10, y: CGFloat(index) * row,
                                  width: max(0, bounds.width - 20), height: row)
         }
+        // v1.0.141：频谱条贴底（歌词行之上、背景之上）
+        spectrumView.frame = CGRect(x: 8, y: bounds.height - 20,
+                                    width: max(0, bounds.width - 16), height: 16)
     }
 
     private func applyStyle() {
@@ -127,7 +139,7 @@ final class FloatingLyricsView: UIView {
         setLines(["", name, singer], animated: false)
     }
 
-    /// 折叠态：隐藏歌词，仅显示音符图标（窗口缩成小圆点时）
+    /// 折叠态：隐藏歌词，显示封面图（无封面时回退音符图标）
     func setCollapsed(_ collapsed: Bool) {
         container.isHidden = collapsed
         if collapsed {
@@ -145,10 +157,75 @@ final class FloatingLyricsView: UIView {
                 ])
                 noteIcon = icon
             }
-            noteIcon?.isHidden = false
+            if artworkIcon == nil {
+                let iv = UIImageView()
+                iv.contentMode = .scaleAspectFill
+                iv.clipsToBounds = true
+                iv.layer.cornerRadius = 13
+                iv.layer.borderWidth = 1
+                iv.layer.borderColor = UIColor.white.withAlphaComponent(0.35).cgColor
+                addSubview(iv)
+                iv.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    iv.centerXAnchor.constraint(equalTo: centerXAnchor),
+                    iv.centerYAnchor.constraint(equalTo: centerYAnchor),
+                    iv.widthAnchor.constraint(equalToConstant: 40),
+                    iv.heightAnchor.constraint(equalToConstant: 40),
+                ])
+                artworkIcon = iv
+            }
+            noteIcon?.isHidden = (artworkIcon?.image != nil)
+            artworkIcon?.isHidden = (artworkIcon?.image == nil)
         } else {
             noteIcon?.isHidden = true
+            artworkIcon?.isHidden = true
             refreshHard()
+        }
+    }
+
+    /// v1.0.141：折叠圆点显示歌曲封面（无封面回退音符）
+    func setArtwork(_ image: UIImage?) {
+        artworkIcon?.image = image
+        if isCollapsed {
+            noteIcon?.isHidden = (image != nil)
+            artworkIcon?.isHidden = (image == nil)
+        }
+    }
+
+    /// v1.0.141：频谱条可见性（音乐可视化开关）
+    func setSpectrumVisible(_ visible: Bool) {
+        spectrumView.isHidden = !visible
+    }
+}
+
+/// v1.0.141：十段频谱条（随音乐节奏跳动）
+final class SpectrumBarsView: UIView {
+
+    var levels: [Float] = Array(repeating: 0, count: 10) {
+        didSet { setNeedsDisplay() }
+    }
+    var barColor: UIColor = UIColor.white.withAlphaComponent(0.6)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        let n = levels.count
+        guard n > 0, bounds.width > 0 else { return }
+        let gap: CGFloat = 2.5
+        let bw = (bounds.width - gap * CGFloat(n - 1)) / CGFloat(n)
+        ctx.setFillColor(barColor.cgColor)
+        for i in 0..<n {
+            let h = max(1.5, CGFloat(levels[i]) * bounds.height)
+            let r = CGRect(x: CGFloat(i) * (bw + gap), y: bounds.height - h, width: bw, height: h)
+            let path = UIBezierPath(roundedRect: r, cornerRadius: min(2.5, bw / 2))
+            path.fill()
         }
     }
 }

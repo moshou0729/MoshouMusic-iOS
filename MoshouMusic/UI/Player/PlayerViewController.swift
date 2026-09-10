@@ -21,6 +21,7 @@ class PlayerViewController: UIViewController {
     private let closeButton = UIButton(type: .system)
     private let sourceLabel = UILabel()
     private let queueButton = UIButton(type: .system)
+    private let commentButton = UIButton(type: .system)
     private let controlBar = UIStackView()   // 底部控制栏：等大小、等间距
     private let errorLabel = UILabel()
 
@@ -159,6 +160,11 @@ class PlayerViewController: UIViewController {
         queueButton.tintColor = .white.withAlphaComponent(0.85)
         queueButton.addTarget(self, action: #selector(queueTapped), for: .touchUpInside)
 
+        // v1.0.141：歌曲评论入口（顶栏，音源标签左侧）
+        commentButton.setImage(UIImage(systemName: "text.bubble"), for: .normal)
+        commentButton.tintColor = .white.withAlphaComponent(0.85)
+        commentButton.addTarget(self, action: #selector(commentsTapped), for: .touchUpInside)
+
         // 五个按钮等大小、等间距放进底部控制栏
         let barButtons = [playModeButton, previousButton, playButton, nextButton, queueButton]
         barButtons.forEach {
@@ -190,7 +196,7 @@ class PlayerViewController: UIViewController {
         let allViews: [UIView] = [backgroundView, closeButton, sourceLabel, errorLabel, artworkImageView,
                                    titleLabel, artistLabel, lyricsScrollView, lyricsLabel,
                                    progressSlider, currentTimeLabel, durationLabel,
-                                   controlBar]
+                                   controlBar, commentButton]
         allViews.forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
 
         let screenWidth = UIScreen.main.bounds.width
@@ -214,6 +220,12 @@ class PlayerViewController: UIViewController {
             sourceLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             sourceLabel.heightAnchor.constraint(equalToConstant: 36),
             sourceLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
+
+            // v1.0.141：评论按钮（源标签左侧）
+            commentButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+            commentButton.trailingAnchor.constraint(equalTo: sourceLabel.leadingAnchor, constant: -10),
+            commentButton.widthAnchor.constraint(equalToConstant: 36),
+            commentButton.heightAnchor.constraint(equalToConstant: 36),
 
             // 错误提示条
             errorLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 8),
@@ -489,6 +501,15 @@ class PlayerViewController: UIViewController {
     }
 
     /// 打开当前播放队列
+    // v1.0.141：打开当前歌曲评论区
+    @objc private func commentsTapped() {
+        guard let song = PlayerManager.shared.currentSong else { return }
+        let vc = CommentsViewController(song: song)
+        let nav = UINavigationController(rootViewController: vc)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true)
+    }
+
     @objc private func queueTapped() {
         let vc = QueueViewController()
         let nav = UINavigationController(rootViewController: vc)

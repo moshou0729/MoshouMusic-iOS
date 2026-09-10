@@ -160,12 +160,24 @@ class PlayerManager: NSObject {
 
     /// v1.0.122：后台歌词驱动 Timer（0.5s，主 runloop common 模式，后台不熄火）
     private var lyricDriveTimer: Timer?
+    /// v1.0.127：后台心跳计数（20 tick = 10s）
+    private var lyricDriveTick = 0
 
     private func startLyricDriveTimer() {
         guard lyricDriveTimer == nil else { return }
         Logger.info("后台歌词驱动 Timer 已启动(0.5s 主runloop兜底)")
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.updateLyrics()
+            guard let self = self else { return }
+            self.updateLyrics()
+            // v1.0.127 后台心跳：每 10s 持久化一条 —— 进程被杀后可精确锁定死亡
+            // 时间窗（最后一条心跳与下次启动之间），并记录死亡前内存足迹
+            self.lyricDriveTick += 1
+            if self.lyricDriveTick >= 20 {
+                self.lyricDriveTick = 0
+                if UIApplication.shared.applicationState != .active {
+                    Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying)")
+                }
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         lyricDriveTimer = timer

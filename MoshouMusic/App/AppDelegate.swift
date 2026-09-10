@@ -144,6 +144,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         NSSetUncaughtExceptionHandler(moshouHandleException)
 
         signal(SIGABRT, moshouSignalHandler)
+        // v1.0.127：SIGTRAP = Swift 运行时陷阱（fatalError/越界/强解包 nil），
+        // 此前未挂钩 → 这类崩溃不写 crash.log，会被误判为「被系统直接终止」
+        signal(SIGTRAP, moshouSignalHandler)
         signal(SIGSEGV, moshouSignalHandler)
         signal(SIGBUS, moshouSignalHandler)
         signal(SIGILL, moshouSignalHandler)

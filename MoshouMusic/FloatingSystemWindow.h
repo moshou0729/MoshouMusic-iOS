@@ -20,6 +20,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 系统级悬浮窗口：覆写 UIWindow 私有方法以脱离 WindowServer 托管
 @interface FloatingSystemWindow : UIWindow
+
+/// v1.0.127 脉冲内容锁：YES 时 layoutSubviews 强制根视图保持 pulseContentSize，
+/// 窗口几何变化（驱动 SB 重合成）不再拉伸可见内容 —— 扩出的区域是透明的，
+/// 视觉上零变化。脉冲结束后必须置回 NO。
+@property (nonatomic, assign) BOOL pulseContentLock;
+@property (nonatomic, assign) CGSize pulseContentSize;
 @end
 
 /// SpringBoard 辅助功能窗口托管桥接（NSInvocation 动态调用，编译期零依赖）

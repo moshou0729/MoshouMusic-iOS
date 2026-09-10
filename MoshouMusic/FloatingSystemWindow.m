@@ -42,6 +42,19 @@
     return NO;
 }
 
+// v1.0.127：脉冲期间锁定根视图尺寸。UIWindow 会在布局时把根视图拉成自身
+// bounds —— 不拦截的话窗口扩 24pt 可见内容跟着拉伸（「底边下探」可见的根因）。
+// 锁定后扩出的区域透明，SB 照样看到大幅几何变化并重合成，但用户什么都看不到。
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    if (_pulseContentLock && self.rootViewController.view) {
+        CGRect f = self.rootViewController.view.frame;
+        f.size = _pulseContentSize;
+        self.rootViewController.view.frame = f;
+    }
+}
+
 @end
 
 

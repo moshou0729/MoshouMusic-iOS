@@ -360,17 +360,25 @@ final class FloatingLyricsManager: NSObject {
     private func performPulse(window: FloatingSystemWindow) {
         guard window === floatingWindow, !isCollapsed else { return }
         let original = window.frame
-        // v1.0.125：底边下探 —— 顶边固定，高度向下扩 24pt 再收回。歌词文字几乎不动
-        //（按比例仅微移数 pt），只有底边轻轻「呼吸」，观感远好于整体上跳。
+        // v1.0.127：内容锁定脉冲 —— 窗口向下扩 24pt 驱动 SB 重合成，但根视图被
+        // layoutSubviews 锁在原尺寸（扩出的 24pt 是透明区），视觉上零变化。
+        // 此前整窗平移 20pt / 底边下探 24pt 都可见（用户不可接受）。
+        window.pulseContentLock = true
+        window.pulseContentSize = original.size
         UIView.animate(withDuration: 0.14, delay: 0, options: [.curveEaseInOut]) {
             window.frame = CGRect(origin: original.origin,
                                   size: CGSize(width: original.width,
                                                height: original.height + 24))
         } completion: { _ in
-            guard window === self.floatingWindow else { return }
-            UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut]) {
-                window.frame = original
+            guard window === self.floatingWindow else {
+                window.pulseContentLock = false
+                return
             }
+            UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut], animations: {
+                window.frame = original
+            }, completion: { _ in
+                window.pulseContentLock = false
+            })
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// 日志工具 —— v1.0.116 增加内存环形缓冲，供诊断日志页前台展示 + 复制
 class Logger {
@@ -52,6 +53,52 @@ class Logger {
         lock.lock()
         defer { lock.unlock() }
         buffer.removeAll()
+    }
+
+    // MARK: - v1.0.126 穿透进程生死的持久化事件日志
+    // 环形缓冲随进程走，进程被系统杀死后现场全丢（用户每次捞到的都只有重启后的日志）。
+    // 关键事件（亮灭屏/中断/保活/场景切换）即时写入 UserDefaults，跨进程存活，
+    // 用于取证「上次会话是怎么死的」。
+    private static let persistKey = "moshou_persist_log_v1"
+    private static let persistMaxEntries = 150
+
+    /// 当前进程内存足迹（MB）—— jetsam（内存回收杀进程）取证用
+    static func footprintMB() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return -1 }
+        return Int(info.phys_footprint) / (1024 * 1024)
+    }
+
+    /// 持久化一条关键事件（立即落 UserDefaults，进程被杀也不丢）
+    static func persist(_ message: String, file: String = #file, line: Int = #line) {
+        let mem = footprintMB()
+        log("⭐", "\(message)（内存 \(mem)MB）", file: file, line: line)
+        let fileName = (file as NSString).lastPathComponent
+        lock.lock()
+        defer { lock.unlock() }
+        var entries = UserDefaults.standard.stringArray(forKey: persistKey) ?? []
+        entries.append("⭐ [\(dateFormatter.string(from: Date()))] [\(fileName):\(line)] \(message)（内存 \(mem)MB）")
+        if entries.count > persistMaxEntries {
+            entries.removeFirst(entries.count - persistMaxEntries)
+        }
+        UserDefaults.standard.set(entries, forKey: persistKey)
+    }
+
+    /// 导出持久化事件（跨进程存活；诊断页置于环形缓冲之前展示）
+    static func dumpPersistText() -> String {
+        let entries = UserDefaults.standard.stringArray(forKey: persistKey) ?? []
+        return entries.joined(separator: "\n")
+    }
+
+    /// 清空持久化事件
+    static func clearPersisted() {
+        UserDefaults.standard.removeObject(forKey: persistKey)
     }
 
     static func debug(_ message: String, file: String = #file, line: Int = #line) {

@@ -32,7 +32,7 @@ final class DiagnosticsLogViewController: UIViewController {
         ])
 
         let tip = UILabel()
-        tip.text = "复现问题（弹窗后不续播 / 悬浮不刷新）后回到本页点「复制全部」发给开发者；日志保留最近 500 行。"
+        tip.text = "复现问题后回本页点「复制全部」：顶部「跨进程事件」段在进程被杀后依然保留，是排查熄屏停播/被杀的关键现场。"
         tip.font = UIFont.systemFont(ofSize: 12)
         tip.textColor = .tertiaryLabel
         tip.numberOfLines = 0
@@ -50,12 +50,23 @@ final class DiagnosticsLogViewController: UIViewController {
         reload()
     }
 
-    private func reload() {
+    /// v1.0.126：持久化事件在前、本次会话在后（持久化段跨进程存活，是「上次怎么死的」的现场）
+    private func compositeText() -> String {
+        let persist = Logger.dumpPersistText()
         let text = Logger.dumpText()
-        textView.text = text.isEmpty ? "（暂无日志）" : text
-        // 滚到底部（最新日志在最后）
-        if !text.isEmpty {
-            textView.scrollRangeToVisible(NSRange(location: (text as NSString).length - 1, length: 1))
+        var full = ""
+        if !persist.isEmpty {
+            full += "════ 跨进程事件（进程被杀也保留）════\n" + persist + "\n\n"
+        }
+        full += "════ 本次会话日志（最近 500 行）════\n" + (text.isEmpty ? "（暂无日志）" : text)
+        return full
+    }
+
+    private func reload() {
+        let full = compositeText()
+        textView.text = full
+        if !full.isEmpty {
+            textView.scrollRangeToVisible(NSRange(location: (full as NSString).length - 1, length: 1))
         }
     }
 
@@ -64,9 +75,10 @@ final class DiagnosticsLogViewController: UIViewController {
     }
 
     @objc private func copyTapped() {
-        UIPasteboard.general.string = Logger.dumpText()
+        let full = compositeText()
+        UIPasteboard.general.string = full
         let alert = UIAlertController(title: "已复制",
-                                      message: "已复制 \(Logger.lineCount) 行日志到剪贴板",
+                                      message: "已复制日志到剪贴板（含跨进程事件段）",
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好的", style: .default))
         present(alert, animated: true)

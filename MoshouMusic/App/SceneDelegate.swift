@@ -31,14 +31,17 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         PlayerManager.shared.recoverIfInterruptedOnForeground()
         // v1.0.121：App 内不显示悬浮 —— 销毁窗口，切出去时自动恢复
         FloatingLyricsManager.shared.suppressWhileInApp()
+        Logger.persist("sceneDidBecomeActive 回前台")
     }
 
     /// v1.0.121：离开 App（切其他应用 / 回桌面）→ 悬浮窗自动出现
     func sceneWillResignActive(_ scene: UIScene) {
+        Logger.persist("sceneWillResignActive 失去焦点")
         FloatingLyricsManager.shared.resumeWhenLeavingApp()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
+        Logger.persist("sceneDidEnterBackground 进入后台")
         // 保存数据
         ConfigStore.shared.save()
         FloatingLyricsManager.shared.resumeWhenLeavingApp()

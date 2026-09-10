@@ -190,11 +190,11 @@ class PlayerManager: NSObject {
             case .began:
                 if self.isPlaying {
                     self.wasPlayingBeforeInterruption = true
-                    Logger.warn("音频会话被系统中断，暂停播放（中断结束后自动续播）")
+                    Logger.persist("中断 .began 到达，暂停播放等待恢复")
                     self.pause()
                 } else {
                     // v1.0.125 诊断：中断到达时并未在播 —— 排查「中断前标记丢失」场景
-                    Logger.warn("中断 .began 到达但当前未在播（wasPlaying=\(self.wasPlayingBeforeInterruption)）")
+                    Logger.persist("中断 .began 到达但当前未在播（wasPlaying=\(self.wasPlayingBeforeInterruption)）")
                 }
                 // 🚨 v1.0.115：中断后进程失去后台音频保活资格会被挂起，先申请后台任务
                 self.recoveryKeepAliveRenewed = false
@@ -205,7 +205,7 @@ class PlayerManager: NSObject {
                 self.scheduleInterruptionWatchdog()
             case .ended:
                 // v1.0.123 诊断：确认 .ended 是否送达（弹窗型中断常被吞，靠看门狗接管）
-                Logger.info("音频会话中断结束通知(.ended)已送达，0.2s 后抢回")
+                Logger.persist("中断 .ended 通知已送达，0.2s 后抢回")
                 // v1.0.121：统一 0.2s 立即抢回（shouldResume 与否都先试，恢复入口自带守卫）
                 let delay: TimeInterval = 0.2
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -249,7 +249,7 @@ class PlayerManager: NSObject {
     private func scheduleActivationRetry(attemptsLeft: Int) {
         activationRetryWork?.cancel()
         guard attemptsLeft > 0 else {
-            Logger.error("音频会话激活重试全部失败（mediaserverd 疑似卡死）")
+            Logger.persist("音频会话激活重试全部失败（mediaserverd 疑似卡死）")
             return
         }
         let work = DispatchWorkItem { [weak self] in
@@ -281,7 +281,7 @@ class PlayerManager: NSObject {
             // v1.0.121：到期仍处中断未恢复 → 续期一次（总恢复窗口 ~60s），
             // 覆盖「亮屏后长时间停在锁屏 / 其他应用」的场景
             if self.recoveryKeepAliveRenewed {
-                Logger.warn("恢复保活二次到期仍中断未恢复，停止续期")
+                Logger.persist("恢复保活二次到期仍中断未恢复，停止续期 —— 此后进程随时可能被系统挂起/回收")
                 self.endRecoveryKeepAlive()
                 return
             }
@@ -327,7 +327,7 @@ class PlayerManager: NSObject {
     func handleScreenWoke() {
         // v1.0.125 诊断：displayStatus 亮/灭屏都会回调 —— 若复现熄屏停播时连这条都没有，
         // 说明 Darwin 通知根本没送达（观察器失效），是另一个层面的故障
-        Logger.info("displayStatus 通知回调: isPlaying=\(isPlaying) 中断挂起=\(wasPlayingBeforeInterruption)")
+        Logger.persist("displayStatus 通知回调: isPlaying=\(isPlaying) 中断挂起=\(wasPlayingBeforeInterruption)")
         beginRecoveryKeepAlive()
         if wasPlayingBeforeInterruption && !isPlaying {
             Logger.info("亮屏：检测到中断未恢复，立即进入恢复节奏")
@@ -387,7 +387,7 @@ class PlayerManager: NSObject {
         // 正在播/缓冲中则不处理。来电期间恢复尝试会静默失败（setActive 报错被吞），
         // 状态如实回滚，不会真正干扰通话。
         if player.timeControlStatus == .paused {
-            Logger.warn("中断后播放未恢复（.ended 未送达），看门狗自动接管")
+            Logger.persist("中断后播放未恢复（.ended 未送达），看门狗自动接管")
             recoverAfterInterruption(reason: "看门狗接管")
         }
         if !isPlaying, retriesLeft > 1 {

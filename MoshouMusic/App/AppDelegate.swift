@@ -14,6 +14,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 并在下次启动时弹窗让用户复制给开发者（避免洛雪脚本等异常直接闪退）
         installCrashReporter()
 
+        // 🚨 v1.0.126 异常退出取证：上次会话若未走 willTerminate 正常收尾，
+        // 说明进程曾被系统直接终止（jetsam/挂起回收 —— 这种死法无崩溃记录）
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "moshou_session_alive") {
+            Logger.persist("⚠️ 检测到上次会话未正常收尾（无崩溃记录）→ 进程曾被系统强制终止")
+        }
+        defaults.set(true, forKey: "moshou_session_alive")
+
         // 配置音频会话
         configureAudioSession()
 
@@ -35,6 +43,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
 
         Logger.info("墨守music 启动成功")
+        Logger.persist("进程启动（墨守music）")
 
         // 若上次发生过崩溃，弹窗展示原因，方便定位
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -60,6 +69,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didDiscardSceneSessions sceneSessions: Set<UISceneSession>
     ) {}
+
+    /// v1.0.126：正常收尾标记 —— 与启动时的 alive 检查配对，
+    /// 区分「用户主动杀掉」和「系统强制终止」
+    func applicationWillTerminate(_ application: UIApplication) {
+        UserDefaults.standard.set(false, forKey: "moshou_session_alive")
+        Logger.persist("会话正常退出（applicationWillTerminate）")
+    }
 
     // MARK: - Audio Session
 

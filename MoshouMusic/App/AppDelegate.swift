@@ -50,6 +50,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             self.showCrashLogIfNeeded()
         }
 
+        // 🚨 v1.0.128：扫描系统崩溃/内存回收报告（TrollStore no-sandbox 权限可读
+        // /var/mobile/Library/Logs/CrashReporter）—— 熄屏被杀的最终取证：
+        // JetsamEvent 报告会写明终止原因（内存高水位/vnodes/每进程上限等）
+        scanSystemReports()
+
         return true
     }
 
@@ -108,6 +113,67 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
             }
         }
+    }
+
+    // MARK: - 🚨 v1.0.128 系统崩溃/内存回收报告扫描（no-sandbox 取证）
+
+    private static let systemReportPath: String = {
+        let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
+            ?? NSTemporaryDirectory()
+        return (dir as NSString).appendingPathComponent("system_report.log")
+    }()
+
+    /// 扫描 CrashReporter 目录：找最近 7 天内提及墨守music 的系统报告
+    ///（JetsamEvent-*.ips = 内存回收杀进程；MoshouMusic-*.ips = 崩溃），
+    /// 提取终止原因摘要持久化 + 全文留档到 Documents 供诊断页展示
+    private func scanSystemReports() {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 4.0) {
+            self.doScanSystemReports()
+        }
+    }
+
+    private func doScanSystemReports() {
+        let dir = "/var/mobile/Library/Logs/CrashReporter"
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else {
+            Logger.persist("系统报告目录不可读 /var/mobile/Library/Logs/CrashReporter（no-sandbox 未生效？）")
+            return
+        }
+        let entries = names
+            .filter { $0.hasSuffix(".ips") }
+            .compactMap { name -> (String, Date)? in
+                let attrs = try? fm.attributesOfItem(atPath: dir + "/" + name)
+                guard let mtime = attrs?[.modificationDate] as? Date else { return nil }
+                return (name, mtime)
+            }
+            .sorted { $0.1 > $1.1 }
+        guard !entries.isEmpty else {
+            Logger.persist("系统报告目录为空：\(dir)")
+            return
+        }
+        for (name, mtime) in entries.prefix(40) {
+            // 只关心最近 7 天
+            guard mtime.timeIntervalSinceNow > -7 * 24 * 3600 else { break }
+            guard let raw = fm.contents(atPath: dir + "/" + name) else { continue }
+            let blob = String(data: raw.prefix(512 * 1024), encoding: .utf8) ?? ""
+            guard blob.contains("MoshouMusic") else { continue }
+            // 命中：提取终止原因相关行做摘要
+            let keyLines = blob.split(separator: "\n").filter {
+                $0.localizedCaseInsensitiveContains("MoshouMusic") ||
+                $0.localizedCaseInsensitiveContains("exception") ||
+                $0.localizedCaseInsensitiveContains("termination") ||
+                $0.localizedCaseInsensitiveContains("per-process") ||
+                $0.localizedCaseInsensitiveContains("reason") ||
+                $0.localizedCaseInsensitiveContains("VM Stats") ||
+                $0.localizedCaseInsensitiveContains("rpages") ||
+                $0.localizedCaseInsensitiveContains("kill")
+            }.prefix(30)
+            let summary = "\(name)（\(mtime)）\n" + keyLines.joined(separator: "\n")
+            Logger.persist("🚨 发现系统报告：\(name)（详情见诊断页底部）")
+            try? summary.write(toFile: AppDelegate.systemReportPath, atomically: true, encoding: .utf8)
+            return
+        }
+        Logger.persist("近 7 天系统报告中无与墨守music相关的条目（共扫描 \(min(entries.count, 40)) 份）")
     }
 
     // MARK: - Background Fetch

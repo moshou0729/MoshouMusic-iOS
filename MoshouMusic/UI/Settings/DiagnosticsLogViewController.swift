@@ -59,6 +59,13 @@ final class DiagnosticsLogViewController: UIViewController {
             full += "════ 跨进程事件（进程被杀也保留）════\n" + persist + "\n\n"
         }
         full += "════ 本次会话日志（最近 500 行）════\n" + (text.isEmpty ? "（暂无日志）" : text)
+        // v1.0.128：系统崩溃/内存回收报告（被杀原因的最终答案在这段里）
+        let doc = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
+        if let doc = doc,
+           let rep = try? String(contentsOfFile: doc + "/system_report.log", encoding: .utf8),
+           !rep.isEmpty {
+            full += "\n\n════ 系统报告（终止原因取证）════\n" + rep
+        }
         return full
     }
 

@@ -360,24 +360,35 @@ final class FloatingLyricsManager: NSObject {
     private func performPulse(window: FloatingSystemWindow) {
         guard window === floatingWindow, !isCollapsed else { return }
         let original = window.frame
-        // v1.0.127：内容锁定脉冲 —— 窗口向下扩 24pt 驱动 SB 重合成，但根视图被
-        // layoutSubviews 锁在原尺寸（扩出的 24pt 是透明区），视觉上零变化。
-        // 此前整窗平移 20pt / 底边下探 24pt 都可见（用户不可接受）。
+        // v1.0.128：内容锁定脉冲 v2 —— UIWindow 拉伸根视图不走 layoutSubviews
+        //（时序上拉伸动画先跑、纠正后到 = v1.0.127 仍可见「下拉再恢复」的根因），
+        // 改为在同一个动画事务内反向钉住根视图：窗口扩 24pt 的同时把 root 帧钉回
+        // 原尺寸，同事务最终模型=锁定值，不存在可见的中间态。
+        let root = window.rootViewController?.view
+        let pinned = CGRect(origin: .zero, size: original.size)
         window.pulseContentLock = true
         window.pulseContentSize = original.size
         UIView.animate(withDuration: 0.14, delay: 0, options: [.curveEaseInOut]) {
             window.frame = CGRect(origin: original.origin,
                                   size: CGSize(width: original.width,
                                                height: original.height + 24))
+            root?.frame = pinned
         } completion: { _ in
             guard window === self.floatingWindow else {
                 window.pulseContentLock = false
+                root?.frame = pinned
                 return
             }
             UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut], animations: {
                 window.frame = original
+                root?.frame = pinned
             }, completion: { _ in
                 window.pulseContentLock = false
+                root?.frame = pinned
+                // 锁定核查：只在异常时留痕（防正常脉冲淹没取证日志）
+                if let r = root, abs(r.frame.size.height - original.height) > 0.5 {
+                    Logger.persist("脉冲锁定异常 root=\(Int(r.frame.size.height)) 期望=\(Int(original.height)) winH=\(Int(window.frame.size.height))")
+                }
             })
         }
     }

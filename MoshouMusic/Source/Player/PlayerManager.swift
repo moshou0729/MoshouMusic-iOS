@@ -339,22 +339,23 @@ class PlayerManager: NSObject {
     func handleScreenWoke() {
         // v1.0.125 诊断：displayStatus 亮/灭屏都会回调 —— 若复现熄屏停播时连这条都没有，
         // 说明 Darwin 通知根本没送达（观察器失效），是另一个层面的故障
-        Logger.persist("displayStatus 通知回调: isPlaying=\(isPlaying) 中断挂起=\(wasPlayingBeforeInterruption)")
-        // v1.0.131 对照实验：熄屏点亮被杀的嫌疑根因 = 亮屏瞬间 SpringBoard 重组时
-        // 发现后台进程托管系统级窗口。开关打开时亮屏立即彻底拆除悬浮窗；
-        // 若被杀随之消失 → 根因坐实；若照旧被杀 → 排除此嫌疑。
-        if isPlaying,
-           UIApplication.shared.applicationState != .active,
-           ConfigStore.shared.screenWakeSelfGuard {
+        Logger.persist("displayStatus 通知回调: isPlaying=\(isPlaying) 中断挂起=\(wasPlayingBeforeInterruption) 前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)")
+        // v1.0.133 决定性实验：强制熄屏自保（v1.0.131 的开关两轮都没打开，实验一直没做成）。
+        // 后台 + 在播 + 亮屏 → 立即彻底拆除悬浮窗，且本次亮屏不做任何恢复动作
+        // （抢占激活/看门狗/保活同批停做——都是嫌疑变量，被杀消失后再逐项恢复定位）：
+        // 被杀随之消失 = 悬浮窗托管/亮屏恢复动作是根因；照旧被杀 = 全部排除，转向系统侧。
+        if isPlaying, UIApplication.shared.applicationState != .active {
             FloatingLyricsManager.shared.screenWakeSelfGuardTeardown()
+            Logger.persist("熄屏自保（强制实验）：亮屏时已拆除悬浮窗，本次亮屏不做任何恢复动作")
+            return
         }
         beginRecoveryKeepAlive()
         if wasPlayingBeforeInterruption && !isPlaying {
             Logger.info("亮屏：检测到中断未恢复，立即进入恢复节奏")
             attemptInterruptionRecovery(retriesLeft: 8)
         } else if isPlaying {
-            // v1.0.123：亮屏瞬间先抢重激活会话（赶在 mediaserverd 媒体仲裁前占住，
-            // 激活态下重激活无害；若仲裁仍反激活会话，随后 .began 走正常恢复链）
+            // v1.0.133：后台+在播的亮屏已在上面 return；走到这里=前台亮屏（罕见），
+            // 维持 v1.0.123 抢占激活（赶在 mediaserverd 媒体仲裁前占住会话）
             if !ensureAudioSessionActive() {
                 Logger.warn("亮屏抢占激活失败，交由中断恢复链接管")
             }

@@ -340,14 +340,12 @@ class PlayerManager: NSObject {
         // v1.0.125 诊断：displayStatus 亮/灭屏都会回调 —— 若复现熄屏停播时连这条都没有，
         // 说明 Darwin 通知根本没送达（观察器失效），是另一个层面的故障
         Logger.persist("displayStatus 通知回调: isPlaying=\(isPlaying) 中断挂起=\(wasPlayingBeforeInterruption) 前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)")
-        // v1.0.133 决定性实验：强制熄屏自保（v1.0.131 的开关两轮都没打开，实验一直没做成）。
-        // 后台 + 在播 + 亮屏 → 立即彻底拆除悬浮窗，且本次亮屏不做任何恢复动作
-        // （抢占激活/看门狗/保活同批停做——都是嫌疑变量，被杀消失后再逐项恢复定位）：
-        // 被杀随之消失 = 悬浮窗托管/亮屏恢复动作是根因；照旧被杀 = 全部排除，转向系统侧。
+        // v1.0.134：根因已由 v1.0.132 开关实验坐实——亮屏瞬间后台进程托管悬浮窗被系统清杀
+        //（开关打开后熄屏点亮不再停播）。自保改为强制生效（不依赖开关），
+        // 恢复链（保活/抢占激活/看门狗）保持不动——开关实验证明它们无害。
+        // 悬浮窗由 screenWakeSelfGuardTeardown 内部延迟 8s 自动重建。
         if isPlaying, UIApplication.shared.applicationState != .active {
             FloatingLyricsManager.shared.screenWakeSelfGuardTeardown()
-            Logger.persist("熄屏自保（强制实验）：亮屏时已拆除悬浮窗，本次亮屏不做任何恢复动作")
-            return
         }
         beginRecoveryKeepAlive()
         if wasPlayingBeforeInterruption && !isPlaying {

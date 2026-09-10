@@ -84,16 +84,27 @@ final class FloatingLyricsManager: NSObject {
         teardownWindow()
     }
 
-    /// v1.0.131：熄屏自保（测试）—— 亮屏时彻底拆除系统级窗口，
-    /// 验证「后台进程托管窗口在亮屏重组时被 SpringBoard 清杀」的嫌疑根因。
-    /// 置 suppressedInApp=true，下次进 App → 切出时走 resumeWhenLeavingApp 自动重建。
+    /// v1.0.134：熄屏自保的延迟重建任务
+    private var selfGuardReshowWork: DispatchWorkItem?
+
+    /// v1.0.134：熄屏自保（强制）—— 亮屏瞬间彻底拆除系统级窗口避开系统清杀。
+    /// 根因由 v1.0.132 开关实验坐实：开关打开后熄屏点亮不再停播。
+    /// 拆除 8s 后在后台自动重建（亮屏重组危险窗口已过）。
     func screenWakeSelfGuardTeardown() {
-        suppressedInApp = true
         settingsPreviewActive = false
         hardRefreshWorkItem?.cancel()
         pulseWorkItem?.cancel()
+        selfGuardReshowWork?.cancel()
         teardownWindow()
-        Logger.persist("熄屏自保：亮屏时已彻底拆除悬浮窗（测试开关开启）")
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            guard !self.suppressedInApp, ConfigStore.shared.isFloatingLyricsOn else { return }
+            self.show()
+            Logger.persist("熄屏自保：已延迟重建悬浮窗（亮屏后 8s，危险窗口已过）")
+        }
+        selfGuardReshowWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: work)
+        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，8s 后自动重建")
     }
 
     /// 离开 App（切其他应用 / 回桌面 / 锁屏）：恢复悬浮窗
@@ -135,7 +146,8 @@ final class FloatingLyricsManager: NSObject {
         window.windowLevel = UIWindow.Level(rawValue: windowLevel)
         window.backgroundColor = .clear
         window.isOpaque = false
-        if let scene = activeScene() {
+        // v1.0.134：熄屏自保延迟重建发生在后台 —— 前台场景不存在时取任意场景兜底
+        if let scene = activeScene() ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene) {
             window.windowScene = scene
         }
 

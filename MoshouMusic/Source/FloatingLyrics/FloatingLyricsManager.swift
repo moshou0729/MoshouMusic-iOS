@@ -346,9 +346,9 @@ final class FloatingLyricsManager: NSObject {
 
     /// 🚨 换句/换歌后的内容刷新：view 内部 transform 动画 SB 不感知（实测要点一下
     /// 才刷新），只有 window 级几何变化驱动 SB 跨应用重合成（折叠/展开动画实测实时可见）。
-    /// 对 window.frame 做一次 20pt 往复动画（0.32s，轻微一抖）驱动重合成。
-    /// 🚨 v1.0.124：2-3pt 微扰实测 SB 不标记脏区（换句后要点一下才变），
-    /// 只有「大幅」几何变化才触发重合成（折叠/展开动画实时可见即为证）。
+    /// 对窗口做一次底边下探 24pt 的往复动画（0.32s）驱动重合成。
+    /// 🚨 v1.0.124/125 实测：2-3pt 微扰 SB 不标记脏区（换句后要点一下才变）；整体平移
+    /// 20pt 虽有效但观感是「整个悬浮窗往上弹一下」（用户不可接受）→ 改锚定顶边只动底边。
     func pulseRecomposite() {
         guard let window = floatingWindow, !isCollapsed, !suppressedInApp else { return }
         pulseWorkItem?.cancel()
@@ -360,11 +360,15 @@ final class FloatingLyricsManager: NSObject {
     private func performPulse(window: FloatingSystemWindow) {
         guard window === floatingWindow, !isCollapsed else { return }
         let original = window.frame
-        UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseInOut]) {
-            window.frame = original.offsetBy(dx: 0, dy: -20)
+        // v1.0.125：底边下探 —— 顶边固定，高度向下扩 24pt 再收回。歌词文字几乎不动
+        //（按比例仅微移数 pt），只有底边轻轻「呼吸」，观感远好于整体上跳。
+        UIView.animate(withDuration: 0.14, delay: 0, options: [.curveEaseInOut]) {
+            window.frame = CGRect(origin: original.origin,
+                                  size: CGSize(width: original.width,
+                                               height: original.height + 24))
         } completion: { _ in
             guard window === self.floatingWindow else { return }
-            UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseInOut]) {
+            UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut]) {
                 window.frame = original
             }
         }

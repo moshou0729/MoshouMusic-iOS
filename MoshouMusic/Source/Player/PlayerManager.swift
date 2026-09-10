@@ -192,6 +192,9 @@ class PlayerManager: NSObject {
                     self.wasPlayingBeforeInterruption = true
                     Logger.warn("音频会话被系统中断，暂停播放（中断结束后自动续播）")
                     self.pause()
+                } else {
+                    // v1.0.125 诊断：中断到达时并未在播 —— 排查「中断前标记丢失」场景
+                    Logger.warn("中断 .began 到达但当前未在播（wasPlaying=\(self.wasPlayingBeforeInterruption)）")
                 }
                 // 🚨 v1.0.115：中断后进程失去后台音频保活资格会被挂起，先申请后台任务
                 self.recoveryKeepAliveRenewed = false
@@ -322,6 +325,9 @@ class PlayerManager: NSObject {
 
     /// 亮屏回调：mediaserverd 仲裁中断往往紧随其后 —— 备好保活并缩短看门狗首检
     func handleScreenWoke() {
+        // v1.0.125 诊断：displayStatus 亮/灭屏都会回调 —— 若复现熄屏停播时连这条都没有，
+        // 说明 Darwin 通知根本没送达（观察器失效），是另一个层面的故障
+        Logger.info("displayStatus 通知回调: isPlaying=\(isPlaying) 中断挂起=\(wasPlayingBeforeInterruption)")
         beginRecoveryKeepAlive()
         if wasPlayingBeforeInterruption && !isPlaying {
             Logger.info("亮屏：检测到中断未恢复，立即进入恢复节奏")

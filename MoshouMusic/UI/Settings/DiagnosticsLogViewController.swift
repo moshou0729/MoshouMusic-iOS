@@ -18,6 +18,7 @@ final class DiagnosticsLogViewController: UIViewController {
         navigationItem.rightBarButtonItems = [
             UIBarButtonItem(title: "复制关键", style: .plain, target: self, action: #selector(copyKeyTapped)),
             UIBarButtonItem(title: "复制全部", style: .plain, target: self, action: #selector(copyTapped)),
+            UIBarButtonItem(title: "清空日志", style: .plain, target: self, action: #selector(clearTapped)),
         ]
 
         textView.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -119,6 +120,26 @@ final class DiagnosticsLogViewController: UIViewController {
                                       message: "内容较长，若粘贴后不完整请改用「复制关键」",
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好的", style: .default))
+        present(alert, animated: true)
+    }
+
+    /// v1.0.132：清空全部日志（跨进程事件 + 会话缓冲 + 系统报告摘要），防止历史现场累积挤占限额
+    @objc private func clearTapped() {
+        let alert = UIAlertController(
+            title: "清空全部日志？",
+            message: "将清空跨进程事件、本次会话日志与系统报告摘要，清空前请先「复制关键」留存现场。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "清空", style: .destructive) { _ in
+            Logger.clearPersisted()
+            Logger.clearBuffer()
+            let doc = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
+            if let doc = doc {
+                try? FileManager.default.removeItem(atPath: doc + "/system_report.log")
+            }
+            Logger.persist("日志已清空（持久化+会话+系统报告摘要），此后为新现场基线")
+            self.reload()
+        })
         present(alert, animated: true)
     }
 }

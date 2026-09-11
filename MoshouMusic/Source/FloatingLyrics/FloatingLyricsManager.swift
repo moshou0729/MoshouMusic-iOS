@@ -438,7 +438,12 @@ final class FloatingLyricsManager: NSObject {
             return
         }
         let wasCollapsed = isCollapsed
-        let frame = wasCollapsed ? (savedExpandedFrame ?? oldWindow.frame) : oldWindow.frame
+        // 🚨 v1.0.152：写回配置的几何必须是「规范帧」（尺寸=配置尺寸），绝不能读
+        // oldWindow.frame —— 它此刻的高度正带着频谱 0~24pt 的正弦拉伸（每帧被改）。
+        // 旧写法每换一首歌（playerStateChanged → hardRefresh）就把「配置高度 + 最多 24pt」
+        // 持久化一次，高度无上限累积 → 用户看到的「自动拉高、拉到超出屏幕」。
+        let canonical = spectrumCanonicalFrame(of: oldWindow)
+        let frame = wasCollapsed ? (savedExpandedFrame ?? canonical) : canonical
 
         // 折叠态重建后以展开态恢复（配置里存的本来就是展开尺寸/位置）
         if wasCollapsed {
@@ -587,6 +592,16 @@ final class FloatingLyricsManager: NSObject {
         spectrumBaseFrame = nil
     }
 
+    /// 🚨 v1.0.152：频谱的「规范基准帧」—— 位置取窗口当前位置，**尺寸一律取配置值**。
+    ///
+    /// 绝不能拿 `window.frame` 当基准：它的 height 每一帧都被自己 +0~24pt 的正弦拉伸
+    /// （用来驱动 SB 重合成），拿它当基准等于每帧把「上一帧已拉伸过的高度」再当新基准，
+    /// 高度按 +0~24pt/帧 累积 —— 几秒内就能顶穿屏幕（用户实测的「无限自动拉高」）。
+    /// 脉冲动画（performPulse 底边 +24pt）同理不得进入基准或配置。
+    private func spectrumCanonicalFrame(of window: UIWindow) -> CGRect {
+        return CGRect(origin: window.frame.origin, size: ConfigStore.shared.floatingSize)
+    }
+
     @objc private func spectrumTick() {
         guard let window = floatingWindow, !isCollapsed, !isUserInteracting, !suppressedInApp,
               PlayerManager.shared.isPlaying else {
@@ -597,19 +612,26 @@ final class FloatingLyricsManager: NSObject {
         lyricsView?.spectrumView.levels = AudioEqualizer.shared.currentLevels()
         // 几何驱动：底边 0~24pt 正弦往复（内容锁钉住根视图 → 视觉零变化），
         // 连续 window 级几何变化强制 SB 逐帧重合成 → 频谱跨应用实时可见
+        // 🚨 v1.0.152：基准一律取「规范帧」（尺寸=配置值），绝不拿 window.frame 当基准
+        // —— 它此刻的 height 正带着本帧要叠加的振荡，用作基准会逐帧累积放大（无限拉高）。
+        let canonical = spectrumCanonicalFrame(of: window)
+        // 超高自愈：超出规范高度 26pt（> 正弦最大振幅 24pt）= 基准/配置被污染过，立即归位。
+        // 这也是存量脏数据的兜底收敛点（历史版本已被拉高的窗口跑一帧即恢复）。
+        if window.frame.height > canonical.height + 26 {
+            Logger.persist("悬浮窗高度异常：\(Int(window.frame.height))pt 超出规范 \(Int(canonical.height))pt，已归位")
+            spectrumBaseFrame = canonical
+        }
         if spectrumBaseFrame == nil {
-            spectrumBaseFrame = window.frame
+            spectrumBaseFrame = canonical
         }
         var base = spectrumBaseFrame!
-        // 手势期间拖动了窗口 → 重新捕获基准
+        // 位置 / 尺寸任一偏离规范值 → 重新捕获（拖动窗口、设置页改尺寸、脉冲残影都能自愈）
         if abs(window.frame.origin.x - base.origin.x) > 1
             || abs(window.frame.origin.y - base.origin.y) > 1
-            || abs(window.frame.width - base.width) > 1
-            // v1.0.150：高度不能直接拿 window.frame 比（本帧要被自己 +osc），
-            // 改比「配置高度 vs 基准高度」—— 设置页改高度后能自愈重捕获基准。
-            || abs(ConfigStore.shared.floatingSize.height - base.height) > 1 {
-            spectrumBaseFrame = window.frame
-            base = window.frame
+            || abs(canonical.width - base.width) > 1
+            || abs(canonical.height - base.height) > 1 {
+            spectrumBaseFrame = canonical
+            base = canonical
         }
         spectrumPhase += 0.35
         if spectrumPhase > .pi * 2 { spectrumPhase -= .pi * 2 }
@@ -723,6 +745,9 @@ final class FloatingLyricsManager: NSObject {
         switch gesture.state {
         case .began:
             settlePulse()
+            // v1.0.152：清频谱基准 —— 否则 spectrumTick 的守卫分支每帧 restoreSpectrumGeometry()
+            // 会把窗口尺寸拉回捏合前，捏合缩放被持续顶回去（基准里还可能残留振荡高度）。
+            refreshSpectrumBase()
             isUserInteracting = true
             pinchStartFrame = window.frame
             pinchStartFont = ConfigStore.shared.floatingFontSize
@@ -809,7 +834,8 @@ final class FloatingLyricsManager: NSObject {
         guard let window = floatingWindow, !isCollapsed else { return }
         settlePulse()
         isCollapsed = true
-        savedExpandedFrame = window.frame
+        // v1.0.152：保存的是规范帧（不含频谱振荡），否则展开时会带着振荡高度回来
+        savedExpandedFrame = spectrumCanonicalFrame(of: window)
         let side: CGFloat = 48
         let screen = UIScreen.main.bounds
         let origin = CGPoint(x: clamp(window.frame.origin.x, min: 6, max: max(6, screen.width - side - 6)),

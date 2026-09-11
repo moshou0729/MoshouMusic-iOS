@@ -265,17 +265,37 @@ class ConfigStore {
         set { defaults.set(newValue, forKey: Keys.floatingOpacity) }
     }
 
+    /// 悬浮窗尺寸设置页滑杆区间（与 FloatingSettingsViewController / pinch 手势一致）
+    static let floatingWidthMin: CGFloat = 140
+    static let floatingHeightRange: ClosedRange<CGFloat> = 72...360
+
+    static func clampFloatingHeight(_ v: CGFloat) -> CGFloat {
+        return Swift.min(Swift.max(v, floatingHeightRange.lowerBound), floatingHeightRange.upperBound)
+    }
+
+    static func clampFloatingWidth(_ v: CGFloat) -> CGFloat {
+        let maxW = Swift.max(floatingWidthMin, UIScreen.main.bounds.width - 16)
+        return Swift.min(Swift.max(v, floatingWidthMin), maxW)
+    }
+
     /// 悬浮窗尺寸（默认 300 × 126）
+    ///
+    /// 🚨 v1.0.152：读写两侧都做范围钳制，作为「显示态几何污染配置」的结构性防线。
+    /// 频谱可视化逐帧把 window.frame.height ±0~24pt 驱动 SB 重合成，一旦这份**显示态**
+    /// 尺寸被写回配置（历史版本 performHardRefresh 直接读 window.frame），高度会一次
+    /// +24pt 地累积、无限拉高直至顶穿屏幕（用户实测「自动拉高且无上限」）。钳制之后
+    /// 任何来源的脏数据都进不了配置，存量脏数据（历史版本写进去的超高值）在首次读取时
+    /// 即被修正 —— 用户升级后超高窗口会自动收敛回 360pt 上限内。
     var floatingSize: CGSize {
         get {
             let w = defaults.float(forKey: Keys.floatingWidth)
             let h = defaults.float(forKey: Keys.floatingHeight)
-            return CGSize(width: w == 0 ? 300 : CGFloat(w),
-                          height: h == 0 ? 126 : CGFloat(h))
+            return CGSize(width: ConfigStore.clampFloatingWidth(w == 0 ? 300 : CGFloat(w)),
+                          height: ConfigStore.clampFloatingHeight(h == 0 ? 126 : CGFloat(h)))
         }
         set {
-            defaults.set(Float(newValue.width), forKey: Keys.floatingWidth)
-            defaults.set(Float(newValue.height), forKey: Keys.floatingHeight)
+            defaults.set(Float(ConfigStore.clampFloatingWidth(newValue.width)), forKey: Keys.floatingWidth)
+            defaults.set(Float(ConfigStore.clampFloatingHeight(newValue.height)), forKey: Keys.floatingHeight)
         }
     }
 

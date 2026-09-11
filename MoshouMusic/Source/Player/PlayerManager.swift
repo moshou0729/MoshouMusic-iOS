@@ -187,13 +187,109 @@ class PlayerManager: NSObject {
                 self.lyricDriveTick = 0
                 // v1.0.140：随心跳持久化播放快照（被杀续播的判定依据）
                 self.savePlaybackSnapshot()
+                // v1.0.147：心跳带上 AVPlayer 真实状态 —— 旧版只有 isPlaying 标记，
+                // 分不清「真的在出声」和「标记说在播、管线其实停了」
                 if UIApplication.shared.applicationState != .active {
-                    Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying)")
+                    let pos = self.currentTime.isFinite ? Int(self.currentTime) : 0
+                    let dur = self.duration.isFinite ? Int(self.duration) : 0
+                    Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying) rate=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName) 位置=\(pos)s/\(dur)s")
                 }
+                // v1.0.147：停滞自愈 + 后台保活（防止「无声 → 被挂起 → 被清杀」）
+                self.checkPlaybackStall()
+                self.refreshPlayKeepAlive()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         lyricDriveTimer = timer
+    }
+
+    // MARK: - v1.0.147 后台播放保活 + 播放停滞自愈
+
+    private var playerTimeControlName: String {
+        switch player.timeControlStatus {
+        case .playing: return "playing"
+        case .paused: return "paused"
+        case .waitingToPlayAtSpecifiedRate: return "waiting"
+        @unknown default: return "unknown"
+        }
+    }
+
+    /// 上一次心跳时的播放位置（停滞检测基准）
+    private var lastHeartbeatPosition: Double = -1
+    /// 连续两次心跳位置都没推进的计数
+    private var stallHitCount = 0
+    private var playKeepAliveTask: UIBackgroundTaskIdentifier = .invalid
+    private var playKeepAliveRenewCount = 0
+
+    /// v1.0.147：播放停滞自愈。
+    /// 症状：状态标记 isPlaying=true、锁屏里进度条也还在，但两次心跳（20s）位置都不推进
+    /// —— 实际是音频管线已经停了（mediaserverd 仲裁中断被吞 / 换源后没真正起播）。
+    /// 后台进程一旦没有音频输出，几秒内就会被系统挂起，心跳与看门狗随之停摆，随后被清杀，
+    /// 用户看到的就是「锁屏听着听着自动停了」。这里主动重激活会话并重新起播。
+    private func checkPlaybackStall() {
+        guard isPlaying else {
+            lastHeartbeatPosition = -1
+            stallHitCount = 0
+            return
+        }
+        let t = currentTime
+        guard t.isFinite else { return }
+        let firstProbe = lastHeartbeatPosition < 0
+        let moved = !firstProbe && abs(t - lastHeartbeatPosition) > 0.5
+        lastHeartbeatPosition = t
+        if firstProbe || moved || t < 0.5 {
+            stallHitCount = 0
+            return
+        }
+        stallHitCount += 1
+        Logger.persist("播放停滞：位置停在 \(Int(t))s（控制=\(playerTimeControlName)）第 \(stallHitCount) 次心跳")
+        guard stallHitCount >= 2 else { return }
+        stallHitCount = 0
+        Logger.persist("播放停滞自愈：重新激活音频会话并重新起播")
+        let ok = ensureAudioSessionActive()
+        player.play()
+        isPlaying = true
+        updateNowPlayingInfo()
+        notifyStateChanged()
+        verifyResumeStarted()
+        if !ok { Logger.warn("停滞自愈：音频会话激活失败，等待下次心跳重试") }
+    }
+
+    /// v1.0.147：后台保活。
+    /// 只要在后台且「声明在播 / 正在等中断恢复」，就持有一个后台任务并定时续期。
+    /// 目的：即使音频瞬时停住，也别让进程在几秒内被系统挂起 —— 挂起后自愈逻辑根本跑不了。
+    private func refreshPlayKeepAlive() {
+        let background = UIApplication.shared.applicationState != .active
+        let need = background && (isPlaying || wasPlayingBeforeInterruption)
+        if need {
+            if playKeepAliveTask == .invalid { beginPlayKeepAlive() }
+        } else {
+            if playKeepAliveTask != .invalid { playKeepAliveRenewCount = 0 }
+            endPlayKeepAlive()
+        }
+    }
+
+    private func beginPlayKeepAlive() {
+        endPlayKeepAlive()
+        playKeepAliveTask = UIApplication.shared.beginBackgroundTask(withName: "playback-keepalive") { [weak self] in
+            guard let self = self else { return }
+            // 🚨 到期必须立刻 end（系统给的时间用尽后不释放会被强杀），再按需续期
+            let background = UIApplication.shared.applicationState != .active
+            let stillNeed = background && (self.isPlaying || self.wasPlayingBeforeInterruption)
+            self.endPlayKeepAlive()
+            guard stillNeed, self.playKeepAliveRenewCount < 24 else {
+                Logger.persist("播放保活结束续期（已续 \(self.playKeepAliveRenewCount) 次）")
+                return
+            }
+            self.playKeepAliveRenewCount += 1
+            self.beginPlayKeepAlive()
+        }
+    }
+
+    private func endPlayKeepAlive() {
+        guard playKeepAliveTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(playKeepAliveTask)
+        playKeepAliveTask = .invalid
     }
 
     /// 中断前是否在播（来电 / 系统弹窗打断 → 结束后按此恢复）
@@ -534,6 +630,10 @@ class PlayerManager: NSObject {
         ensureAudioSessionActive()
         player.play()
         isPlaying = true
+        // v1.0.147：重新起播 → 重置停滞基准并恢复后台保活
+        lastHeartbeatPosition = -1
+        stallHitCount = 0
+        refreshPlayKeepAlive()
         updateNowPlayingInfo()
         notifyStateChanged()
         verifyResumeStarted()
@@ -588,6 +688,10 @@ class PlayerManager: NSObject {
     func pause() {
         player.pause()
         isPlaying = false
+        // v1.0.147：用户主动暂停 = 明确不需要后台保活，立刻释放（并清零续期计数）
+        endPlayKeepAlive()
+        playKeepAliveRenewCount = 0
+        lastHeartbeatPosition = -1
         updateNowPlayingInfo()
         notifyStateChanged()
     }
@@ -1487,7 +1591,13 @@ class PlayerManager: NSObject {
             if queueIndex < playQueue.count - 1 {
                 next()
             } else {
+                // v1.0.147：列表播完即停 —— 后台随之失去音频输出资格，容易被系统挂起/清杀。
+                // 这条日志用于把「播完自然停止」与「被系统杀掉」区分开（历史日志分不出来）。
+                Logger.persist("队列播放完毕（列表顺序模式最后一首），停止播放")
                 isPlaying = false
+                endPlayKeepAlive()
+                playKeepAliveRenewCount = 0
+                lastHeartbeatPosition = -1
                 notifyStateChanged()
             }
         case .random:

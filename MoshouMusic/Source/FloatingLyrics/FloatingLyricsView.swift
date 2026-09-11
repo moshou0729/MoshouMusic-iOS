@@ -18,6 +18,8 @@ final class FloatingLyricsView: UIView {
     private var lastArtwork: UIImage?
     /// v1.0.141：底部频谱条（音乐可视化，开关控制可见）
     let spectrumView = SpectrumBarsView()
+    /// v1.0.147：频谱开关状态（折叠态要联动隐藏）
+    private var spectrumEnabled = false
 
     /// 中间行字号；侧行自动小一号
     var fontSize: CGFloat {
@@ -57,7 +59,8 @@ final class FloatingLyricsView: UIView {
 
         // v1.0.141：频谱条垫在歌词层下面
         spectrumView.isHidden = true
-        spectrumView.alpha = 0.75
+        // v1.0.147：撑满窗口后面积大得多，降透明度避免压过歌词可读性
+        spectrumView.alpha = 0.42
         addSubview(spectrumView)
         sendSubviewToBack(spectrumView)
 
@@ -72,9 +75,11 @@ final class FloatingLyricsView: UIView {
             label.frame = CGRect(x: 10, y: CGFloat(index) * row,
                                  width: max(0, bounds.width - 20), height: row)
         }
-        // v1.0.141：频谱条贴底（歌词行之上、背景之上）
-        spectrumView.frame = CGRect(x: 8, y: bounds.height - 20,
-                                    width: max(0, bounds.width - 16), height: 16)
+        // v1.0.147：频谱条撑满悬浮窗高度 —— 原来贴底固定 16pt，只占窗口底部一小条，
+        // 看不出频谱强弱；现在按「当前悬浮窗设置的高度」铺满（上下各留 3pt 圆角余量）
+        spectrumView.frame = CGRect(x: 6, y: 3,
+                                    width: max(0, bounds.width - 12),
+                                    height: max(0, bounds.height - 6))
     }
 
     private func applyStyle() {
@@ -147,6 +152,8 @@ final class FloatingLyricsView: UIView {
     func setCollapsed(_ collapsed: Bool) {
         isCollapsedState = collapsed
         container.isHidden = collapsed
+        // v1.0.147：折叠成正方形圆点时频谱条不显示（否则会压住封面）
+        spectrumView.isHidden = collapsed || !spectrumEnabled
         if collapsed {
             if noteIcon == nil {
                 let icon = UIImageView(image: UIImage(systemName: "music.note"))
@@ -201,8 +208,10 @@ final class FloatingLyricsView: UIView {
     }
 
     /// v1.0.141：频谱条可见性（音乐可视化开关）
+    /// v1.0.147：记住开关状态，并与折叠态联动（折叠时不显示）
     func setSpectrumVisible(_ visible: Bool) {
-        spectrumView.isHidden = !visible
+        spectrumEnabled = visible
+        spectrumView.isHidden = !visible || isCollapsedState
     }
 }
 

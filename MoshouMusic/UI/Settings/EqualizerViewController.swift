@@ -7,7 +7,7 @@ final class EqualizerViewController: UIViewController {
     private let presetScroll = UIScrollView()
     private let presetStack = UIStackView()
     private let gainStack = UIStackView()
-    private var sliders: [UISlider] = []
+    private var sliders: [GainSlider] = []
     private var valueLabels: [UILabel] = []
     private var presetButtons: [UIButton] = []
     private let tipLabel = UILabel()
@@ -93,7 +93,8 @@ final class EqualizerViewController: UIViewController {
         for band in 0..<10 {
             let container = UIView()
             container.translatesAutoresizingMaskIntoConstraints = false
-            container.heightAnchor.constraint(equalToConstant: 190).isActive = true
+            // v1.0.147：容器加高 —— 滑杆行程 = 容器高度，矮容器会让可调范围被压缩
+            container.heightAnchor.constraint(equalToConstant: 260).isActive = true
 
             let valueLabel = UILabel()
             valueLabel.font = UIFont.systemFont(ofSize: 10)
@@ -101,15 +102,14 @@ final class EqualizerViewController: UIViewController {
             valueLabel.textAlignment = .center
             valueLabel.text = String(format: "%+.0f", current[band])
 
-            let slider = UISlider()
+            // v1.0.147：改用自绘竖直滑杆 —— UISlider 旋转后 thumb 中心最多只能走
+            // 「控件长度 − thumb 直径」，视觉上最大/最小都只在中段变化。自绘版把轨道
+            // 上下端各内缩一个 thumb 半径，thumb 能真正走到顶端(+12dB)/底端(−12dB)。
+            let slider = GainSlider()
             slider.minimumValue = -AudioEqualizer.maxGainDb
             slider.maximumValue = AudioEqualizer.maxGainDb
             slider.value = current[band]
-            slider.tintColor = Theme.primary
-            slider.isContinuous = true
             slider.tag = band
-            slider.frame = CGRect(x: 0, y: 0, width: 160, height: 32)
-            slider.transform = CGAffineTransform(rotationAngle: -.pi / 2)
             slider.addTarget(self, action: #selector(gainChanged(_:)), for: .valueChanged)
 
             let freqLabel = UILabel()
@@ -129,7 +129,10 @@ final class EqualizerViewController: UIViewController {
                 valueLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
 
                 slider.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-                slider.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: 8),
+                // v1.0.147：滑杆上下贴住数值/频率标签 —— 行程吃满容器可用高度
+                slider.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 6),
+                slider.bottomAnchor.constraint(equalTo: freqLabel.topAnchor, constant: -6),
+                slider.widthAnchor.constraint(equalToConstant: 32),
 
                 freqLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
                 freqLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
@@ -178,7 +181,7 @@ final class EqualizerViewController: UIViewController {
 
     // MARK: - 动作
 
-    @objc private func gainChanged(_ sender: UISlider) {
+    @objc private func gainChanged(_ sender: GainSlider) {
         let band = sender.tag
         let v = sender.value.rounded()
         sender.value = v
@@ -191,7 +194,7 @@ final class EqualizerViewController: UIViewController {
         guard let preset = Self.presets.first(where: { $0.name == name }) else { return }
         let eq = AudioEqualizer.shared
         for band in 0..<10 {
-            sliders[band].setValue(preset.gains[band], animated: true)
+            sliders[band].value = preset.gains[band]
             valueLabels[band].text = String(format: "%+.0f", preset.gains[band])
             eq.setGain(band: band, value: preset.gains[band])
         }
@@ -215,5 +218,102 @@ final class EqualizerViewController: UIViewController {
             btn.layer.borderColor = selected ? Theme.primary.cgColor : Theme.outlineVariant.cgColor
             _ = i
         }
+    }
+}
+
+/// v1.0.147：自绘竖直增益滑杆。
+/// 用 UISlider + 旋转变竖直时，thumb 中心最多只能走「控件长度 − thumb 直径」，
+/// 表现为「最大值/最小值都只在中段变化」。自绘版把轨道上下端各内缩一个 thumb 半径，
+/// thumb 中心恰好能走到顶端（+12dB）与底端（−12dB），行程完全对应可调范围。
+final class GainSlider: UIControl {
+
+    var minimumValue: Float = -12
+    var maximumValue: Float = 12
+    var value: Float = 0 {
+        didSet { if value != oldValue { setNeedsDisplay() } }
+    }
+    var trackColor: UIColor = UIColor.white.withAlphaComponent(0.18)
+    var fillColor: UIColor = Theme.primary
+
+    private let thumbRadius: CGFloat = 10
+    private var travelTop: CGFloat { thumbRadius }
+    private var travelBottom: CGFloat { max(thumbRadius, bounds.height - thumbRadius) }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+        isMultipleTouchEnabled = false
+        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:))))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: CGSize { CGSize(width: 32, height: 160) }
+
+    private func y(for v: Float) -> CGFloat {
+        let span = max(0.0001, maximumValue - minimumValue)
+        let t = CGFloat(max(0, min(1, (v - minimumValue) / span)))
+        return travelBottom - t * (travelBottom - travelTop)
+    }
+
+    private func valueAt(y: CGFloat) -> Float {
+        let span = travelBottom - travelTop
+        guard span > 1 else { return minimumValue }
+        let t = max(0, min(1, (travelBottom - y) / span))
+        return minimumValue + Float(t) * (maximumValue - minimumValue)
+    }
+
+    @objc private func handlePan(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began, .changed:
+            let nv = valueAt(y: g.location(in: self).y)
+            if abs(nv - value) > 0.05 {
+                value = nv
+                sendActions(for: .valueChanged)
+            }
+        default:
+            setNeedsDisplay()
+        }
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext(), bounds.height > 20 else { return }
+        let cx = bounds.midX
+        let trackW: CGFloat = 5
+        let curY = y(for: value)
+        let zeroY = y(for: 0)
+
+        // 轨道底色
+        trackColor.setFill()
+        UIBezierPath(roundedRect: CGRect(x: cx - trackW / 2, y: travelTop,
+                                         width: trackW, height: travelBottom - travelTop),
+                     cornerRadius: trackW / 2).fill()
+
+        // 已调增益段（0dB → 当前值）
+        if abs(curY - zeroY) > 1 {
+            fillColor.setFill()
+            UIBezierPath(roundedRect: CGRect(x: cx - trackW / 2, y: min(zeroY, curY),
+                                             width: trackW, height: abs(curY - zeroY)),
+                         cornerRadius: trackW / 2).fill()
+        }
+
+        // 0dB 中线
+        UIColor.white.withAlphaComponent(0.30).setFill()
+        ctx.fill(CGRect(x: cx - 9, y: zeroY - 0.5, width: 18, height: 1))
+
+        // thumb
+        let knob = CGRect(x: cx - thumbRadius, y: curY - thumbRadius,
+                          width: thumbRadius * 2, height: thumbRadius * 2)
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 1), blur: 3,
+                      color: UIColor.black.withAlphaComponent(0.35).cgColor)
+        UIColor.white.setFill()
+        ctx.fillEllipse(in: knob)
+        ctx.restoreGState()
+        fillColor.setStroke()
+        let ring = UIBezierPath(ovalIn: knob.insetBy(dx: 2.5, dy: 2.5))
+        ring.lineWidth = 2.5
+        ring.stroke()
     }
 }

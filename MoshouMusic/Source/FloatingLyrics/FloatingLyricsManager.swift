@@ -118,7 +118,17 @@ final class FloatingLyricsManager: NSObject {
 
     /// v1.0.162：两次拆窗之间的最小间隔（去抖）。displayStatus 同一次状态变化会投递多次
     /// （实测 0.5s 内两条），不去抖会反复 teardown，把「等解锁」的计时不断往后推。
-    private static let selfGuardTeardownDebounce: Double = 1.5
+    /// 🚨 v1.0.163：1.5s 判据太紧 —— 17:04 日志里同一次屏幕变化的两条回调相隔 **1.79s**
+    ///（17:04:25.872 → 17:04:27.670），去抖没拦住：白白多拆一次窗，
+    /// 「等解锁」计时与屏变心跳一起被重置，那一轮的观测窗口全废。
+    /// 改 3.0s：实测双投递最长 ~1.8s，留足余量；而人工连续开关屏幕本来就 >3s。
+    private static let selfGuardTeardownDebounce: Double = 3.0
+
+    /// v1.0.163：屏变心跳的条数（1.5s × 40 ≈ 60s）。
+    /// 16 条（24s）覆盖不住真实等待 —— 17:03/17:04 两轮日志里「拆窗 → 重建」分别是
+    /// **54s** 与 **38s**，24s 之后进入盲区：万一进程死在盲区，日志完全看不出
+    /// 死在屏变后第几秒，那就等于丢掉了唯一的取证手段。
+    private static let selfGuardBeatCount = 40
 
     /// 当前生效档位：开（默认）= 快速档；关 = 保守档。
     private var activeResumeParams: (floor: Double, afterUnlock: Double) {
@@ -197,10 +207,21 @@ final class FloatingLyricsManager: NSObject {
 
     /// v1.0.161：本轮「等解锁 → 重建」的令牌。每次屏变自增，旧轮询自动作废。
     private var selfGuardReshowToken = 0
-    /// v1.0.162：本次屏变周期内是否**确实观测到设备处于锁定态**。
+    /// v1.0.162：是否**确实观测到设备处于锁定态**。
     /// 只有「先锁过、再观测到未锁定」才算真解锁 —— 这是绕开
     /// `isProtectedDataAvailable` 锁屏后 5~10s 延迟生效窗口（假 true）的关键。
+    /// ⚠️ v1.0.163 澄清：它是**会话级**的，跨拆窗周期保留，只在成功重建时清。
+    /// 这是有意为之 —— 熄屏必然锁定，「曾锁过 + 现在报未锁」在逻辑上就等价于真解锁；
+    /// 若每轮清零，用户解锁得早（本轮还没采样到锁定）就会被兜底分支压到 12s，
+    /// 凭白多等 10s（17:05:15 那次 1.7s 就判决的底气正来自这份跨轮记忆）。
     private var selfGuardSawLocked = false
+
+    /// v1.0.163：「未锁定」要**连续两次轮询**都成立才判定解锁。
+    /// 单次采样的一次毛刺就足以让窗口在锁定态被重建 → 进程被清杀，
+    /// 而本项目已经栽在两个「单信号」上（hasBlankedScreen 的 latch 语义、
+    /// isProtectedDataAvailable 的延迟生效），所以判决一律要求两次独立采样共同支撑。
+    /// 代价只有一个轮询间隔（0.8s）。
+    private var selfGuardUnlockStreak = 0
     /// v1.0.162：上次拆窗时刻（displayStatus 去抖）
     private var selfGuardLastTeardownTs = Date.distantPast
     /// v1.0.161：本轮等待解锁的起点（= 屏变时刻）
@@ -212,7 +233,7 @@ final class FloatingLyricsManager: NSObject {
     private var selfGuardBeatSeq = 0
     private var selfGuardBeatStart = Date()
 
-    /// 屏变后每 1.5s 记一条**持久化**日志（跨进程保留），共 16 条 ≈ 24s。
+    /// 屏变后每 1.5s 记一条**持久化**日志（跨进程保留），共 40 条 ≈ 60s。
     ///
     /// 为什么必须加：三轮日志都只能看到「新进程启动时才发现上次被强杀」，
     /// **死亡时刻完全不可知** —— 到底是死在锁屏那一刻、还是死在亮屏那一刻，
@@ -229,15 +250,21 @@ final class FloatingLyricsManager: NSObject {
     }
 
     private func scheduleScreenChangeBeat() {
-        guard selfGuardBeatSeq < 16 else { return }
+        guard selfGuardBeatSeq < FloatingLyricsManager.selfGuardBeatCount else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.selfGuardBeatSeq += 1
             let elapsed = Date().timeIntervalSince(self.selfGuardBeatStart)
-            Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)，已解锁=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)，锁=\(FloatingWindowHosting.deviceLockState())）")
+            Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)，已解锁=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)，锁=\(FloatingWindowHosting.deviceLockState())，本会话曾锁定=\(self.selfGuardSawLocked ? 1 : 0)）")
             if self.selfGuardBeatSeq >= 8 {
                 // 活过 12s：这次重建没把自己搞死 → 清掉打点，不计入自动降档
                 ConfigStore.shared.floatingGuardRebuildTs = 0
+            }
+            if self.selfGuardBeatSeq >= FloatingLyricsManager.selfGuardBeatCount {
+                // v1.0.163：明确标出观测窗口的右边界 —— 之后若仍无重建日志，
+                // 只可能是「还停在锁屏等解锁」，而不是「进程死了没有说话」。
+                Logger.persist("屏变存活心跳结束（已记满 \(FloatingLyricsManager.selfGuardBeatCount) 条 ≈ 60s）—— 此后若仍无重建日志，说明仍在锁屏等待解锁")
+                return
             }
             self.scheduleScreenChangeBeat()
         }
@@ -332,6 +359,7 @@ final class FloatingLyricsManager: NSObject {
         let token = selfGuardReshowToken
         selfGuardUnlockWaitStart = Date()
         selfGuardRebuildTry = 0
+        selfGuardUnlockStreak = 0
         Logger.persist("熄屏自保：拆窗完成，等设备解锁后重建（\(ConfigStore.shared.isFloatingWakeParkEnabled ? "快速档" : "保守档")，解锁后 \(String(format: "%.1f", params.afterUnlock))s）")
         pollDeviceUnlockedThenReshow(token: token, floor: params.floor, afterUnlock: params.afterUnlock)
     }
@@ -371,11 +399,17 @@ final class FloatingLyricsManager: NSObject {
                                        delay: 0.4, reason: "回前台")
             return
         }
-        // ② 可信解锁：**先确实锁过**，再观测到「未锁定」才动手
+        // ② 可信解锁：**先确实锁过**，再**连续两次**观测到「未锁定」才动手
+        //    （v1.0.163 二连确认 —— 单次采样不足以推翻锁定）
         if selfGuardSawLocked, !locked, elapsed >= floor {
-            scheduleRebuildAfterUnlock(token: token, elapsed: elapsed,
-                                       delay: afterUnlock, reason: "锁定→解锁翻转")
-            return
+            selfGuardUnlockStreak += 1
+            if selfGuardUnlockStreak >= 2 {
+                scheduleRebuildAfterUnlock(token: token, elapsed: elapsed,
+                                           delay: afterUnlock, reason: "锁定→解锁翻转（二次确认）")
+                return
+            }
+        } else {
+            selfGuardUnlockStreak = 0
         }
         // ③ 兜底：全程没观测到锁定（设备本来就没锁）。等待时间必须越过数据保护的
         //    延迟生效窗口 —— 用它排除「点亮但未解锁」的假 true。
@@ -431,7 +465,13 @@ final class FloatingLyricsManager: NSObject {
         Logger.persist("熄屏自保：阶梯重建完成（解锁后重建，音频健康）")
         // 重建后 6s 存活确认 —— 下次日志能直接区分「重建即死」与「别的原因」
         DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
-            Logger.persist("熄屏自保：重建后 6s 存活确认（音频健康=\(PlayerManager.shared.isPlaybackHealthy)）")
+            // v1.0.163：必须带上前台态 —— 用户若在 6s 内回到 App，窗口会被 App 内闸门
+            // 拆掉，那时「6s 存活确认」就不再能证明「后台持窗安全」了
+            //（17:04:22.465 那条正是回前台后才记的，窗口其实早已拆除）。
+            // 判读规则：只认「前台态=0 后台」的确认；1=过渡（正在切出/回 App）不算。
+            let st = UIApplication.shared.applicationState
+            let code = st == .active ? 2 : (st == .inactive ? 1 : 0)
+            Logger.persist("熄屏自保：重建后 6s 存活确认（音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台态=\(code)〔2活跃/1过渡/0后台〕）")
         }
     }
 
@@ -497,6 +537,11 @@ final class FloatingLyricsManager: NSObject {
 
     /// 拆除系统级窗口（unregister + 释放，不重建）
     private func teardownWindow() {
+        // v1.0.163：先留住「即将被销毁的那一条窗口」。它在这一行之后仍挂在 windowScene 上
+        //（floatingWindow 会被置 nil），旧写法让 purgeOrphanFloatingWindows 把它自己当成
+        //「孤儿」记一条日志 —— 每次拆窗都误报 1 个（17:03~17:05 日志里 6 条
+        //「清理孤儿悬浮窗 1 个」全是这个假阳性），把真正有价值的跨进程取证日志稀释成噪音。
+        let doomed = floatingWindow
         if let window = floatingWindow {
             if hostingRegistered {
                 FloatingWindowHosting.unregister(window: window)
@@ -518,17 +563,17 @@ final class FloatingLyricsManager: NSObject {
         isParkedOffScreen = false
         parkHoldsUntilWake = false
         parkedOrigin = nil
-        purgeOrphanFloatingWindows()
+        purgeOrphanFloatingWindows(excluding: doomed)
     }
 
     /// v1.0.150：清理孤儿悬浮窗 —— 引用已丢失、但仍挂在 windowScene 上的
     /// FloatingSystemWindow（v1.0.149 的 teardown 分支缺陷会留下这种窗口）。
     /// windowScene 会强持有 isHidden=false 的窗口，只置 nil 引用是清不掉的。
-    private func purgeOrphanFloatingWindows() {
+    private func purgeOrphanFloatingWindows(excluding doomed: FloatingSystemWindow? = nil) {
         let orphans = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
-            .filter { $0 is FloatingSystemWindow && $0 !== floatingWindow }
+            .filter { $0 is FloatingSystemWindow && $0 !== floatingWindow && $0 !== doomed }
         guard !orphans.isEmpty else { return }
         Logger.persist("清理孤儿悬浮窗 \(orphans.count) 个（引用已丢失但仍挂在 scene 上）")
         for w in orphans {

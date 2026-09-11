@@ -94,7 +94,9 @@ final class EqualizerViewController: UIViewController {
             let container = UIView()
             container.translatesAutoresizingMaskIntoConstraints = false
             // v1.0.147：容器加高 —— 滑杆行程 = 容器高度，矮容器会让可调范围被压缩
-            container.heightAnchor.constraint(equalToConstant: 260).isActive = true
+            // v1.0.148：再加高到 300，并把滑杆与上/下标签的间距从 6pt 收到 4/2pt、
+            // 频率标签贴容器底 —— 原来 thumb 到底时下方还空一截，视觉上「没到底」
+            container.heightAnchor.constraint(equalToConstant: 300).isActive = true
 
             let valueLabel = UILabel()
             valueLabel.font = UIFont.systemFont(ofSize: 10)
@@ -130,11 +132,11 @@ final class EqualizerViewController: UIViewController {
 
                 slider.centerXAnchor.constraint(equalTo: container.centerXAnchor),
                 // v1.0.147：滑杆上下贴住数值/频率标签 —— 行程吃满容器可用高度
-                slider.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 6),
-                slider.bottomAnchor.constraint(equalTo: freqLabel.topAnchor, constant: -6),
+                slider.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 4),
+                slider.bottomAnchor.constraint(equalTo: freqLabel.topAnchor, constant: -2),
                 slider.widthAnchor.constraint(equalToConstant: 32),
 
-                freqLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
+                freqLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: 0),
                 freqLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             ])
             sliders.append(slider)
@@ -235,7 +237,7 @@ final class GainSlider: UIControl {
     var trackColor: UIColor = UIColor.white.withAlphaComponent(0.18)
     var fillColor: UIColor = Theme.primary
 
-    private let thumbRadius: CGFloat = 10
+    private let thumbRadius: CGFloat = 9
     private var travelTop: CGFloat { thumbRadius }
     private var travelBottom: CGFloat { max(thumbRadius, bounds.height - thumbRadius) }
 
@@ -249,7 +251,7 @@ final class GainSlider: UIControl {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override var intrinsicContentSize: CGSize { CGSize(width: 32, height: 160) }
+    override var intrinsicContentSize: CGSize { CGSize(width: 32, height: 220) }
 
     private func y(for v: Float) -> CGFloat {
         let span = max(0.0001, maximumValue - minimumValue)

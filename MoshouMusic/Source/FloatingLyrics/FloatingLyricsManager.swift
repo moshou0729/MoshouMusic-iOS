@@ -101,12 +101,23 @@ final class FloatingLyricsManager: NSObject {
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             guard !self.suppressedInApp, ConfigStore.shared.isFloatingLyricsOn else { return }
+            // v1.0.148：两重收紧 —— v1.0.146/147 两次现场都是「重建日志之后心跳全断」：
+            //  ① 延迟 8s → 20s：避开亮屏后 mediaserverd 的音频仲裁窗口；
+            //  ② 音频管线不健康时直接放弃这次重建，绝不在「已停播」状态下去注册窗口。
+            guard PlayerManager.shared.isPlaybackHealthy else {
+                Logger.persist("熄屏自保：音频管线未在播，跳过本次后台重建（规避注册窗口风险）")
+                return
+            }
             self.show()
-            Logger.persist("熄屏自保：已延迟重建悬浮窗（亮屏后 8s）")
+            Logger.persist("熄屏自保：已延迟重建悬浮窗（亮屏后 20s）")
+            // 重建后 6s 存活确认 —— 下次日志能直接区分「重建即死」与「别的原因」
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
+                Logger.persist("熄屏自保：重建后 6s 存活确认（音频健康=\(PlayerManager.shared.isPlaybackHealthy)）")
+            }
         }
         selfGuardReshowWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: work)
-        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，8s 后自动重建")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20.0, execute: work)
+        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，20s 后自动重建")
     }
 
     /// 离开 App（切其他应用 / 回桌面 / 锁屏）：恢复悬浮窗

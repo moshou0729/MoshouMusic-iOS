@@ -214,6 +214,12 @@ class PlayerManager: NSObject {
         }
     }
 
+    /// v1.0.148：播放健康度 —— 悬浮窗在后台重建系统级窗口前，必须先确认音频管线真的在跑。
+    /// 「标记在播、管线已停」时再去注册窗口，是 v1.0.146/147 两次静默强杀现场的共同特征。
+    var isPlaybackHealthy: Bool {
+        return isPlaying && player.rate > 0 && player.timeControlStatus == .playing
+    }
+
     /// 上一次心跳时的播放位置（停滞检测基准）
     private var lastHeartbeatPosition: Double = -1
     /// 连续两次心跳位置都没推进的计数
@@ -273,16 +279,12 @@ class PlayerManager: NSObject {
         endPlayKeepAlive()
         playKeepAliveTask = UIApplication.shared.beginBackgroundTask(withName: "playback-keepalive") { [weak self] in
             guard let self = self else { return }
-            // 🚨 到期必须立刻 end（系统给的时间用尽后不释放会被强杀），再按需续期
-            let background = UIApplication.shared.applicationState != .active
-            let stillNeed = background && (self.isPlaying || self.wasPlayingBeforeInterruption)
+            // 🚨 到期必须立刻 end（时间用尽后不释放会被系统强杀）。
+            // v1.0.148：**不再自动续期** —— v1.0.147 实测「到期后立刻重新申请」会让进程
+            // 在进后台约 30s 就被系统静默强杀（无崩溃记录，比不保活还短命）。
+            // 现在只申请一次，用于覆盖换源/起播的瞬时抖动，到期即释放。
+            Logger.persist("播放保活任务到期：释放（v1.0.148 起不续期）")
             self.endPlayKeepAlive()
-            guard stillNeed, self.playKeepAliveRenewCount < 24 else {
-                Logger.persist("播放保活结束续期（已续 \(self.playKeepAliveRenewCount) 次）")
-                return
-            }
-            self.playKeepAliveRenewCount += 1
-            self.beginPlayKeepAlive()
         }
     }
 
@@ -457,6 +459,10 @@ class PlayerManager: NSObject {
             FloatingLyricsManager.shared.screenWakeSelfGuardTeardown()
         }
         beginRecoveryKeepAlive()
+        // v1.0.148：亮屏音频自检 —— 亮屏时 mediaserverd 会重排音频所有者，若中断通知被系统
+        // 吞掉，管线会静默停住（UI 仍显示在播）→ 后台无音频输出 → 数秒后被挂起 → 被清杀。
+        // 这里探一次真实控制态，不健康就立刻恢复。
+        screenWakeAudioCheck()
         if wasPlayingBeforeInterruption && !isPlaying {
             Logger.info("亮屏：检测到中断未恢复，立即进入恢复节奏")
             attemptInterruptionRecovery(retriesLeft: 8)
@@ -471,6 +477,22 @@ class PlayerManager: NSObject {
             // 中断通常在亮屏后几百毫秒才到：看门狗首检提前到 1.2s
             scheduleInterruptionWatchdog(firstDelay: 1.2)
         }
+    }
+
+    /// v1.0.148：亮屏音频自检 —— 只在「声明在播但管线已停」时动手；健康时只记一条日志。
+    func screenWakeAudioCheck() {
+        guard isPlaying else { return }
+        if isPlaybackHealthy {
+            Logger.persist("亮屏音频自检：管线正常（率=\(String(format: "%.2f", player.rate))）")
+            return
+        }
+        Logger.persist("亮屏音频自检：管线未在播（控制=\(playerTimeControlName) 率=\(String(format: "%.2f", player.rate))）→ 主动恢复")
+        _ = ensureAudioSessionActive()
+        player.play()
+        isPlaying = true
+        updateNowPlayingInfo()
+        notifyStateChanged()
+        verifyResumeStarted()
     }
 
     /// 确保音频会话处于激活状态（幂等，激活状态下调用无害）

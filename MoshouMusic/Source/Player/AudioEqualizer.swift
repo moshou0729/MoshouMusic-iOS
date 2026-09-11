@@ -76,6 +76,9 @@ final class AudioEqualizer {
         var gainsDirty = true
         /// 10 段频谱电平（0~1，峰值保持 + 衰减平滑），悬浮窗频谱条每帧读取
         var levels: [Float] = Array(repeating: 0, count: 10)
+        /// v1.0.148：每段自适应参考峰值（慢衰减）—— 把各频段归一到自己的动态范围。
+        /// 固定增益下低频段（带通捕能少）和小音量几乎看不出起伏，重音没有冲击感。
+        var peaks: [Float] = Array(repeating: 0, count: 10)
         var lock = os_unfair_lock_s()
 
         init() {
@@ -240,6 +243,7 @@ final class AudioEqualizer {
             for c in ctx.eqChain { for b in c { b.reset() } }
             for c in ctx.analyzer { for b in c { b.reset() } }
             ctx.levels = Array(repeating: 0, count: 10)
+            ctx.peaks = Array(repeating: 0, count: 10)
         },
         process: { tap, numberFrames, _, bufferListInOut, numberFramesOut, _ in
             var srcFlags: MTAudioProcessingTapFlags = 0
@@ -323,13 +327,22 @@ final class AudioEqualizer {
                 }
             }
 
-            // 频谱电平：RMS → 0~1 映射，峰值保持 + 衰减
+            // 频谱电平：RMS → 0~1 映射。
+            // v1.0.148：改用「每段自适应峰值归一化」—— 固定增益 (rms*7) 在低频段
+            // （31/62Hz 带通捕能少）与小音量下几乎看不出起伏，重音没有冲击感。
+            // 现在每段各自跟踪近期峰值作为参考，配合噪声门 + 幂曲线：
+            // 鼓点/重低音一击即到高位，随后按衰减系数平滑回落。
             let fn = Float(max(n, 1))
             for band in 0..<10 {
                 let rms = sqrt(energy[band] / fn)
-                let mapped = min(1, rms * 7)
-                let decayed = ctx.levels[band] * 0.88
-                ctx.levels[band] = mapped > decayed ? mapped : decayed
+                let prevPeak = ctx.peaks[band]
+                ctx.peaks[band] = max(rms, prevPeak * 0.992)
+                let ref = max(ctx.peaks[band] * 1.12, 1e-4)
+                var norm = rms / ref
+                norm = max(0, min(1, (norm - 0.15) / 0.85))
+                let shaped = pow(norm, 0.62)
+                let decayed = ctx.levels[band] * 0.86
+                ctx.levels[band] = shaped > decayed ? shaped : decayed
             }
         }
     )

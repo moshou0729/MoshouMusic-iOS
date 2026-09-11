@@ -222,6 +222,8 @@ final class SpectrumBarsView: UIView {
         didSet { setNeedsDisplay() }
     }
     var barColor: UIColor = UIColor.white.withAlphaComponent(0.6)
+    /// v1.0.148：频谱最高高度占比 —— 100% 会顶满窗口太满，默认 75% 留出顶部余量
+    var heightScale: CGFloat = 0.75
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -239,7 +241,7 @@ final class SpectrumBarsView: UIView {
         let bw = (bounds.width - gap * CGFloat(n - 1)) / CGFloat(n)
         ctx.setFillColor(barColor.cgColor)
         for i in 0..<n {
-            let h = max(1.5, CGFloat(levels[i]) * bounds.height)
+            let h = max(1.5, CGFloat(levels[i]) * bounds.height * heightScale)
             let r = CGRect(x: CGFloat(i) * (bw + gap), y: bounds.height - h, width: bw, height: h)
             let path = UIBezierPath(roundedRect: r, cornerRadius: min(2.5, bw / 2))
             path.fill()

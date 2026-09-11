@@ -174,7 +174,7 @@ final class FloatingLyricsManager: NSObject {
 
     /// 移出可见区用的几何。用**几何变化**而不是 `isHidden` —— 后者已被证实驱动不了
     /// SB 重合成（窗口纹丝不动留在原地），而大幅位移一定能。
-    private func applyOffScreenFrame(to window: UIWindow) {
+    private func applyOffScreenFrame(to window: FloatingSystemWindow) {
         pulseWorkItem?.cancel()
         window.pulseContentLock = false
         window.layer.removeAllAnimations()

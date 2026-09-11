@@ -98,37 +98,56 @@ final class FloatingLyricsManager: NSObject {
     /// v1.0.134：熄屏自保的延迟重建任务
     private var selfGuardReshowWork: DispatchWorkItem?
 
+    /// v1.0.155：熄屏自保的阶梯重建档位（秒）。
+    /// 拆窗本身必须保留 —— v1.0.132 开关实验坐实「亮屏瞬间后台进程带 SB 托管窗
+    /// = 被系统清杀 = 停播」。但重建不必盲等 20s：12s 起先探一次，音频持续健康就提前
+    /// 回来；不健康则退回原来的 20s 保守档（最坏情况与 v1.0.148 完全一致）。
+    private static let selfGuardReshowDelays: [Double] = [12.0, 20.0]
+
     /// v1.0.134：熄屏自保（强制）—— 亮屏瞬间彻底拆除系统级窗口避开系统清杀。
     /// 根因由 v1.0.132 开关实验坐实：开关打开后熄屏点亮不再停播。
-    /// 拆除 8s 后在后台自动重建（被杀检查时刻有漂移：历史 1.4~4s，v1.0.139 实测
-    /// 一例正好 ≈5s 并撞上 5s 重建时刻 —— 重建即暴露窗口即被杀。8s 为 v1.0.134
-    /// 时代多日实测零被杀的延迟）。
+    /// （重建时机由 selfGuardReshowDelays 逐档试探，见 scheduleSelfGuardReshow。）
     func screenWakeSelfGuardTeardown() {
         settingsPreviewActive = false
         hardRefreshWorkItem?.cancel()
         pulseWorkItem?.cancel()
         selfGuardReshowWork?.cancel()
         teardownWindow()
+        scheduleSelfGuardReshow(attempt: 0)
+        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，\(Int(FloatingLyricsManager.selfGuardReshowDelays[0]))s 后开始阶梯重建")
+    }
+
+    /// v1.0.155：阶梯式后台重建 —— 逐档试探，音频健康即重建；全档不过就放弃本次。
+    ///
+    /// v1.0.148 的 20s 是「一刀切」：既保护了重建时机，也把窗口回来的时间钉死在 20s。
+    /// 拆开成两档后：正常情况 12s 回来，风险情况（音频不健康）自动退到 20s 兜底。
+    /// 门禁不变 —— 绝不在「已停播」状态下去注册窗口（v1.0.146/147 的教训）。
+    private func scheduleSelfGuardReshow(attempt: Int) {
+        let delays = FloatingLyricsManager.selfGuardReshowDelays
+        guard attempt < delays.count else { return }
+        let previous = attempt == 0 ? 0 : delays[attempt - 1]
+        let interval = delays[attempt] - previous
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             guard !self.suppressedInApp, ConfigStore.shared.isFloatingLyricsOn else { return }
-            // v1.0.148：两重收紧 —— v1.0.146/147 两次现场都是「重建日志之后心跳全断」：
-            //  ① 延迟 8s → 20s：避开亮屏后 mediaserverd 的音频仲裁窗口；
-            //  ② 音频管线不健康时直接放弃这次重建，绝不在「已停播」状态下去注册窗口。
             guard PlayerManager.shared.isPlaybackHealthy else {
-                Logger.persist("熄屏自保：音频管线未在播，跳过本次后台重建（规避注册窗口风险）")
+                if attempt + 1 < delays.count {
+                    Logger.persist("熄屏自保：音频管线未在播，第 \(attempt + 1) 档跳过，推迟到 \(Int(delays[attempt + 1]))s")
+                    self.scheduleSelfGuardReshow(attempt: attempt + 1)
+                } else {
+                    Logger.persist("熄屏自保：音频管线未在播，跳过本次后台重建（规避注册窗口风险）")
+                }
                 return
             }
             self.show()
-            Logger.persist("熄屏自保：已延迟重建悬浮窗（亮屏后 20s）")
+            Logger.persist("熄屏自保：阶梯重建完成（亮屏后 \(Int(delays[attempt]))s，音频健康）")
             // 重建后 6s 存活确认 —— 下次日志能直接区分「重建即死」与「别的原因」
             DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
                 Logger.persist("熄屏自保：重建后 6s 存活确认（音频健康=\(PlayerManager.shared.isPlaybackHealthy)）")
             }
         }
         selfGuardReshowWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20.0, execute: work)
-        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，20s 后自动重建")
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: work)
     }
 
     /// 离开 App（切其他应用 / 回桌面 / 锁屏）：恢复悬浮窗
@@ -153,7 +172,22 @@ final class FloatingLyricsManager: NSObject {
             Logger.info("离开 App：预览窗口重建为系统级窗口（不做同窗重注册）")
             teardownWindow()
             show()
+            return
         }
+        // v1.0.155：窗口缺失时补建。App 内窗口通常是「拆除态」（前台闸门拒绝显示、
+        // 播放页抑制、熄屏自保拆窗后还没到重建档位），此时切到桌面 / 锁屏，桌面上会一直
+        // 没有悬浮窗，直到某次换歌触发 hardRefresh 才「突然冒出来」
+        //（用户现象：熄屏点亮之后悬浮窗不见了）。
+        // 只在真正进入后台（.background）时补建 —— .inactive 会命中「下拉通知中心」这类
+        // 瞬时失焦，那种时刻不该凭空造一条系统级窗口出来。
+        // ⚠️ 这里【不】加音频健康门禁：门禁是为「亮屏仲裁窗口内不注册窗口」设的
+        //（见 scheduleSelfGuardReshow），而「离开 App」是既有的常态建窗路径
+        //（上面两个分支也都没有门禁）—— 暂停状态下切桌面同样要能看到窗口才能点恢复。
+        guard ConfigStore.shared.isFloatingLyricsOn,
+              UIApplication.shared.applicationState == .background,
+              floatingWindow == nil else { return }
+        Logger.info("离开 App：窗口缺失，补建系统级悬浮窗")
+        show()
     }
 
     /// v1.0.153：播放页（overFullScreen 模态）弹出 —— 该页面覆盖全屏，悬浮窗不应出现在其上。
@@ -284,6 +318,10 @@ final class FloatingLyricsManager: NSObject {
         // contextId 要等下一个 runloop 才生成，注册带重试
         registerHostingWithRetry()
         refreshSpectrumState()
+        // v1.0.155：新窗口的频谱基准必须作废重捕。旧基准属于上一条已销毁的窗口，
+        // 首帧按它写回几何就会出现日志里那条「悬浮窗高度异常：140pt 超出规范 97pt」
+        //（自愈虽在 50ms 内兜住，但会造成重建后一帧的高度抖动）。
+        refreshSpectrumBase()
     }
 
     func hide() {

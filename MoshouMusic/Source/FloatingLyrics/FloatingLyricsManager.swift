@@ -57,6 +57,8 @@ final class FloatingLyricsManager: NSObject {
     private var suppressedInApp = false
     /// v1.0.123：悬浮设置页打开期间临时显示（预览模式，其他页面仍隐藏）
     private var settingsPreviewActive = false
+    /// v1.0.153：播放页（覆盖全屏模态）打开期间强制隐藏
+    private var suppressedByPlayerPage = false
 
     /// 回前台：销毁系统级窗口（App 内不显示悬浮）
     /// v1.0.123：悬浮设置页打开期间保持显示（实时预览调参效果），不销毁
@@ -154,6 +156,26 @@ final class FloatingLyricsManager: NSObject {
         }
     }
 
+    /// v1.0.153：播放页（overFullScreen 模态）弹出 —— 该页面覆盖全屏，悬浮窗不应出现在其上。
+    /// 与其他 App 内页面走同一条路：拆窗隐藏（不是就地置 hidden）。
+    /// 若此刻正处于「悬浮设置页预览」态，也先拆掉，返回设置页时由 restoreAfterPlayerPage 重建。
+    func suppressForPlayerPage() {
+        suppressedByPlayerPage = true
+        hardRefreshWorkItem?.cancel()
+        pulseWorkItem?.cancel()
+        teardownWindow()
+    }
+
+    /// v1.0.153：离开播放页 —— 只有「悬浮设置页预览态」需要把窗口重建回来；
+    /// 普通播放路径下 App 仍在前台，窗口本就该隐藏（见 show() 的前台闸门）。
+    func restoreAfterPlayerPage() {
+        guard suppressedByPlayerPage else { return }
+        suppressedByPlayerPage = false
+        guard settingsPreviewActive, ConfigStore.shared.isFloatingLyricsOn else { return }
+        Logger.info("播放页关闭：恢复悬浮设置页预览窗口")
+        show()
+    }
+
     /// 拆除系统级窗口（unregister + 释放，不重建）
     private func teardownWindow() {
         if let window = floatingWindow {
@@ -193,6 +215,15 @@ final class FloatingLyricsManager: NSObject {
 
     func show() {
         guard !suppressedInApp else { return }
+        // 🚨 v1.0.153：App 前台且不在悬浮设置页预览态时，系统级窗口一律不得出现在屏幕上。
+        // 此前只靠 suppressedInApp 这一份缓存标记，任何漏设/漏清的路径（如播放页这类
+        // 全屏模态、scene 回调时序抖动）都会让悬浮窗浮在某个 App 内页面上。这里改成
+        // 实时判定，把「App 内不显示」这条不变量钉死在唯一入口上：
+        // 离开 App（applicationState != .active）才放行，锁屏/桌面/其他应用依然正常显示。
+        if UIApplication.shared.applicationState == .active, !settingsPreviewActive {
+            Logger.info("悬浮歌词：App 前台非预览态，拒绝显示系统级窗口")
+            return
+        }
         if let window = floatingWindow {
             window.isHidden = false
             applySettings()

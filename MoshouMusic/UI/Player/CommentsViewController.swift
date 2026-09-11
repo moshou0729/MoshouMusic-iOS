@@ -18,7 +18,13 @@ final class CommentsViewController: UIViewController {
     private let headerView = UIView()
     private let headerTitle = UILabel()
     private let headerSub = UILabel()
+    private let headerChip = CmtBadgeLabel()      // v1.0.153：评论来源徽章
+    private let headerMeta = UILabel()
+    private let headerMatch = UILabel()
+    private let sourceInfoButton = UIButton(type: .system)
     private let footerSpinner = UIActivityIndicatorView(style: .medium)
+    /// v1.0.153：最近一次评论来源信息（「来源说明」弹窗用）
+    private var lastFeed: CommentFeed?
 
     // 状态块（加载中 / 空 / 失败）
     private let statusStack = UIStackView()
@@ -48,7 +54,7 @@ final class CommentsViewController: UIViewController {
     // MARK: - UI
 
     private func setupUI() {
-        // ---- 歌曲信息头卡 ----
+        // ---- 歌曲信息头卡（v1.0.153：加评论来源徽章 / 条数 / 同名匹配说明 / 来源说明入口）----
         headerView.backgroundColor = .clear
         let headCard = UIView()
         headCard.translatesAutoresizingMaskIntoConstraints = false
@@ -77,8 +83,44 @@ final class CommentsViewController: UIViewController {
         headerSub.lineBreakMode = .byTruncatingTail
         headerSub.text = song.singer
 
+        // 评论来源徽章（先说清「这些评论来自哪个平台」）
+        headerChip.font = UIFont.systemFont(ofSize: 10, weight: .semibold)
+        headerChip.insets = UIEdgeInsets(top: 3, left: 8, bottom: 3, right: 8)
+        headerChip.layer.cornerRadius = 5
+        headerChip.clipsToBounds = true
+        headerChip.textColor = Theme.primaryDark
+        headerChip.backgroundColor = Theme.primaryContainer
+        headerChip.text = "评论来源"
+        headerChip.isHidden = true
+
+        headerMeta.font = UIFont.systemFont(ofSize: 12)
+        headerMeta.textColor = Theme.subtext
+        headerMeta.numberOfLines = 1
+        headerMeta.text = "加载中…"
+
+        let metaRow = UIStackView(arrangedSubviews: [headerChip, headerMeta])
+        metaRow.axis = .horizontal
+        metaRow.spacing = 6
+        metaRow.alignment = .center
+        metaRow.translatesAutoresizingMaskIntoConstraints = false
+
+        headerMatch.font = UIFont.systemFont(ofSize: 11)
+        headerMatch.textColor = Theme.subtext
+        headerMatch.numberOfLines = 1
+        headerMatch.lineBreakMode = .byTruncatingTail
+        headerMatch.text = ""
+        headerMatch.translatesAutoresizingMaskIntoConstraints = false
+
+        sourceInfoButton.setImage(UIImage(systemName: "info.circle"), for: .normal)
+        sourceInfoButton.tintColor = Theme.border
+        sourceInfoButton.addTarget(self, action: #selector(sourceInfoTapped), for: .touchUpInside)
+        sourceInfoButton.translatesAutoresizingMaskIntoConstraints = false
+
         headCard.addSubview(headerTitle)
         headCard.addSubview(headerSub)
+        headCard.addSubview(metaRow)
+        headCard.addSubview(headerMatch)
+        headCard.addSubview(sourceInfoButton)
         headerTitle.translatesAutoresizingMaskIntoConstraints = false
         headerSub.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -88,19 +130,33 @@ final class CommentsViewController: UIViewController {
             headCard.bottomAnchor.constraint(equalTo: headerView.bottomAnchor, constant: -6),
 
             accent.leadingAnchor.constraint(equalTo: headCard.leadingAnchor, constant: 14),
-            accent.centerYAnchor.constraint(equalTo: headCard.centerYAnchor),
+            accent.topAnchor.constraint(equalTo: headCard.topAnchor, constant: 15),
             accent.widthAnchor.constraint(equalToConstant: 4),
             accent.heightAnchor.constraint(equalToConstant: 30),
 
+            sourceInfoButton.trailingAnchor.constraint(equalTo: headCard.trailingAnchor, constant: -12),
+            sourceInfoButton.centerYAnchor.constraint(equalTo: headerTitle.centerYAnchor),
+            sourceInfoButton.widthAnchor.constraint(equalToConstant: 26),
+            sourceInfoButton.heightAnchor.constraint(equalToConstant: 26),
+
             headerTitle.topAnchor.constraint(equalTo: headCard.topAnchor, constant: 13),
             headerTitle.leadingAnchor.constraint(equalTo: accent.trailingAnchor, constant: 12),
-            headerTitle.trailingAnchor.constraint(equalTo: headCard.trailingAnchor, constant: -14),
+            headerTitle.trailingAnchor.constraint(equalTo: sourceInfoButton.leadingAnchor, constant: -8),
 
-            headerSub.topAnchor.constraint(equalTo: headerTitle.bottomAnchor, constant: 4),
+            headerSub.topAnchor.constraint(equalTo: headerTitle.bottomAnchor, constant: 3),
             headerSub.leadingAnchor.constraint(equalTo: headerTitle.leadingAnchor),
-            headerSub.trailingAnchor.constraint(equalTo: headerTitle.trailingAnchor),
+            headerSub.trailingAnchor.constraint(equalTo: headCard.trailingAnchor, constant: -14),
+
+            metaRow.topAnchor.constraint(equalTo: headerSub.bottomAnchor, constant: 9),
+            metaRow.leadingAnchor.constraint(equalTo: headerTitle.leadingAnchor),
+            metaRow.trailingAnchor.constraint(lessThanOrEqualTo: headCard.trailingAnchor, constant: -14),
+
+            headerMatch.topAnchor.constraint(equalTo: metaRow.bottomAnchor, constant: 6),
+            headerMatch.leadingAnchor.constraint(equalTo: headerTitle.leadingAnchor),
+            headerMatch.trailingAnchor.constraint(equalTo: headCard.trailingAnchor, constant: -14),
+            headerMatch.bottomAnchor.constraint(equalTo: headCard.bottomAnchor, constant: -13),
         ])
-        headerView.frame = CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 72)
+        headerView.frame = CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 128)
 
         // ---- 状态块 ----
         statusIcon.image = UIImage(systemName: "bubble.left.and.bubble.right")
@@ -194,7 +250,8 @@ final class CommentsViewController: UIViewController {
         } else if !reset {
             footerSpinner.startAnimating()
         }
-        CommentService.shared.fetchComments(for: song, offset: nextOffset) { [weak self] result in
+        CommentService.shared.fetchComments(for: song, offset: nextOffset,
+                                            playSourceName: Theme.sourceName(song.source)) { [weak self] result in
             guard let self = self else { return }
             self.loading = false
             self.refreshControl.endRefreshing()
@@ -206,19 +263,20 @@ final class CommentsViewController: UIViewController {
                         ?? "评论加载失败，下拉重试"
                     self.showStatus(text: msg, loading: false, icon: "wifi.exclamationmark")
                     self.tableView.isHidden = true
+                    self.headerMeta.text = "来源不可用"
                 }
-            case .success(let payload):
-                self.total = payload.total
+            case .success(let feed):
+                self.total = feed.total
                 if reset {
-                    self.comments = payload.comments
+                    self.comments = feed.comments
                 } else {
                     // 分页可能重复返回热门评论，按内容去重
                     let seen = Set(self.comments.map { $0.content + $0.nickname })
-                    self.comments += payload.comments.filter { !seen.contains($0.content + $0.nickname) }
+                    self.comments += feed.comments.filter { !seen.contains($0.content + $0.nickname) }
                 }
                 self.nextOffset = self.comments.count
-                self.reachedEnd = self.comments.count >= max(self.total, 1) || payload.comments.isEmpty
-                self.headerSub.text = "\(self.song.singer)  ·  \(self.total) 条评论"
+                self.reachedEnd = self.comments.count >= max(self.total, 1) || feed.comments.isEmpty
+                self.applyFeedHeader(feed)
                 if self.comments.isEmpty {
                     self.showStatus(text: "还没有人评论，来说点什么吧", loading: false, icon: "bubble.left.and.bubble.right")
                     self.tableView.isHidden = true
@@ -229,6 +287,33 @@ final class CommentsViewController: UIViewController {
                 }
             }
         }
+    }
+
+    /// v1.0.153：把「评论到底来自哪里」写在明面上 —— 徽章 = 数据来源、meta = 条数、
+    /// match 行 = 当前播放音源与匹配到的版本（避免用户以为评论串歌了）。
+    private func applyFeedHeader(_ feed: CommentFeed) {
+        lastFeed = feed
+        headerChip.isHidden = false
+        headerChip.text = "\(feed.sourceName)评论"
+        headerMeta.text = feed.total > 0 ? "\(feed.total) 条" : "暂无评论"
+        if feed.isNativeSource {
+            headerMatch.text = "当前歌曲就来自\(feed.sourceName)，评论区直接对应这一首"
+        } else {
+            headerMatch.text = "播放源 \(feed.playSourceName) · 同名匹配 \(feed.sourceName)《\(feed.matchedName)》- \(feed.matchedSinger)"
+        }
+    }
+
+    /// v1.0.153：评论来源说明（直接回答「为什么我在酷狗播却显示网易云的评论」）
+    @objc private func sourceInfoTapped() {
+        var parts: [String] = []
+        parts.append("目前可以直接读取的评论区只有网易云一家：QQ音乐 / 酷狗 / 酷我 / 咪咕的评论接口都要求登录态，公开请求取不到。")
+        parts.append("所以无论你用哪个音源播放，这里展示的都是网易云评论区的内容。")
+        if let feed = lastFeed, !feed.isNativeSource {
+            parts.append("当前播放源：\(feed.playSourceName)；评论匹配到网易云《\(feed.matchedName)》- \(feed.matchedSinger)。匹配不上会直接提示，不会乱配到别的歌。")
+        }
+        let alert = UIAlertController(title: "评论来源说明", message: parts.joined(separator: "\n\n"), preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "知道了", style: .default))
+        present(alert, animated: true)
     }
 }
 

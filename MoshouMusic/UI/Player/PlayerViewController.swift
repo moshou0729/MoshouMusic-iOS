@@ -22,6 +22,7 @@ class PlayerViewController: UIViewController {
     private let sourceLabel = UILabel()
     private let queueButton = UIButton(type: .system)
     private let commentButton = UIButton(type: .system)
+    private let playlistButton = UIButton(type: .system)   // v1.0.153：添加到歌单
     private let controlBar = UIStackView()   // 底部控制栏：等大小、等间距
     private let errorLabel = UILabel()
 
@@ -53,6 +54,18 @@ class PlayerViewController: UIViewController {
             currentArtworkImage = artwork
             artworkImageView.image = artwork
         }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // v1.0.153：播放页覆盖全屏 —— 该页面同样不显示系统级悬浮窗
+        //（与其他 App 内页面一致；离开本页时按需恢复设置页预览）
+        FloatingLyricsManager.shared.suppressForPlayerPage()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        FloatingLyricsManager.shared.restoreAfterPlayerPage()
     }
 
     // MARK: - UI
@@ -165,6 +178,12 @@ class PlayerViewController: UIViewController {
         commentButton.tintColor = .white.withAlphaComponent(0.85)
         commentButton.addTarget(self, action: #selector(commentsTapped), for: .touchUpInside)
 
+        // v1.0.153：添加到歌单入口（顶栏，评论按钮左侧）
+        playlistButton.setImage(UIImage(systemName: "text.badge.plus"), for: .normal)
+        playlistButton.tintColor = .white.withAlphaComponent(0.85)
+        playlistButton.addTarget(self, action: #selector(addToPlaylistTapped), for: .touchUpInside)
+        view.addSubview(playlistButton)
+
         // v1.0.144：评论按钮必须先加入视图层级，否则约束「无公共祖先」直接崩溃
         view.addSubview(commentButton)
 
@@ -199,7 +218,7 @@ class PlayerViewController: UIViewController {
         let allViews: [UIView] = [backgroundView, closeButton, sourceLabel, errorLabel, artworkImageView,
                                    titleLabel, artistLabel, lyricsScrollView, lyricsLabel,
                                    progressSlider, currentTimeLabel, durationLabel,
-                                   controlBar, commentButton]
+                                   controlBar, commentButton, playlistButton]
         allViews.forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
 
         let screenWidth = UIScreen.main.bounds.width
@@ -229,6 +248,12 @@ class PlayerViewController: UIViewController {
             commentButton.trailingAnchor.constraint(equalTo: sourceLabel.leadingAnchor, constant: -10),
             commentButton.widthAnchor.constraint(equalToConstant: 36),
             commentButton.heightAnchor.constraint(equalToConstant: 36),
+
+            // v1.0.153：添加到歌单按钮（评论按钮左侧）
+            playlistButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+            playlistButton.trailingAnchor.constraint(equalTo: commentButton.leadingAnchor, constant: -10),
+            playlistButton.widthAnchor.constraint(equalToConstant: 36),
+            playlistButton.heightAnchor.constraint(equalToConstant: 36),
 
             // 错误提示条
             errorLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 8),
@@ -501,6 +526,18 @@ class PlayerViewController: UIViewController {
     /// 封面快速下滑 = 缩小/关闭播放页
     @objc private func handleSwipeDown() {
         dismiss(animated: true)
+    }
+
+    /// v1.0.153：把当前播放的歌加入已有歌单
+    @objc private func addToPlaylistTapped() {
+        guard let song = PlayerManager.shared.currentSong else { return }
+        let vc = AddToPlaylistViewController(song: song)
+        if #available(iOS 15.0, *) {
+            if let sheet = vc.sheetPresentationController {
+                sheet.detents = [.medium(), .large()]
+            }
+        }
+        present(vc, animated: true)
     }
 
     /// 打开当前播放队列

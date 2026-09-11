@@ -109,6 +109,9 @@ final class AudioEqualizer {
     private var currentContext: TapContext?
     private var currentTapObject: MTAudioProcessingTap?
     private var attachedItemId: Int = 0
+    /// v1.0.144：挂载成功后的回调（PlayerManager 注入 seek —— audioMix 在播放中设置
+    /// 不会自动生效，必须 seek 一次强制音频管线重渲染）
+    var onMounted: (() -> Void)?
 
     /// 频谱条当前电平（主线程 CADisplayLink 读取）
     func currentLevels() -> [Float] {
@@ -136,6 +139,7 @@ final class AudioEqualizer {
     func attachIfNeeded(to item: AVPlayerItem) {
         let cfg = ConfigStore.shared
         guard cfg.eqEnabled || cfg.floatingSpectrumOn else {
+            item.audioMix = nil
             detach()
             return
         }
@@ -185,6 +189,8 @@ final class AudioEqualizer {
         currentContext = ctx
         currentTapObject = tap
         Logger.info("EQ tap 已挂载（track \(track.trackID)，均衡器\(ConfigStore.shared.eqEnabled ? "开" : "关")，频谱\(ConfigStore.shared.floatingSpectrumOn ? "开" : "关")）")
+        // v1.0.144：挂载完成 → seek 强制 audioMix 生效
+        onMounted?()
     }
 
     private func detach() {

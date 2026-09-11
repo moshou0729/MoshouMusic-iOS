@@ -455,7 +455,14 @@ final class FloatingLyricsManager: NSObject {
     // MARK: - v1.0.141 音乐频谱（悬浮窗可视化）
 
     @objc private func artworkLoaded() {
-        lyricsView?.setArtwork(PlayerManager.shared.currentArtwork)
+        // v1.0.144：封面通知可能来自后台线程，UIKit 一律回主线程
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.lyricsView?.setArtwork(PlayerManager.shared.currentArtwork)
+            if self.lyricsView?.isCollapsedState == true {
+                Logger.info("悬浮窗封面已回填")
+            }
+        }
     }
 
     private var spectrumLink: CADisplayLink?

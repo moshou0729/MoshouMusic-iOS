@@ -165,6 +165,9 @@ class PlayerViewController: UIViewController {
         commentButton.tintColor = .white.withAlphaComponent(0.85)
         commentButton.addTarget(self, action: #selector(commentsTapped), for: .touchUpInside)
 
+        // v1.0.144：评论按钮必须先加入视图层级，否则约束「无公共祖先」直接崩溃
+        view.addSubview(commentButton)
+
         // 五个按钮等大小、等间距放进底部控制栏
         let barButtons = [playModeButton, previousButton, playButton, nextButton, queueButton]
         barButtons.forEach {

@@ -1058,6 +1058,8 @@ class PlayerManager: NSObject {
 
         player.replaceCurrentItem(with: item)
         // v1.0.141：均衡器/频谱 tap（异步等音轨就绪后挂载，失败静默透传）
+        // v1.0.144：audioMix 播放中设置不会生效，挂载完成后 seek 强制重渲染
+        AudioEqualizer.shared.onMounted = { [weak self] in self?.applyEqSeek() }
         AudioEqualizer.shared.attachIfNeeded(to: item)
         // v1.0.112：开播前确保会话激活（mediaserverd 重启/中断后 session 可能仍反激活）
         ensureAudioSessionActive()
@@ -1073,6 +1075,24 @@ class PlayerManager: NSObject {
         fetchArtwork()
         notifyStateChanged()
         verifyResumeStarted()
+    }
+
+    // MARK: - v1.0.144 均衡器即时挂载
+
+    /// audioMix 挂载完成后 seek 到当前进度，强制音频管线重渲染（否则播放中挂的 tap 不生效）
+    private func applyEqSeek() {
+        guard observedItem != nil else { return }
+        let t = player.currentTime()
+        player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+        Logger.info("audioMix 已生效（seek 强制重渲染）")
+    }
+
+    /// 均衡器开关切换后立即重新挂载当前音轨（无需切歌）
+    func remountEqualizer() {
+        guard let item = observedItem else { return }
+        AudioEqualizer.shared.onMounted = { [weak self] in self?.applyEqSeek() }
+        AudioEqualizer.shared.attachIfNeeded(to: item)
+        Logger.info("均衡器：重新挂载当前音轨（免切歌生效）")
     }
 
     /// 把音源返回的原始报错转成更易读的中文
@@ -1335,19 +1355,23 @@ class PlayerManager: NSObject {
     private func loadArtwork(from urlString: String) {
         NetworkManager.shared.loadImage(url: urlString) { [weak self] data in
             guard let data = data, let image = UIImage(data: data) else { return }
-            self?.currentArtwork = image
+            // v1.0.144：NetworkManager 回调在后台线程 —— currentArtwork / nowPlayingInfo /
+            // artworkLoaded 通知一律回主线程（后台线程直调 UIKit 会随机闪退）
+            DispatchQueue.main.async {
+                self?.currentArtwork = image
 
-            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(
-                boundsSize: image.size
-            ) { _ in image }
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(
+                    boundsSize: image.size
+                ) { _ in image }
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
-            // 通知 UI 更新封面
-            NotificationCenter.default.post(
-                name: .artworkLoaded,
-                object: image
-            )
+                // 通知 UI 更新封面
+                NotificationCenter.default.post(
+                    name: .artworkLoaded,
+                    object: image
+                )
+            }
         }
     }
 

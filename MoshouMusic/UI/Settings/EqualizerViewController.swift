@@ -56,6 +56,8 @@ final class EqualizerViewController: UIViewController {
             guard let self = self else { return }
             ConfigStore.shared.eqEnabled = self.enableSwitch.isOn
             AudioEqualizer.shared.refreshGains()
+            // v1.0.144：开关切换立即重新挂载当前音轨（原来要切一次歌才生效）
+            PlayerManager.shared.remountEqualizer()
             Logger.info("均衡器开关：\(self.enableSwitch.isOn ? "开" : "关")")
         }, for: .valueChanged)
 

@@ -14,6 +14,8 @@ final class FloatingLyricsView: UIView {
     private var artworkIcon: UIImageView?
     /// 折叠态（视图自身状态，供 setArtwork 判断圆点显隐）
     private(set) var isCollapsedState = false
+    /// v1.0.144：封面缓存 lastArtwork —— artworkIcon 折叠时才惰性创建，创建前先存
+    private var lastArtwork: UIImage?
     /// v1.0.141：底部频谱条（音乐可视化，开关控制可见）
     let spectrumView = SpectrumBarsView()
 
@@ -177,8 +179,10 @@ final class FloatingLyricsView: UIView {
                 ])
                 artworkIcon = iv
             }
-            noteIcon?.isHidden = (artworkIcon?.image != nil)
-            artworkIcon?.isHidden = (artworkIcon?.image == nil)
+            // v1.0.144：封面缓存回填（icon 是折叠时才创建，show() 时的 setArtwork 早于创建）
+            artworkIcon?.image = lastArtwork
+            noteIcon?.isHidden = (lastArtwork != nil)
+            artworkIcon?.isHidden = (lastArtwork == nil)
         } else {
             noteIcon?.isHidden = true
             artworkIcon?.isHidden = true
@@ -188,6 +192,7 @@ final class FloatingLyricsView: UIView {
 
     /// v1.0.141：折叠圆点显示歌曲封面（无封面回退音符）
     func setArtwork(_ image: UIImage?) {
+        lastArtwork = image
         artworkIcon?.image = image
         if isCollapsedState {
             noteIcon?.isHidden = (image != nil)

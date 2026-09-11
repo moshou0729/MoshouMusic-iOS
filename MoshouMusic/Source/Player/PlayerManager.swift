@@ -1092,6 +1092,9 @@ class PlayerManager: NSObject {
         guard let item = observedItem else { return }
         AudioEqualizer.shared.onMounted = { [weak self] in self?.applyEqSeek() }
         AudioEqualizer.shared.attachIfNeeded(to: item)
+        // v1.0.146：关闭路径不会触发 mount 回调（audioMix 被清空），这里也 seek 一次 ——
+        // 实测 audioMix 的增删都要 seek 才真正生效，否则关掉后仍在滤音
+        applyEqSeek()
         Logger.info("均衡器：重新挂载当前音轨（免切歌生效）")
     }
 

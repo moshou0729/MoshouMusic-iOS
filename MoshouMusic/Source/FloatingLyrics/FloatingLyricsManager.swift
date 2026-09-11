@@ -79,6 +79,9 @@ final class FloatingLyricsManager: NSObject {
         settingsPreviewActive = true
         suppressedInApp = false
         guard ConfigStore.shared.isFloatingLyricsOn else { return }
+        // v1.0.158：灭屏「移出可见区」期间切回设置页预览 → 先归位，
+        // 否则预览窗停在屏幕外，用户看到的是「设置页里没有悬浮窗预览」
+        if isParkedOffScreen { unparkWindow() }
         Logger.info("悬浮歌词：设置页打开，临时显示窗口供预览")
         show()
         // v1.0.149：App 内预览走单通道渲染（无 SB 托管 = 无拖动重影）
@@ -111,9 +114,15 @@ final class FloatingLyricsManager: NSObject {
     /// 移出可见区用的位置（只写进 window.frame 这一层显示态，绝不进配置）
     private static let offScreenOrigin = CGPoint(x: -20000, y: -20000)
 
+    /// v1.0.158：灭屏 park 的最长保持时长（秒）—— 亮屏回调万一丢失时的兜底归位
+    private static let wakeParkMaxHoldSeconds: Double = 300
+
     private var isParkedOffScreen = false
     private var parkedOrigin: CGPoint?
     private var parkWork: DispatchWorkItem?
+
+    /// v1.0.158：本次移出可见区是「保持到亮屏」还是「2.5s 后自动归位」
+    private var parkHoldsUntilWake = false
 
     /// v1.0.134 / v1.0.156：熄屏自保 —— 亮屏瞬间的避杀处理。
     ///
@@ -146,7 +155,11 @@ final class FloatingLyricsManager: NSObject {
 
         // displayStatus 分不出亮屏还是灭屏 —— 这里补上这一维
         if FloatingWindowHosting.isScreenBlanked() {
-            Logger.persist("熄屏自保：灭屏回调，保留悬浮窗（屏幕不可见，本轮不拆不建）")
+            // 🚨 v1.0.158：灭屏不能「原地保留」——「保留」= 后台进程持有一条**位于可见区**的
+            // SB 托管窗，正是 v1.0.132 开关实验坐实的「被系统清杀」组合
+            //（用户日志：灭屏回调 5s 后进程被系统强制终止）。
+            // 改为移出可见区并**保持到亮屏**，亮屏回调再归位 —— 锁屏点亮后依旧可见。
+            parkWindowOffScreen(holdUntilWake: true)
             return
         }
 
@@ -157,19 +170,30 @@ final class FloatingLyricsManager: NSObject {
     ///
     /// 🚨 只改 `window.frame`（显示态）。尺寸取配置值、归位取配置里的 origin ——
     /// 绝不把这份临时几何写回配置（v1.0.152 铁律：显示态 ≠ 规范态）。
-    private func parkWindowOffScreen() {
+    private func parkWindowOffScreen(holdUntilWake: Bool = false) {
         guard ConfigStore.shared.isFloatingLyricsOn, !suppressedInApp,
               let window = floatingWindow else { return }
         parkWork?.cancel()
+        parkWork = nil
         if !isParkedOffScreen {
             isParkedOffScreen = true
             parkedOrigin = ConfigStore.shared.floatingOrigin
-            Logger.persist("熄屏自保：亮屏瞬间把悬浮窗移出可见区 \(FloatingLyricsManager.wakeParkSeconds)s（保留窗口与 SB 注册，不拆不重注册）")
+            if holdUntilWake {
+                Logger.persist("熄屏自保：灭屏 —— 悬浮窗移出可见区并保持（亮屏后归位，规避后台可见托管窗被清杀）")
+            } else {
+                Logger.persist("熄屏自保：亮屏瞬间把悬浮窗移出可见区 \(FloatingLyricsManager.wakeParkSeconds)s（保留窗口与 SB 注册，不拆不重注册）")
+            }
         }
         applyOffScreenFrame(to: window)
+        // v1.0.158：灭屏 park 保持到亮屏回调 —— 屏幕黑着归位没有意义，
+        // 只会把窗口重新暴露在「后台 + 可见区」这个高风险组合里。
+        // 兜底：万一亮屏回调丢失（hid.displayStatus 未投递），最迟 wakeParkMaxHoldSeconds
+        // 后仍自动归位，避免窗口永久停在屏幕外。亮屏回调到来时本 work 会被 cancel 掉。
+        parkHoldsUntilWake = holdUntilWake
+        let delay: Double = holdUntilWake ? FloatingLyricsManager.wakeParkMaxHoldSeconds : FloatingLyricsManager.wakeParkSeconds
         let work = DispatchWorkItem { [weak self] in self?.unparkWindow() }
         parkWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + FloatingLyricsManager.wakeParkSeconds, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// 移出可见区用的几何。用**几何变化**而不是 `isHidden` —— 后者已被证实驱动不了
@@ -185,6 +209,7 @@ final class FloatingLyricsManager: NSObject {
     /// 归位：按**配置里的 origin**（规范位置）重建几何，并作废频谱基准
     private func unparkWindow() {
         isParkedOffScreen = false
+        parkHoldsUntilWake = false
         guard let window = floatingWindow else { parkedOrigin = nil; return }
         let origin = parkedOrigin ?? ConfigStore.shared.floatingOrigin
         parkedOrigin = nil
@@ -317,6 +342,7 @@ final class FloatingLyricsManager: NSObject {
         // v1.0.156：拆窗即作废「移出可见区」状态（否则新窗口会被误判为仍在移出期）
         parkWork?.cancel()
         isParkedOffScreen = false
+        parkHoldsUntilWake = false
         parkedOrigin = nil
         purgeOrphanFloatingWindows()
     }
@@ -641,6 +667,12 @@ final class FloatingLyricsManager: NSObject {
 
     private var pulseWorkItem: DispatchWorkItem?
 
+    /// v1.0.158：内容脉冲（几何动画）进行中 —— 期间频谱驱动必须让路。
+    /// 🚨 两者都在写 `window.frame`：频谱每帧把 height 正弦拉伸 0~24pt，
+    /// 脉冲又在其基础上 +24pt，叠加后即冲到 130pt / 144pt
+    ///（用户日志：悬浮窗高度异常：130pt / 144pt 超出规范 97pt，已归位）。
+    private var isPulsing = false
+
     /// v1.0.136：用户手势（拖动/捏合/折叠）进行中 —— 期间禁止脉冲动画。
     /// 🚨 脉冲的 frame 动画会把手势拖到的位置拉回去（=「有时拖不动」），
     /// 表现层与模型层分离即重影（桌面已被 v1.0.135 settlePulse 治好，
@@ -671,6 +703,8 @@ final class FloatingLyricsManager: NSObject {
     /// 动画、模型层已被拖到新位置 = 同一窗口两处影像（重影）。手势开始即取消动画并落定。
     private func settlePulse() {
         pulseWorkItem?.cancel()
+        // v1.0.158：手势打断脉冲 → 必须先解除闸门，否则频谱被永久挡在门外
+        isPulsing = false
         guard let window = floatingWindow else { return }
         window.pulseContentLock = false
         // 终止进行中的 frame 动画（表现层立即吸附到模型值 = 当前拖动位置）
@@ -685,8 +719,13 @@ final class FloatingLyricsManager: NSObject {
     }
 
     private func performPulse(window: FloatingSystemWindow) {
-        guard window === floatingWindow, !isCollapsed, !isUserInteracting else { return }
-        let original = window.frame
+        guard window === floatingWindow, !isCollapsed, !isUserInteracting,
+              !isPulsing, !isParkedOffScreen else { return }
+        // 🚨 v1.0.158：基准取「规范帧」（尺寸 = 配置值），绝不读 window.frame ——
+        // 频谱驱动此刻正把 frame.height 正弦拉伸 0~24pt，抓到的 original 往往就是
+        //「已拉伸值」，再 +24pt 即 130 / 144pt（用户日志里那条高度异常）。
+        let original = spectrumCanonicalFrame(of: window)
+        isPulsing = true
         // v1.0.128：内容锁定脉冲 v2 —— UIWindow 拉伸根视图不走 layoutSubviews
         //（时序上拉伸动画先跑、纠正后到 = v1.0.127 仍可见「下拉再恢复」的根因），
         // 改为在同一个动画事务内反向钉住根视图：窗口扩 24pt 的同时把 root 帧钉回
@@ -704,6 +743,7 @@ final class FloatingLyricsManager: NSObject {
             guard window === self.floatingWindow else {
                 window.pulseContentLock = false
                 root?.frame = pinned
+                self.isPulsing = false
                 return
             }
             UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut], animations: {
@@ -712,6 +752,7 @@ final class FloatingLyricsManager: NSObject {
             }, completion: { _ in
                 window.pulseContentLock = false
                 root?.frame = pinned
+                self.isPulsing = false
                 // 锁定核查：只在异常时留痕（防正常脉冲淹没取证日志）
                 if let r = root, abs(r.frame.size.height - original.height) > 0.5 {
                     Logger.persist("脉冲锁定异常 root=\(Int(r.frame.size.height)) 期望=\(Int(original.height)) winH=\(Int(window.frame.size.height))")
@@ -773,7 +814,7 @@ final class FloatingLyricsManager: NSObject {
 
     @objc private func spectrumTick() {
         guard let window = floatingWindow, !isCollapsed, !isUserInteracting, !suppressedInApp,
-              !isParkedOffScreen,
+              !isParkedOffScreen, !isPulsing,
               PlayerManager.shared.isPlaying else {
             if spectrumBaseFrame != nil { restoreSpectrumGeometry() }
             return

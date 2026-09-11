@@ -163,4 +163,31 @@ static id gHostingController = nil;
     return state != 0;
 }
 
+#pragma mark - v1.0.162 设备锁屏状态
+
+/// 读 SpringBoard 的 com.apple.springboard.lockstate 通知状态（1 = 锁定，0 = 解锁）。
+/// ⚠️ 返回值只用来**单向增强保守性**：调用方仅在它明确报 1 时才采信；
+/// 读不到（-1）或报 0 时一律退回其它信号，绝不因为这里报 0 就认定已解锁
+/// —— 该域在部分系统上可能根本没人 set 过，恒返回 0。
++ (NSInteger)deviceLockState
+{
+    static int lockToken = 0;
+    static BOOL lockTokenFailed = NO;
+    if (lockToken == 0) {
+        if (lockTokenFailed) {
+            return -1;
+        }
+        if (notify_register_check("com.apple.springboard.lockstate", &lockToken) != NOTIFY_STATUS_OK) {
+            lockToken = 0;
+            lockTokenFailed = YES;
+            return -1;
+        }
+    }
+    uint64_t state = 0;
+    if (notify_get_state(lockToken, &state) != NOTIFY_STATUS_OK) {
+        return -1;
+    }
+    return state != 0 ? 1 : 0;
+}
+
 @end

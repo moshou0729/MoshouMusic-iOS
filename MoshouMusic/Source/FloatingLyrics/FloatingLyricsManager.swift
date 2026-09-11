@@ -106,9 +106,19 @@ final class FloatingLyricsManager: NSObject {
     /// 🚨 定时重建已被四轮真机日志判死：真正决定生死的不是「拆窗后过了多久」，
     /// 而是**重建那一刻设备是否仍处于锁定态**。所以参数只描述「解锁之后多久重建」，
     /// floor 仅用于避开点亮瞬间的系统过渡（3s 档正是死在这一点上）。
-    private static let selfGuardFastResume: (floor: Double, afterUnlock: Double) = (5.0, 1.5)
+    private static let selfGuardFastResume: (floor: Double, afterUnlock: Double) = (1.0, 1.5)
     /// 保守档（设置页开关关掉）—— 与历来实测安全的 12/20s 档位体感相当
-    private static let selfGuardSafeResume: (floor: Double, afterUnlock: Double) = (16.0, 6.0)
+    private static let selfGuardSafeResume: (floor: Double, afterUnlock: Double) = (4.0, 6.0)
+
+    /// v1.0.162：兜底判据「全程未观测到锁定」的最短等待（秒）。
+    /// 锁屏后数据保护有 5~10s 的**延迟生效窗口**（实测最长 10.3s），12s 已越过它；
+    /// 若连 SpringBoard 的锁屏位也读不到（lockVal == -1），退到历来安全的 16s。
+    private static let selfGuardIdleFloor: Double = 12.0
+    private static let selfGuardColdFloor: Double = 16.0
+
+    /// v1.0.162：两次拆窗之间的最小间隔（去抖）。displayStatus 同一次状态变化会投递多次
+    /// （实测 0.5s 内两条），不去抖会反复 teardown，把「等解锁」的计时不断往后推。
+    private static let selfGuardTeardownDebounce: Double = 1.5
 
     /// 当前生效档位：开（默认）= 快速档；关 = 保守档。
     private var activeResumeParams: (floor: Double, afterUnlock: Double) {
@@ -165,6 +175,13 @@ final class FloatingLyricsManager: NSObject {
     /// 配套诊断：每次都会起「屏变存活心跳」（持久化）—— 下次用户日志能直接读出
     /// 进程死于屏变后第几秒、当时是否已解锁，这是评判本策略的唯一判据。
     func screenWakeSelfGuardTeardown() {
+        // v1.0.162 去抖：同一次屏幕状态变化会投递多条 displayStatus，重复拆窗只会
+        // 让「等解锁」计时一次次归零（实测 0.5s 内两条）。
+        let now = Date()
+        if now.timeIntervalSince(selfGuardLastTeardownTs) < FloatingLyricsManager.selfGuardTeardownDebounce {
+            return
+        }
+        selfGuardLastTeardownTs = now
         settingsPreviewActive = false
         hardRefreshWorkItem?.cancel()
         pulseWorkItem?.cancel()
@@ -180,6 +197,12 @@ final class FloatingLyricsManager: NSObject {
 
     /// v1.0.161：本轮「等解锁 → 重建」的令牌。每次屏变自增，旧轮询自动作废。
     private var selfGuardReshowToken = 0
+    /// v1.0.162：本次屏变周期内是否**确实观测到设备处于锁定态**。
+    /// 只有「先锁过、再观测到未锁定」才算真解锁 —— 这是绕开
+    /// `isProtectedDataAvailable` 锁屏后 5~10s 延迟生效窗口（假 true）的关键。
+    private var selfGuardSawLocked = false
+    /// v1.0.162：上次拆窗时刻（displayStatus 去抖）
+    private var selfGuardLastTeardownTs = Date.distantPast
     /// v1.0.161：本轮等待解锁的起点（= 屏变时刻）
     private var selfGuardUnlockWaitStart = Date()
     /// v1.0.161：音频未在播时的重建重试次数
@@ -211,7 +234,7 @@ final class FloatingLyricsManager: NSObject {
             guard let self = self else { return }
             self.selfGuardBeatSeq += 1
             let elapsed = Date().timeIntervalSince(self.selfGuardBeatStart)
-            Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)，已解锁=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)）")
+            Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)，已解锁=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)，锁=\(FloatingWindowHosting.deviceLockState())）")
             if self.selfGuardBeatSeq >= 8 {
                 // 活过 12s：这次重建没把自己搞死 → 清掉打点，不计入自动降档
                 ConfigStore.shared.floatingGuardRebuildTs = 0
@@ -315,24 +338,56 @@ final class FloatingLyricsManager: NSObject {
 
     /// 轮询「设备是否已解锁」，解锁后才安排重建；锁定期间**绝不做任何窗口操作**。
     ///
-    /// 判据：`UIApplication.isProtectedDataAvailable`（公开 API，带密码的设备在锁屏期为
-    /// false，解锁立即变 true）。App 已回前台时无条件放行（前台注册窗口永远安全）。
+    /// v1.0.162 定的判据（**不再单信一个信号**）：
+    ///   · 最可信：`applicationState == .active`（回前台 ⇒ 必然已解锁）
+    ///   · 次可信：**先观测到锁定**（`deviceLockState()==1` 或 `!isProtectedDataAvailable`），
+    ///     **再观测到未锁定** —— 「锁定 → 解锁」的翻转才是真解锁
+    ///   · 兜底：全程未观测到锁定，且已越过数据保护的延迟生效窗口（12s / 16s）
+    /// ⚠️ 为什么不能只看 `isProtectedDataAvailable`：它在本机「点亮但未解锁」期间
+    /// 仍返回 true（锁屏后 5~10s 才生效）。v1.0.161 快速档 floor=5.0 正落在这个假
+    /// true 窗口里 → 屏变后 5.2s 误判解锁并重建 → 重建后 3.7s 进程被系统清杀
+    /// （16:37 日志：16:37:43.370 重建 → 16:37:47.038 被强杀）。
     /// ⚠️ 不用 `hasBlankedScreen` 那类 notify 状态位 —— v1.0.159 已被其 latch 语义坑过。
     private func pollDeviceUnlockedThenReshow(token: Int, floor: Double, afterUnlock: Double) {
         guard token == selfGuardReshowToken else { return }
         guard ConfigStore.shared.isFloatingLyricsOn else { return }
         let elapsed = Date().timeIntervalSince(selfGuardUnlockWaitStart)
         let appActive = UIApplication.shared.applicationState == .active
-        let unlocked = appActive || UIApplication.shared.isProtectedDataAvailable
 
-        if unlocked, appActive || elapsed >= floor {
-            let delay = appActive ? 0.4 : afterUnlock
-            Logger.persist("熄屏自保：已确认设备解锁（屏变后 \(String(format: "%.1f", elapsed))s），\(String(format: "%.1f", delay))s 后重建悬浮窗")
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self = self, token == self.selfGuardReshowToken else { return }
-                self.performSelfGuardRebuild(token: token)
-            }
+        // ---- v1.0.162 锁定判定：多信号，取「更保守」的那个 ----
+        // ① SpringBoard 自报锁屏位：1=锁定 / 0=解锁 / -1=读不到。
+        //    只在它明确报「锁定」时采纳（单向增强保守性，绝不被假冒的 0 带偏）。
+        // ② isProtectedDataAvailable：锁屏后有 5~10s 延迟生效窗口，期间报 true 不足为信。
+        // ③ 已回前台 ⇒ 设备必然已解锁。
+        let dataAvailable = UIApplication.shared.isProtectedDataAvailable
+        let lockVal = FloatingWindowHosting.deviceLockState()
+        var locked = !dataAvailable
+        if lockVal == 1 { locked = true }
+        if !appActive, locked { selfGuardSawLocked = true }
+
+        // ① 回前台：无条件放行（前台注册窗口永远安全）
+        if appActive {
+            scheduleRebuildAfterUnlock(token: token, elapsed: elapsed,
+                                       delay: 0.4, reason: "回前台")
             return
+        }
+        // ② 可信解锁：**先确实锁过**，再观测到「未锁定」才动手
+        if selfGuardSawLocked, !locked, elapsed >= floor {
+            scheduleRebuildAfterUnlock(token: token, elapsed: elapsed,
+                                       delay: afterUnlock, reason: "锁定→解锁翻转")
+            return
+        }
+        // ③ 兜底：全程没观测到锁定（设备本来就没锁）。等待时间必须越过数据保护的
+        //    延迟生效窗口 —— 用它排除「点亮但未解锁」的假 true。
+        if !selfGuardSawLocked, !locked {
+            let idleFloor = lockVal == 0
+                ? FloatingLyricsManager.selfGuardIdleFloor
+                : FloatingLyricsManager.selfGuardColdFloor
+            if elapsed >= idleFloor {
+                scheduleRebuildAfterUnlock(token: token, elapsed: elapsed,
+                                           delay: afterUnlock, reason: "全程未锁定兜底")
+                return
+            }
         }
         // 长时间停在锁屏（例：手机放一夜）→ 退化为 5s 一次的慢轮询。
         // 不设「硬放弃」：一旦放弃，用户解锁回桌面后窗口就永远缺失了，
@@ -340,6 +395,15 @@ final class FloatingLyricsManager: NSObject {
         let interval: Double = elapsed < 60 ? 0.8 : 5.0
         DispatchQueue.main.asyncAfter(deadline: .now() + interval) { [weak self] in
             self?.pollDeviceUnlockedThenReshow(token: token, floor: floor, afterUnlock: afterUnlock)
+        }
+    }
+
+    /// 判决通过后的统一出口：记一条带判据的持久化日志，延迟 delay 后真正重建。
+    private func scheduleRebuildAfterUnlock(token: Int, elapsed: Double, delay: Double, reason: String) {
+        Logger.persist("熄屏自保：已确认设备解锁（屏变后 \(String(format: "%.1f", elapsed))s，判据=\(reason)），\(String(format: "%.1f", delay))s 后重建悬浮窗")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, token == self.selfGuardReshowToken else { return }
+            self.performSelfGuardRebuild(token: token)
         }
     }
 
@@ -362,6 +426,8 @@ final class FloatingLyricsManager: NSObject {
             return
         }
         show()
+        // v1.0.162：本轮解锁门控已完成，清掉「曾锁定」标记，下一次屏变重新观测
+        selfGuardSawLocked = false
         Logger.persist("熄屏自保：阶梯重建完成（解锁后重建，音频健康）")
         // 重建后 6s 存活确认 —— 下次日志能直接区分「重建即死」与「别的原因」
         DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {

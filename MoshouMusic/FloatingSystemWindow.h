@@ -45,6 +45,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// 这一维必须从 SpringBoard 的 com.apple.springboard.hasBlankedScreen 通知状态读。
 + (BOOL)isScreenBlanked NS_SWIFT_NAME(isScreenBlanked());
 
+/// v1.0.162：SpringBoard 当前的**锁屏状态**。1 = 已锁定，0 = 已解锁，-1 = 读不到。
+/// 🚨 为什么必须另开这一维：`UIApplication.isProtectedDataAvailable` 在本机
+/// 「屏幕点亮但设备仍锁定」期间**照样返回 true** —— 锁屏后数据保护有 5~10s 的
+/// 延迟生效窗口（实测最长 10.3s），v1.0.161 快速档就栽在这个假 true 上
+/// （5.2s 误判解锁 → 重建 → 3.7s 后进程被系统清杀）。
++ (NSInteger)deviceLockState NS_SWIFT_NAME(deviceLockState());
+
 /// 注销窗口（用户手动关闭悬浮窗时调用）
 + (void)unregisterWindow:(UIWindow *)window NS_SWIFT_NAME(unregister(window:));
 

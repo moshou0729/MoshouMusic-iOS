@@ -24,6 +24,9 @@ final class FloatingLyricsManager: NSObject {
     private var lyricsView: FloatingLyricsView?
 
     private var hostingRegistered = false
+    /// v1.0.149：App 前台预览期间跳过 SpringBoard 托管注册
+    /// （回退开关：改 false 即恢复「App 内也注册」的旧行为，重影会回来但窗口一定可见）
+    private static let skipHostingInAppPreview = true
     private var registerAttempts = 0
     private var lyricsIndex: Int = -1
     private var isLocked = false
@@ -58,7 +61,11 @@ final class FloatingLyricsManager: NSObject {
     /// 回前台：销毁系统级窗口（App 内不显示悬浮）
     /// v1.0.123：悬浮设置页打开期间保持显示（实时预览调参效果），不销毁
     func suppressWhileInApp() {
-        guard !settingsPreviewActive else { return }
+        if settingsPreviewActive {
+            // v1.0.149：预览期间窗口保留在 App 内 —— 顺手摘掉 SB 托管（双通道重影根因）
+            dropHostingForInApp()
+            return
+        }
         suppressedInApp = true
         hardRefreshWorkItem?.cancel()
         pulseWorkItem?.cancel()
@@ -72,6 +79,8 @@ final class FloatingLyricsManager: NSObject {
         guard ConfigStore.shared.isFloatingLyricsOn else { return }
         Logger.info("悬浮歌词：设置页打开，临时显示窗口供预览")
         show()
+        // v1.0.149：App 内预览走单通道渲染（无 SB 托管 = 无拖动重影）
+        dropHostingForInApp()
     }
 
     /// v1.0.123：离开悬浮设置页 —— 恢复 App 内隐藏
@@ -122,10 +131,21 @@ final class FloatingLyricsManager: NSObject {
 
     /// 离开 App（切其他应用 / 回桌面 / 锁屏）：恢复悬浮窗
     func resumeWhenLeavingApp() {
-        guard suppressedInApp, ConfigStore.shared.isFloatingLyricsOn else { return }
-        suppressedInApp = false
-        Logger.info("离开 App：恢复悬浮歌词窗口")
-        show()
+        if suppressedInApp, ConfigStore.shared.isFloatingLyricsOn {
+            suppressedInApp = false
+            Logger.info("离开 App：恢复悬浮歌词窗口")
+            show()
+            return
+        }
+        // v1.0.149：App 内预览期间窗口未注册 SB 托管 → 离开 App 必须补注册，
+        // 否则切到桌面 / 其他应用后悬浮窗不可见（跨应用显示全靠这份注册）。
+        // 只在 App 真正退出活跃态时补 —— 下拉通知中心 / 控制中心只是瞬时失焦，
+        // 避免频繁 unregister/register 抖动（反复重注册会让 SB 移除窗口）。
+        if floatingWindow != nil, !hostingRegistered, ConfigStore.shared.isFloatingLyricsOn,
+           UIApplication.shared.applicationState != .active {
+            Logger.info("离开 App：补注册 SB 托管（此前为 App 内预览模式）")
+            registerHostingWithRetry()
+        }
     }
 
     /// 拆除系统级窗口（unregister + 释放，不重建）
@@ -231,8 +251,30 @@ final class FloatingLyricsManager: NSObject {
 
     // MARK: - 系统级窗口注册（注册成功后绝不再动）
 
+    /// v1.0.149：App 前台（设置页预览）期间摘除 SpringBoard 托管，走单通道渲染。
+    ///
+    /// 🚨 拖动重影根因：窗口 `_isWindowServerHostingManaged = NO`（App 自托管）同时又被
+    /// 注册进 SpringBoard accessibility hosting —— App 在前台时同一条窗口被两条路径绘制：
+    /// ① App 自己的渲染（立即跟手）；② SB 托管合成（惰性滞后）。拖动时两份位置不同步
+    /// = 同一窗口出现两个影像（重影）。桌面 / 其他应用下 App 不渲染，只剩 ② 一条路径，
+    /// 所以「桌面拖动没有重影、App 内拖动有重影」。
+    func dropHostingForInApp() {
+        guard let window = floatingWindow, hostingRegistered else { return }
+        FloatingWindowHosting.unregister(window: window)
+        hostingRegistered = false
+        isGlobalWindowReady = false
+        Logger.info("悬浮歌词：已摘除 SB 托管（App 内单通道渲染，消除拖动重影）")
+    }
+
     private func registerHostingWithRetry(attempt: Int = 0) {
         guard let window = floatingWindow, !hostingRegistered else { return }
+        // v1.0.149：App 前台预览期间不注册 —— 注册即产生双通道（见 dropHostingForInApp）
+        if FloatingLyricsManager.skipHostingInAppPreview,
+           settingsPreviewActive,
+           UIApplication.shared.applicationState == .active {
+            Logger.info("悬浮歌词：App 内预览不注册 SB 托管（消除双通道重影）")
+            return
+        }
         hostingClassAvailable = FloatingWindowHosting.isAvailable()
         registerAttempts = attempt + 1
 
@@ -252,6 +294,10 @@ final class FloatingLyricsManager: NSObject {
 
     /// 设置页展示的一行诊断串
     func diagnosticText() -> String {
+        // v1.0.149：App 内预览期间窗口未注册 SB（单通道渲染，防拖动重影）
+        if settingsPreviewActive {
+            return "状态：App 内预览模式（已摘除 SpringBoard 托管以避免双通道重影），离开 App 后自动注册为系统级窗口。"
+        }
         if isGlobalWindowReady {
             return "状态：已注册系统级窗口(contextId=\(lastContextId))，切到其他应用 / 主屏 / 锁屏后依然显示。"
         }
@@ -313,6 +359,9 @@ final class FloatingLyricsManager: NSObject {
     /// 同时保留 isHidden 快速翻转做双保险。
     func forceRecomposite() {
         guard let window = floatingWindow, !window.isHidden else { return }
+        // v1.0.149：App 内为单通道渲染（SB 托管已摘除），无需几何微扰驱动 SB 重合成；
+        // 旧实现的 isHidden 翻转会让窗口在 App 内闪 0.12s，故直接返回。
+        if !hostingRegistered { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         CATransaction.commit()
@@ -576,6 +625,13 @@ final class FloatingLyricsManager: NSObject {
         // 的位置，且表现/模型层分离造成重影）
         if gesture.state == .began {
             settlePulse()
+            // v1.0.149：① App 内拖动先摘掉 SB 托管（双通道重影根因）；
+            // ② 清频谱基准 —— 否则 spectrumTick 守卫失败分支会把窗口拉回拖动前的位置
+            //    （表现为「刚开始拖动窗口跳一下 / 拖不动」）。
+            refreshSpectrumBase()
+            if UIApplication.shared.applicationState == .active {
+                dropHostingForInApp()
+            }
             isUserInteracting = true
         }
         let translation = gesture.translation(in: nil)
@@ -599,8 +655,14 @@ final class FloatingLyricsManager: NSObject {
             // 后台改用 24pt 底边脉冲（实测可驱动跨应用重合成）；App 内预览态 App 本地
             // 渲染与 SB 托管合成双通道并存，唯有整窗重建能确定清残留。
             if UIApplication.shared.applicationState == .active {
-                Logger.info("拖动结束清理：App内重建窗口清残影")
-                hardRefresh()
+                // v1.0.149：App 内已是单通道渲染（SB 托管已摘除）→ 无残影，不必整窗重建；
+                // 仍在注册态（回退开关 / 异常路径）时保留重建兜底。
+                if hostingRegistered {
+                    Logger.info("拖动结束清理：App内重建窗口清残影")
+                    hardRefresh()
+                } else {
+                    Logger.info("拖动结束清理：App内单通道渲染，免重建")
+                }
             } else {
                 pulseRecomposite()
             }
@@ -660,8 +722,9 @@ final class FloatingLyricsManager: NSObject {
             pinchStartSpan = nil
             refreshSpectrumBase()
             // v1.0.138：与拖动同理，捏合结束清理升级（见 handlePan）
+            // v1.0.149：App 内已单通道渲染 → 无残影，免整窗重建
             if UIApplication.shared.applicationState == .active {
-                hardRefresh()
+                if hostingRegistered { hardRefresh() }
             } else {
                 pulseRecomposite()
             }

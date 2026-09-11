@@ -107,6 +107,19 @@ final class FloatingLyricsManager: NSObject {
     /// 回来；不健康则退回原来的 20s 保守档（最坏情况与 v1.0.148 完全一致）。
     private static let selfGuardReshowDelays: [Double] = [12.0, 20.0]
 
+    /// v1.0.159：**快速档** —— 亮屏后 6s 就尝试重建（让锁屏上尽快看到悬浮窗）。
+    /// 依据：用户日志实测「亮屏回调 → 进程被系统强杀」间隔 **2.05s**，6s 有近 3 倍余量；
+    /// 而 12s 档历来从未被杀，是已验证过的安全上界。两档走同一个避杀动作（拆窗）。
+    private static let selfGuardFastReshowDelays: [Double] = [6.0, 12.0, 20.0]
+
+    /// v1.0.159：当前生效的重建档位 —— 由设置页「锁屏显示悬浮窗」开关选择。
+    /// 开（默认）= 快速档（6s 起步）；关 = 保守档（12s 起步）。
+    private var activeReshowDelays: [Double] {
+        return ConfigStore.shared.isFloatingWakeParkEnabled
+            ? FloatingLyricsManager.selfGuardFastReshowDelays
+            : FloatingLyricsManager.selfGuardReshowDelays
+    }
+
     /// v1.0.156：亮屏瞬间「移出可见区」的时长（秒）。窗口不销毁、SB 注册不中断，
     /// 归位后锁屏 / 桌面立即可见。取 2.5s 覆盖亮屏后 mediaserverd 的音频仲裁窗口。
     private static let wakeParkSeconds: Double = 2.5
@@ -124,7 +137,7 @@ final class FloatingLyricsManager: NSObject {
     /// v1.0.158：本次移出可见区是「保持到亮屏」还是「2.5s 后自动归位」
     private var parkHoldsUntilWake = false
 
-    /// v1.0.134 / v1.0.156：熄屏自保 —— 亮屏瞬间的避杀处理。
+    /// v1.0.134 → 156 → 158 → 159：熄屏自保 —— 亮屏瞬间的避杀处理。
     ///
     /// v1.0.132 开关实验坐实：**亮屏瞬间后台进程带 SB 托管窗 = 被系统清杀 = 停播**，
     /// 所以必须在「亮屏那一刻」把窗口从可见区弄走。
@@ -144,26 +157,29 @@ final class FloatingLyricsManager: NSObject {
         hardRefreshWorkItem?.cancel()
         pulseWorkItem?.cancel()
 
-        // 回退开关：关掉「锁屏显示悬浮窗」即回到 v1.0.155 的旧行为
-        guard ConfigStore.shared.isFloatingWakeParkEnabled else {
-            selfGuardReshowWork?.cancel()
-            teardownWindow()
-            scheduleSelfGuardReshow(attempt: 0)
-            Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，\(Int(FloatingLyricsManager.selfGuardReshowDelays[0]))s 后开始阶梯重建")
-            return
-        }
-
         // displayStatus 分不出亮屏还是灭屏 —— 这里补上这一维
         if FloatingWindowHosting.isScreenBlanked() {
-            // 🚨 v1.0.158：灭屏不能「原地保留」——「保留」= 后台进程持有一条**位于可见区**的
-            // SB 托管窗，正是 v1.0.132 开关实验坐实的「被系统清杀」组合
-            //（用户日志：灭屏回调 5s 后进程被系统强制终止）。
-            // 改为移出可见区并**保持到亮屏**，亮屏回调再归位 —— 锁屏点亮后依旧可见。
+            // ✅ v1.0.159 实测定论：**灭屏这一侧是安全的**。
+            // 用户日志（锁屏后）：后台心跳连续 40s 正常 —— 位置 5s→15s→25s→35s→45s 稳定推进，
+            // 直到 15:23:49 亮屏回调才出事。所以灭屏只需把窗口移出可见区
+            //（消掉「随后亮屏那一瞬窗口闪一下」），窗口与 SB 注册都保留。
             parkWindowOffScreen(holdUntilWake: true)
             return
         }
 
-        parkWindowOffScreen()
+        // 🚨🚨 v1.0.159 根因定论：**亮屏必须「拆除 SB 托管」，移出可见区不够**。
+        // v1.0.158 的 park 只把 window.frame 挪到 (-20000,-20000)，
+        // accessibility window hosting 会话仍在注册表里 ——
+        // 用户日志：亮屏（displayStatus 回调）后 **2.05s 进程即被系统强杀**。
+        // ⇒ SpringBoard 清理的是「后台 App 持有的 hosting 会话」本身，与窗口可不可见无关；
+        //    v1.0.132「亮屏瞬间带 SB 托管窗 = 被清杀」的结论在「移出可见区」之后**依然成立**。
+        // ⇒ 唯一被实测证明能避杀的动作 = unregister（拆窗），也就是 v1.0.134~155 一直在做的事：
+        //    那一版用户从未报告「锁屏点亮后被杀」，问题只是重建要等 12~20s 太久。
+        //    所以保留拆窗，只把重建提前到 activeReshowDelays 第一档。
+        selfGuardReshowWork?.cancel()
+        teardownWindow()
+        scheduleSelfGuardReshow(attempt: 0)
+        Logger.persist("熄屏自保：亮屏瞬间拆除悬浮窗（SB 托管在亮屏时必被清杀），\(Int(activeReshowDelays[0]))s 后开始阶梯重建")
     }
 
     /// v1.0.156：把窗口**临时移出可见区**（不销毁、不重注册）。
@@ -179,7 +195,7 @@ final class FloatingLyricsManager: NSObject {
             isParkedOffScreen = true
             parkedOrigin = ConfigStore.shared.floatingOrigin
             if holdUntilWake {
-                Logger.persist("熄屏自保：灭屏 —— 悬浮窗移出可见区并保持（亮屏后归位，规避后台可见托管窗被清杀）")
+                Logger.persist("熄屏自保：灭屏 —— 悬浮窗移出可见区并保持（屏幕黑着不可见；亮屏时另走拆窗避杀）")
             } else {
                 Logger.persist("熄屏自保：亮屏瞬间把悬浮窗移出可见区 \(FloatingLyricsManager.wakeParkSeconds)s（保留窗口与 SB 注册，不拆不重注册）")
             }
@@ -234,7 +250,7 @@ final class FloatingLyricsManager: NSObject {
     /// 拆开成两档后：正常情况 12s 回来，风险情况（音频不健康）自动退到 20s 兜底。
     /// 门禁不变 —— 绝不在「已停播」状态下去注册窗口（v1.0.146/147 的教训）。
     private func scheduleSelfGuardReshow(attempt: Int) {
-        let delays = FloatingLyricsManager.selfGuardReshowDelays
+        let delays = activeReshowDelays
         guard attempt < delays.count else { return }
         let previous = attempt == 0 ? 0 : delays[attempt - 1]
         let interval = delays[attempt] - previous

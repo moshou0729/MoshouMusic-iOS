@@ -87,13 +87,14 @@ final class FloatingSettingsViewController: UIViewController {
             switchRow.heightAnchor.constraint(equalToConstant: 44),
         ])
 
-        // v1.0.131 熄屏自保开关；v1.0.156 起语义 = 「锁屏显示悬浮窗」；v1.0.159 改为档位选择：
-        // 🚨 亮屏瞬间一律【拆窗】避杀 —— v1.0.158 的「只移出可见区」被实测证伪
-        //（亮屏后 2.05s 进程仍被系统强杀：SB 清理的是 hosting 会话，不是可见窗口）。
-        // 开（默认）= 亮屏后 6s 快速重建（锁屏上尽快可见）；关 = 12/20s 保守档（v1.0.155 行为）。
+        // v1.0.131 熄屏自保开关；v1.0.156 起语义 = 「锁屏显示悬浮窗」；v1.0.160 定为档位选择：
+        // 🚨 屏变（亮/灭）一律【拆窗】避杀 —— v1.0.158「只移出可见区」被实测证伪
+        //（亮屏后 2.05s 进程仍被强杀：SB 清理的是 hosting 会话，不是可见窗口）；
+        // v1.0.159 想只在亮屏侧拆窗，但 hasBlankedScreen 状态位不可信 → 该分支从未执行。
+        // 开（默认）= 屏变后 3s 快速重建（锁屏上尽快可见）；关 = 12/20s 保守档（v1.0.155 行为）。
         let guardRow = UIView()
         let guardTitle = UILabel()
-        guardTitle.text = "锁屏显示悬浮窗（亮屏后 6s 重建；关掉则等 12s）"
+        guardTitle.text = "锁屏显示悬浮窗（屏变后 3s 重建；关掉则等 12s）"
         guardTitle.font = UIFont.systemFont(ofSize: 15, weight: .medium)
         guardTitle.numberOfLines = 2
         guardTitle.textColor = .label
@@ -113,6 +114,11 @@ final class FloatingSettingsViewController: UIViewController {
         ])
         guardSwitch.addAction(UIAction { _ in
             ConfigStore.shared.isFloatingWakeParkEnabled = guardSwitch.isOn
+            if guardSwitch.isOn {
+                // v1.0.160：重新打开 = 用户主动重试快速档 → 清掉自动降档计数与待确认打点
+                ConfigStore.shared.floatingGuardKillStrikes = 0
+                ConfigStore.shared.floatingGuardRebuildTs = 0
+            }
             Logger.info("锁屏显示悬浮窗开关：\(guardSwitch.isOn ? "开" : "关")")
         }, for: .valueChanged)
 

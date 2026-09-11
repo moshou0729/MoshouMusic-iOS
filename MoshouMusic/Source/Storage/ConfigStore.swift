@@ -18,6 +18,8 @@ class ConfigStore {
         static let isFloatingLyricsOn = "isFloatingLyricsOn"
         static let screenWakeSelfGuard = "screenWakeSelfGuard"
         static let floatingWakeParkEnabled = "floatingWakeParkEnabled"
+        static let floatingGuardRebuildTs = "floatingGuardRebuildTs"
+        static let floatingGuardKillStrikes = "floatingGuardKillStrikes"
         static let floatingOpacity = "floatingOpacity"
         static let floatingWidth = "floatingWidth"
         static let floatingHeight = "floatingHeight"
@@ -258,11 +260,11 @@ class ConfigStore {
         set { defaults.set(newValue, forKey: Keys.screenWakeSelfGuard) }
     }
 
-    /// v1.0.156：亮屏自保模式。
-    /// - true（默认）：亮屏瞬间把悬浮窗「临时移出可见区」2.5s —— 不拆窗、不重注册
-    ///   （守住「一条窗口只注册一次」铁律），归位后锁屏 / 桌面立即可见。
-    /// - false：回到 v1.0.155 的旧行为「亮屏销毁悬浮窗 + 12/20s 阶梯重建」
-    ///   —— 点亮屏幕后十几秒内看不到窗口，锁屏上基本不可见。
+    /// v1.0.156 → 160：熄屏自保的「重建档位」选择（设置页开关）。
+    /// - true（默认）：**快速档** —— 屏变（亮/灭）后 3s 起重建，锁屏点亮后很快能看到悬浮窗。
+    /// - false：**保守档** —— 屏变后 12/20s 才重建（v1.0.155 行为，历来无被杀记录，
+    ///   代价是点亮屏幕后十几秒内看不到窗口）。
+    /// 两档的避杀动作完全一样（一律拆窗）；差别只在重建有多急。
     /// 缺省（未写过）视为 true；关掉即用户侧的零构建回退开关。
     var isFloatingWakeParkEnabled: Bool {
         get {
@@ -270,6 +272,20 @@ class ConfigStore {
             return defaults.bool(forKey: Keys.floatingWakeParkEnabled)
         }
         set { defaults.set(newValue, forKey: Keys.floatingWakeParkEnabled) }
+    }
+
+    /// v1.0.160：屏变重建的「存活待确认」打点（timeIntervalSince1970；0 = 无待确认）。
+    /// 重建时写入，活过 12s 由心跳清零；若进程在那之前被杀，下次启动读到本打点
+    /// ⇒ 自动降档计数 +1（见 AppDelegate.autoDegradeGuardTierIfNeeded）。
+    var floatingGuardRebuildTs: Double {
+        get { defaults.double(forKey: Keys.floatingGuardRebuildTs) }
+        set { defaults.set(newValue, forKey: Keys.floatingGuardRebuildTs) }
+    }
+
+    /// v1.0.160：连续「屏变重建后被系统强杀」计数；达阈值自动降回保守档。
+    var floatingGuardKillStrikes: Int {
+        get { defaults.integer(forKey: Keys.floatingGuardKillStrikes) }
+        set { defaults.set(newValue, forKey: Keys.floatingGuardKillStrikes) }
     }
 
     var floatingOpacity: Float {

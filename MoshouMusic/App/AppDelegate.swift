@@ -19,6 +19,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: "moshou_session_alive") {
             Logger.persist("⚠️ 检测到上次会话未正常收尾（无崩溃记录）→ 进程曾被系统强制终止")
+            autoDegradeGuardTierIfNeeded()
             // v1.0.140：被杀续播 —— 用户重新打开 App 时自动接续上一首（快照进度）。
             // 延后 2.5s 等音频会话二次配置与 LX 音源脚本就绪。
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
@@ -61,6 +62,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         scanSystemReports()
 
         return true
+    }
+
+    /// v1.0.160：熄屏自保档位的自动降档保护。
+    ///
+    /// 若上次进程死在「屏变重建之后、存活确认（12s 心跳）之前」，说明当前快速档
+    ///（3s/6s 重建）在避杀上不够 —— 累计 2 次就自动降回保守档（12/20s），
+    /// 免得用户每次锁屏都白搭一次「进程被杀 = 停播」。
+    /// 用户可在悬浮设置页把开关重新打开（会清零计数）来再次尝试快速档。
+    private func autoDegradeGuardTierIfNeeded() {
+        let pending = ConfigStore.shared.floatingGuardRebuildTs
+        guard pending > 0 else { return }
+        ConfigStore.shared.floatingGuardRebuildTs = 0
+        let strikes = ConfigStore.shared.floatingGuardKillStrikes + 1
+        ConfigStore.shared.floatingGuardKillStrikes = strikes
+        Logger.persist("防护降档计数：重建后未活到 12s 即被强杀（第 \(strikes) 次）")
+        if strikes >= 2, ConfigStore.shared.isFloatingWakeParkEnabled {
+            ConfigStore.shared.isFloatingWakeParkEnabled = false
+            ConfigStore.shared.floatingGuardKillStrikes = 0
+            Logger.persist("⚠️ 连续两次重建后被强杀 —— 自动降回保守档（屏变后 12s 重建）；如需重试请在悬浮设置页重新打开「锁屏显示悬浮窗」")
+        }
     }
 
     // MARK: - UISceneSession Lifecycle

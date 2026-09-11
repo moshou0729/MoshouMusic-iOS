@@ -107,10 +107,12 @@ final class FloatingLyricsManager: NSObject {
     /// 回来；不健康则退回原来的 20s 保守档（最坏情况与 v1.0.148 完全一致）。
     private static let selfGuardReshowDelays: [Double] = [12.0, 20.0]
 
-    /// v1.0.159：**快速档** —— 亮屏后 6s 就尝试重建（让锁屏上尽快看到悬浮窗）。
-    /// 依据：用户日志实测「亮屏回调 → 进程被系统强杀」间隔 **2.05s**，6s 有近 3 倍余量；
-    /// 而 12s 档历来从未被杀，是已验证过的安全上界。两档走同一个避杀动作（拆窗）。
-    private static let selfGuardFastReshowDelays: [Double] = [6.0, 12.0, 20.0]
+    /// v1.0.160：**快速档** —— 屏变后 3s 就尝试重建（让锁屏上尽快看到悬浮窗）。
+    /// 档位 = [3, 6, 20]：3s 先探（用户停在锁屏界面的时间通常只有几秒），
+    /// 音频不健康就退 6s，仍不行退 20s 兜底。
+    /// ⚠️ 本档的收益与风险都必须由真机日志来判（见「屏变存活心跳」）：
+    /// 连续 2 次「重建后进程被系统强杀」→ AppDelegate 自动降回保守档。
+    private static let selfGuardFastReshowDelays: [Double] = [3.0, 6.0, 20.0]
 
     /// v1.0.159：当前生效的重建档位 —— 由设置页「锁屏显示悬浮窗」开关选择。
     /// 开（默认）= 快速档（6s 起步）；关 = 保守档（12s 起步）。
@@ -137,52 +139,90 @@ final class FloatingLyricsManager: NSObject {
     /// v1.0.158：本次移出可见区是「保持到亮屏」还是「2.5s 后自动归位」
     private var parkHoldsUntilWake = false
 
-    /// v1.0.134 → 156 → 158 → 159：熄屏自保 —— 亮屏瞬间的避杀处理。
+    /// v1.0.134 → 156 → 158 → 159 → 160：熄屏自保 —— 屏幕状态变化的避杀处理。
     ///
-    /// v1.0.132 开关实验坐实：**亮屏瞬间后台进程带 SB 托管窗 = 被系统清杀 = 停播**，
-    /// 所以必须在「亮屏那一刻」把窗口从可见区弄走。
-    /// v1.0.134~155 的做法是**整条拆掉**（unregister + 销毁），代价是窗口连同 SB 注册
-    /// 一起消失，12~20s 后才重建 —— 而锁屏点亮屏幕的那一刻正是这个回调点，于是
-    /// **锁屏上基本永远看不到悬浮窗**（用户现象：熄屏点亮之后悬浮窗不见了）。
+    /// 三轮真机日志（15:09 / 15:23 / 15:40）里唯一站得住的结论：
+    /// **后台进程持有 SB 托管窗（accessibility window hosting 会话）跨越「灭屏 → 亮屏」，
+    /// 进程必被系统强杀（停播）**。而「把窗口移出可见区」**不能避杀** ——
+    /// SB 清理的是注册表里的 hosting 会话本身，与窗口画在哪个坐标无关
+    ///（v1.0.158 实测：park 到 (-20000,-20000) 后，亮屏回调后 2.05s 进程照死不误）。
+    /// 唯一被实测证明有效的避杀动作 = **拆窗（unregister + 销毁）**，
+    /// 也就是 v1.0.134~155 一直在做的事（那一版用户从未报告亮屏被杀），
+    /// 它唯一的缺点是重建要等 12~20s —— 锁屏上自然看不到窗口。
     ///
-    /// v1.0.156 改成二段式判定：
-    /// - **灭屏回调**（hasBlankedScreen=1）：什么都不做 —— 屏幕黑着，窗口留着本来就不可见，
-    ///   拆了还得重建（顺带消掉「每次屏幕状态变化都触发一次拆/建循环」）；
-    /// - **亮屏回调**（hasBlankedScreen=0）：**不拆窗、不重注册**，只把窗口临时移出可见区
-    ///   2.5s 再原位移回 —— 锁屏上 2.5s 即见。
+    /// 🚨 v1.0.159 复盘：那一版想在「亮屏」一侧拆窗、灭屏一侧只 park，于是用
+    /// `com.apple.springboard.hasBlankedScreen` 的 notify 状态区分亮/灭。
+    /// 但 15:40 日志里**两条 displayStatus 回调都走了灭屏分支** ——
+    /// 「熄屏自保：亮屏瞬间拆除悬浮窗」这句一次都没出现 ⇒ 亮屏拆窗分支从未执行
+    /// ⇒ 窗口与 hosting 会话跨越了锁屏 ⇒ 进程 3.3s 后又被强杀。
+    /// 根因：notify state 只有 latch 语义，SpringBoard 未必把它复位成 0，
+    /// 该状态位在这台机器上**不可信**。
     ///
-    /// 归位时若音频管线已不健康，兜底退回旧的「拆窗 + 阶梯重建」。
+    /// ⇒ 本版定稿：**不再尝试区分亮/灭**。任何一次 displayStatus 回调都当作
+    /// 「屏幕状态变了」，一律立刻拆窗，再按 activeReshowDelays 档位重建。
+    /// 灭屏一侧拆窗代价为零（屏幕黑着本来就看不见），却把「会话跨越锁屏」彻底堵死。
+    /// 配套诊断：每次都会起「屏变存活心跳」（持久化）—— 下次用户日志能直接读出
+    /// 进程死于屏变后第几秒，这是评判「拆窗 + 重建」档位是否够快、够安全的唯一判据。
     func screenWakeSelfGuardTeardown() {
         settingsPreviewActive = false
         hardRefreshWorkItem?.cancel()
         pulseWorkItem?.cancel()
-
-        // displayStatus 分不出亮屏还是灭屏 —— 这里补上这一维
-        if FloatingWindowHosting.isScreenBlanked() {
-            // ✅ v1.0.159 实测定论：**灭屏这一侧是安全的**。
-            // 用户日志（锁屏后）：后台心跳连续 40s 正常 —— 位置 5s→15s→25s→35s→45s 稳定推进，
-            // 直到 15:23:49 亮屏回调才出事。所以灭屏只需把窗口移出可见区
-            //（消掉「随后亮屏那一瞬窗口闪一下」），窗口与 SB 注册都保留。
-            parkWindowOffScreen(holdUntilWake: true)
-            return
-        }
-
-        // 🚨🚨 v1.0.159 根因定论：**亮屏必须「拆除 SB 托管」，移出可见区不够**。
-        // v1.0.158 的 park 只把 window.frame 挪到 (-20000,-20000)，
-        // accessibility window hosting 会话仍在注册表里 ——
-        // 用户日志：亮屏（displayStatus 回调）后 **2.05s 进程即被系统强杀**。
-        // ⇒ SpringBoard 清理的是「后台 App 持有的 hosting 会话」本身，与窗口可不可见无关；
-        //    v1.0.132「亮屏瞬间带 SB 托管窗 = 被清杀」的结论在「移出可见区」之后**依然成立**。
-        // ⇒ 唯一被实测证明能避杀的动作 = unregister（拆窗），也就是 v1.0.134~155 一直在做的事：
-        //    那一版用户从未报告「锁屏点亮后被杀」，问题只是重建要等 12~20s 太久。
-        //    所以保留拆窗，只把重建提前到 activeReshowDelays 第一档。
         selfGuardReshowWork?.cancel()
+
         teardownWindow()
         scheduleSelfGuardReshow(attempt: 0)
-        Logger.persist("熄屏自保：亮屏瞬间拆除悬浮窗（SB 托管在亮屏时必被清杀），\(Int(activeReshowDelays[0]))s 后开始阶梯重建")
+        Logger.persist("熄屏自保：屏幕状态变化 —— 已拆窗避杀（不区分亮/灭），\(Int(activeReshowDelays[0]))s 后开始阶梯重建")
+        startScreenChangeLivenessBeat()
     }
 
-    /// v1.0.156：把窗口**临时移出可见区**（不销毁、不重注册）。
+    // MARK: - v1.0.160 屏变存活心跳（诊断）
+
+    private var selfGuardBeatWork: DispatchWorkItem?
+    private var selfGuardBeatSeq = 0
+    private var selfGuardBeatStart = Date()
+
+    /// 屏变后每 1.5s 记一条**持久化**日志（跨进程保留），共 16 条 ≈ 24s。
+    ///
+    /// 为什么必须加：三轮日志都只能看到「新进程启动时才发现上次被强杀」，
+    /// **死亡时刻完全不可知** —— 到底是死在锁屏那一刻、还是死在亮屏那一刻，
+    /// 这是评判「拆窗 + 重建」策略的唯一判据。有了心跳链，下次日志里
+    /// **最后一条心跳的秒数 = 死亡时刻的上界**（心跳断在哪里，就在哪里死的）。
+    private func startScreenChangeLivenessBeat() {
+        stopScreenChangeLivenessBeat()
+        selfGuardBeatSeq = 0
+        selfGuardBeatStart = Date()
+        // 打点：本次重建的「存活待确认」。活过 12s 会被清掉；
+        // 若进程在那之前被系统强杀，下次启动读到本打点 → 自动降档计数 +1（见 AppDelegate）
+        ConfigStore.shared.floatingGuardRebuildTs = Date().timeIntervalSince1970
+        scheduleScreenChangeBeat()
+    }
+
+    private func scheduleScreenChangeBeat() {
+        guard selfGuardBeatSeq < 16 else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.selfGuardBeatSeq += 1
+            let elapsed = Date().timeIntervalSince(self.selfGuardBeatStart)
+            Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)）")
+            if self.selfGuardBeatSeq >= 8 {
+                // 活过 12s：这次重建没把自己搞死 → 清掉打点，不计入自动降档
+                ConfigStore.shared.floatingGuardRebuildTs = 0
+            }
+            self.scheduleScreenChangeBeat()
+        }
+        selfGuardBeatWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
+    private func stopScreenChangeLivenessBeat() {
+        selfGuardBeatWork?.cancel()
+        selfGuardBeatWork = nil
+    }
+
+    /// v1.0.156（v1.0.160 起闲置）：把窗口**临时移出可见区**（不销毁、不重注册）。
+    ///
+    /// ⚠️ v1.0.160 起熄屏自保改为「一律拆窗」，本函数不再被调用（park 已被实测证伪 →
+    /// 会话仍在注册表里 → 亮屏照样被杀）。保留作为回退手段与几何辅助。
     ///
     /// 🚨 只改 `window.frame`（显示态）。尺寸取配置值、归位取配置里的 origin ——
     /// 绝不把这份临时几何写回配置（v1.0.152 铁律：显示态 ≠ 规范态）。

@@ -150,16 +150,39 @@ final class FloatingLyricsManager: NSObject {
 
     /// 拆除系统级窗口（unregister + 释放，不重建）
     private func teardownWindow() {
-        if let window = floatingWindow, hostingRegistered {
-            FloatingWindowHosting.unregister(window: window)
-            hostingRegistered = false
-            isGlobalWindowReady = false
-            lastContextId = 0
+        if let window = floatingWindow {
+            if hostingRegistered {
+                FloatingWindowHosting.unregister(window: window)
+                hostingRegistered = false
+                isGlobalWindowReady = false
+                lastContextId = 0
+            }
+            // 🚨 v1.0.150：隐藏必须【无条件】执行。v1.0.149 起 App 内会主动摘除 SB 托管
+            // （hostingRegistered=false），旧写法把 isHidden 塞在 if 里 → 销毁时窗口没被隐藏，
+            // 而 windowScene 会强持有这条 UIWindow → 残留一个「文字不更新、拖不动」的幽灵悬浮窗
+            //（floatingWindow 已置 nil：歌词不回填、handlePan 的 guard 直接 return）。
             window.isHidden = true
         }
         floatingWindow = nil
         lyricsView = nil
         registerAttempts = 0
+        purgeOrphanFloatingWindows()
+    }
+
+    /// v1.0.150：清理孤儿悬浮窗 —— 引用已丢失、但仍挂在 windowScene 上的
+    /// FloatingSystemWindow（v1.0.149 的 teardown 分支缺陷会留下这种窗口）。
+    /// windowScene 会强持有 isHidden=false 的窗口，只置 nil 引用是清不掉的。
+    private func purgeOrphanFloatingWindows() {
+        let orphans = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .filter { $0 is FloatingSystemWindow && $0 !== floatingWindow }
+        guard !orphans.isEmpty else { return }
+        Logger.persist("清理孤儿悬浮窗 \(orphans.count) 个（引用已丢失但仍挂在 scene 上）")
+        for w in orphans {
+            w.isHidden = true
+            w.windowScene = nil
+        }
     }
 
     func show() {
@@ -231,6 +254,8 @@ final class FloatingLyricsManager: NSObject {
         }
         floatingWindow?.isHidden = true
         registerAttempts = 0
+        // v1.0.150：顺带清一次孤儿（见 purgeOrphanFloatingWindows）
+        purgeOrphanFloatingWindows()
     }
 
     func toggle() {
@@ -321,6 +346,9 @@ final class FloatingLyricsManager: NSObject {
         if !isLocked {
             view.backgroundColor = configuredBgColor()
         }
+        // v1.0.150：尺寸变了必须重捕获频谱基准 —— 否则 spectrumTick 仍按旧基准逐帧写回
+        // 「旧高度 + 0~24pt 脉冲」，表现为「改完高度自己又变回去了 / 自动变高」。
+        refreshSpectrumBase()
     }
 
     // MARK: - 外观配置与强制重合成
@@ -419,6 +447,8 @@ final class FloatingLyricsManager: NSObject {
 
         // 拆除旧窗口（unregister + 释放）
         teardownWindow()
+        // v1.0.150：重建后的窗口尺寸取自配置 —— 旧频谱基准必须作废，否则高度会被旧基准写回
+        refreshSpectrumBase()
         Logger.info("悬浮歌词：设置变更，重建系统级窗口")
 
         // 下一个 runloop 全量重建（show() 走完整创建 + 注册重试）
@@ -570,7 +600,10 @@ final class FloatingLyricsManager: NSObject {
         // 手势期间拖动了窗口 → 重新捕获基准
         if abs(window.frame.origin.x - base.origin.x) > 1
             || abs(window.frame.origin.y - base.origin.y) > 1
-            || abs(window.frame.width - base.width) > 1 {
+            || abs(window.frame.width - base.width) > 1
+            // v1.0.150：高度不能直接拿 window.frame 比（本帧要被自己 +osc），
+            // 改比「配置高度 vs 基准高度」—— 设置页改高度后能自愈重捕获基准。
+            || abs(ConfigStore.shared.floatingSize.height - base.height) > 1 {
             spectrumBaseFrame = window.frame
             base = window.frame
         }

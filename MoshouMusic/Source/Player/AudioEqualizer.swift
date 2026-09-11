@@ -170,7 +170,11 @@ final class AudioEqualizer {
         ctx.gains = ConfigStore.shared.eqGains
         ctx.gainsDirty = true
         var callbacks = AudioEqualizer.tapCallbacks
+        // 🚨 v1.0.145：clientInfo 必须经 callbacks.clientInfo 传入！MTAudioProcessingTapCreate
+        // 没有独立 clientInfo 形参，此前恒为 nil → init 回调把 nil 写进 tapStorage →
+        // prepare/process 里 GetStorage 取到空指针再解引用 = SIGSEGV（v1.0.144 真机崩溃）。
         let clientInfo = Unmanaged.passRetained(ctx).toOpaque()
+        callbacks.clientInfo = clientInfo
         var tapOut: Unmanaged<MTAudioProcessingTap>?
         let err = MTAudioProcessingTapCreate(
             kCFAllocatorDefault, &callbacks,
@@ -189,6 +193,7 @@ final class AudioEqualizer {
         currentContext = ctx
         currentTapObject = tap
         Logger.info("EQ tap 已挂载（track \(track.trackID)，均衡器\(ConfigStore.shared.eqEnabled ? "开" : "关")，频谱\(ConfigStore.shared.floatingSpectrumOn ? "开" : "关")）")
+        Logger.info("EQ tap clientInfo 已接入（存储指针非空）")
         // v1.0.144：挂载完成 → seek 强制 audioMix 生效
         onMounted?()
     }
@@ -209,10 +214,12 @@ final class AudioEqualizer {
         },
         finalize: { tap in
             let p = MTAudioProcessingTapGetStorage(tap)
+            guard UInt(bitPattern: p) != 0 else { return }
             Unmanaged<TapContext>.fromOpaque(p).release()
         },
         prepare: { tap, _, format in
             let p = MTAudioProcessingTapGetStorage(tap)
+            guard UInt(bitPattern: p) != 0 else { return }
             let ctx = Unmanaged<TapContext>.fromOpaque(p).takeUnretainedValue()
             let asbd = format.pointee
             // 只处理线性 PCM Float32；其余格式直接透传（process 里守卫）
@@ -228,21 +235,32 @@ final class AudioEqualizer {
         },
         unprepare: { tap in
             let p = MTAudioProcessingTapGetStorage(tap)
+            guard UInt(bitPattern: p) != 0 else { return }
             let ctx = Unmanaged<TapContext>.fromOpaque(p).takeUnretainedValue()
             for c in ctx.eqChain { for b in c { b.reset() } }
             for c in ctx.analyzer { for b in c { b.reset() } }
             ctx.levels = Array(repeating: 0, count: 10)
         },
         process: { tap, numberFrames, _, bufferListInOut, numberFramesOut, _ in
+            var srcFlags: MTAudioProcessingTapFlags = 0
             let p = MTAudioProcessingTapGetStorage(tap)
+            // v1.0.145：存储指针为空（clientInfo 未接入）→ 原样透传，绝不解引用空指针
+            guard UInt(bitPattern: p) != 0, numberFrames > 0 else {
+                _ = MTAudioProcessingTapGetSourceAudio(
+                    tap, numberFrames, bufferListInOut, &srcFlags, nil, nil)
+                numberFramesOut.pointee = numberFrames
+                return
+            }
             let ctx = Unmanaged<TapContext>.fromOpaque(p).takeUnretainedValue()
-            guard ctx.floatFormat, numberFrames > 0 else {
-                numberFramesOut.pointee = 0
+            // v1.0.145：非 Float32 PCM 也原样透传（旧实现返回 0 帧 = 整段静音）
+            guard ctx.floatFormat else {
+                _ = MTAudioProcessingTapGetSourceAudio(
+                    tap, numberFrames, bufferListInOut, &srcFlags, nil, nil)
+                numberFramesOut.pointee = numberFrames
                 return
             }
             if ctx.gainsDirty { ctx.refreshCoefficients() }
 
-            var srcFlags: MTAudioProcessingTapFlags = 0
             let status = MTAudioProcessingTapGetSourceAudio(
                 tap, numberFrames, bufferListInOut, &srcFlags, nil, nil)
             guard status == noErr else {

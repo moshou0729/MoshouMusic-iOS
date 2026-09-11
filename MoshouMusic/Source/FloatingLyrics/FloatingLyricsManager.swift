@@ -267,6 +267,8 @@ final class FloatingLyricsManager: NSObject {
         self.lyricsView = lyricView
 
         setupGestures()
+        // v1.0.154：控制条动作（窗口重建后必须重新绑定 —— 闭包挂在视图上）
+        setupControlActions()
 
         // 让窗口可见但不长期抢占 key（否则会影响输入框等）
         let previousKey = currentKeyWindow()
@@ -276,6 +278,8 @@ final class FloatingLyricsManager: NSObject {
 
         observeNotifications()
         refreshPlaceholder()
+        // v1.0.154：新窗口的中间按钮要立刻反映真实播放状态（不是默认的 pause 图标）
+        refreshControlState()
 
         // contextId 要等下一个 runloop 才生成，注册带重试
         registerHostingWithRetry()
@@ -516,9 +520,11 @@ final class FloatingLyricsManager: NSObject {
     /// 对窗口做一次底边下探 24pt 的往复动画（0.32s）驱动重合成。
     /// 🚨 v1.0.124/125 实测：2-3pt 微扰 SB 不标记脏区（换句后要点一下才变）；整体平移
     /// 20pt 虽有效但观感是「整个悬浮窗往上弹一下」（用户不可接受）→ 改锚定顶边只动底边。
-    func pulseRecomposite() {
+    /// - Parameter force: true 时即使频谱驱动在跑也强制脉冲。用于「暂停」这一刻：
+    ///   频谱驱动因 `isPlaying == false` 立即停摆，没有任何几何变化，图标刷新传不到 SB。
+    func pulseRecomposite(force: Bool = false) {
         // v1.0.141：频谱驱动运行中时脉冲让路（几何已连续变化，脉冲会打架）
-        guard spectrumLink == nil else { return }
+        guard force || spectrumLink == nil else { return }
         guard let window = floatingWindow, !isCollapsed, !suppressedInApp,
               !isUserInteracting else { return }
         pulseWorkItem?.cancel()
@@ -707,6 +713,12 @@ final class FloatingLyricsManager: NSObject {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleCollapsedTap))
         tap.require(toFail: doubleTap)
         view.addGestureRecognizer(tap)
+
+        // v1.0.154：所有窗口手势都先过 delegate —— 落在控制条上的触摸不参与
+        // 拖动 / 捏合 / 折叠 / 双击锁定（否则点按钮会被手势抢走 → 按钮基本按不动）
+        for recognizer in view.gestureRecognizers ?? [] {
+            recognizer.delegate = self
+        }
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
@@ -912,6 +924,48 @@ final class FloatingLyricsManager: NSObject {
                                       y: clamp(window.frame.origin.y, min: 6, max: maxY))
     }
 
+    // MARK: - v1.0.154 悬浮窗播放控制条（上一首 / 播放暂停 / 下一首）
+
+    /// 控制条按钮 → 播放器。播放器状态回传由 playerStateChanged 通知统一驱动
+    /// （换歌 / 暂停 / 恢复都会刷新图标）。
+    private func setupControlActions() {
+        guard let bar = lyricsView?.controlBar else { return }
+        bar.onPrevious = { [weak self] in self?.controlPrevious() }
+        bar.onToggle = { [weak self] in self?.controlToggle() }
+        bar.onNext = { [weak self] in self?.controlNext() }
+    }
+
+    /// 把「播放器是否在播」同步到控制条中间按钮的图标
+    private func refreshControlState() {
+        guard let bar = lyricsView?.controlBar else { return }
+        let playing = PlayerManager.shared.isPlaying
+        guard bar.isPlaying != playing else { return }
+        bar.isPlaying = playing
+        // 图标属于「内容变化」——SpringBoard 对托管 context 只认几何变化，必须再推一次脉冲。
+        // 先清频谱基准：暂停后 spectrumTick 立刻走守卫分支，每帧 restoreSpectrumGeometry()
+        // 会把窗口钉回基准，与脉冲的几何动画打架（表现为图标不刷新）。
+        refreshSpectrumBase()
+        pulseRecomposite(force: true)
+    }
+
+    private func controlPrevious() {
+        Logger.info("悬浮窗控制条：上一首")
+        PlayerManager.shared.previous()
+        refreshControlState()
+    }
+
+    private func controlToggle() {
+        Logger.info("悬浮窗控制条：播放暂停切换")
+        PlayerManager.shared.togglePlayPause()
+        refreshControlState()
+    }
+
+    private func controlNext() {
+        Logger.info("悬浮窗控制条：下一首")
+        PlayerManager.shared.next()
+        refreshControlState()
+    }
+
     // MARK: - 通知
 
     private func observeNotifications() {
@@ -939,6 +993,8 @@ final class FloatingLyricsManager: NSObject {
     /// 换歌时重置行号并显示歌名，避免停留上一首的最后一句
     @objc private func playerStateChanged() {
         DispatchQueue.main.async {
+            // v1.0.154：控制条图标跟随播放状态（暂停 / 恢复 / 换歌都会走到这里）
+            self.refreshControlState()
             guard let song = PlayerManager.shared.currentSong else { return }
             let key = "\(song.name)-\(song.singer)"
             guard key != self.lastSongKey else { return }
@@ -1013,5 +1069,19 @@ final class FloatingRootView: UIView {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
         return hit === self ? nil : hit
+    }
+}
+
+
+// MARK: - v1.0.154 控制条触摸隔离
+
+extension FloatingLyricsManager: UIGestureRecognizerDelegate {
+
+    /// 控制条（上一首 / 播放暂停 / 下一首）区域内的触摸不喂给窗口手势 ——
+    /// 否则点按钮会连带触发拖动（窗口跟着手指跑）或折叠手势，表现为「按钮按不动 / 窗口乱跳」。
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        guard let bar = lyricsView?.controlBar, !bar.isHidden else { return true }
+        return !bar.bounds.contains(touch.location(in: bar))
     }
 }

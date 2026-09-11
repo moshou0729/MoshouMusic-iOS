@@ -18,6 +18,8 @@ final class FloatingLyricsView: UIView {
     private var lastArtwork: UIImage?
     /// v1.0.141：底部频谱条（音乐可视化，开关控制可见）
     let spectrumView = SpectrumBarsView()
+    /// v1.0.154：顶部半透明播放控制条（上一首 / 播放暂停 / 下一首）
+    let controlBar = FloatingControlBar()
     /// v1.0.147：频谱开关状态（折叠态要联动隐藏）
     private var spectrumEnabled = false
 
@@ -64,13 +66,25 @@ final class FloatingLyricsView: UIView {
         addSubview(spectrumView)
         sendSubviewToBack(spectrumView)
 
+        // v1.0.154：控制条浮在最上层（半透明胶囊；频谱/歌词都在它下面）
+        addSubview(controlBar)
+
         applyStyle()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        container.frame = bounds
-        let row = bounds.height / 3
+        // v1.0.154：顶部控制条先定尺寸；歌词容器整体下移让出它的高度（不遮歌词行）
+        let barHeight = controlBarHeight()
+        let barWidth = min(max(0, bounds.width - 8), max(0, barHeight * 3.9))
+        controlBar.frame = CGRect(x: (bounds.width - barWidth) / 2, y: 3,
+                                  width: barWidth, height: barHeight)
+
+        let contentTop = controlBar.isHidden ? 0 : min(bounds.height, controlBar.frame.maxY + 2)
+        container.frame = CGRect(x: 0, y: contentTop,
+                                 width: bounds.width,
+                                 height: max(0, bounds.height - contentTop))
+        let row = container.bounds.height / 3
         for (index, label) in labels.enumerated() {
             label.frame = CGRect(x: 10, y: CGFloat(index) * row,
                                  width: max(0, bounds.width - 20), height: row)
@@ -80,6 +94,11 @@ final class FloatingLyricsView: UIView {
         spectrumView.frame = CGRect(x: 6, y: 3,
                                     width: max(0, bounds.width - 12),
                                     height: max(0, bounds.height - 6))
+    }
+
+    /// v1.0.154：控制条高度随悬浮窗尺寸缩放 —— 22~32pt，保证最小窗（72pt）也留得住歌词
+    private func controlBarHeight() -> CGFloat {
+        return min(32, max(22, bounds.height * 0.26))
     }
 
     private func applyStyle() {
@@ -154,6 +173,8 @@ final class FloatingLyricsView: UIView {
         container.isHidden = collapsed
         // v1.0.147：折叠成正方形圆点时频谱条不显示（否则会压住封面）
         spectrumView.isHidden = collapsed || !spectrumEnabled
+        // v1.0.154：折叠圆点（48×48）放不下控制条，一并隐藏；展开时 layoutSubviews 会复位
+        controlBar.isHidden = collapsed
         if collapsed {
             if noteIcon == nil {
                 let icon = UIImageView(image: UIImage(systemName: "music.note"))

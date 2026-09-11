@@ -17,6 +17,7 @@ class ConfigStore {
         static let searchHistory = "searchHistory"
         static let isFloatingLyricsOn = "isFloatingLyricsOn"
         static let screenWakeSelfGuard = "screenWakeSelfGuard"
+        static let floatingWakeParkEnabled = "floatingWakeParkEnabled"
         static let floatingOpacity = "floatingOpacity"
         static let floatingWidth = "floatingWidth"
         static let floatingHeight = "floatingHeight"
@@ -255,6 +256,20 @@ class ConfigStore {
     var screenWakeSelfGuard: Bool {
         get { defaults.bool(forKey: Keys.screenWakeSelfGuard) }
         set { defaults.set(newValue, forKey: Keys.screenWakeSelfGuard) }
+    }
+
+    /// v1.0.156：亮屏自保模式。
+    /// - true（默认）：亮屏瞬间把悬浮窗「临时移出可见区」2.5s —— 不拆窗、不重注册
+    ///   （守住「一条窗口只注册一次」铁律），归位后锁屏 / 桌面立即可见。
+    /// - false：回到 v1.0.155 的旧行为「亮屏销毁悬浮窗 + 12/20s 阶梯重建」
+    ///   —— 点亮屏幕后十几秒内看不到窗口，锁屏上基本不可见。
+    /// 缺省（未写过）视为 true；关掉即用户侧的零构建回退开关。
+    var isFloatingWakeParkEnabled: Bool {
+        get {
+            if defaults.object(forKey: Keys.floatingWakeParkEnabled) == nil { return true }
+            return defaults.bool(forKey: Keys.floatingWakeParkEnabled)
+        }
+        set { defaults.set(newValue, forKey: Keys.floatingWakeParkEnabled) }
     }
 
     var floatingOpacity: Float {

@@ -87,14 +87,17 @@ final class FloatingSettingsViewController: UIViewController {
             switchRow.heightAnchor.constraint(equalToConstant: 44),
         ])
 
-        // v1.0.131：熄屏自保测试开关（对照实验：亮屏销毁悬浮窗，验证被杀根因）
+        // v1.0.131 熄屏自保开关；v1.0.156 起语义 = 「锁屏显示悬浮窗」：
+        // 开（默认）= 亮屏瞬间把窗口临时移出可见区 2.5s（不销毁）→ 锁屏上也能看到悬浮歌词；
+        // 关 = 回到旧行为「亮屏销毁悬浮窗 + 12/20s 阶梯重建」（点亮后十几秒看不到窗口）。
         let guardRow = UIView()
         let guardTitle = UILabel()
-        guardTitle.text = "熄屏自保测试（亮屏时销毁悬浮窗）"
-        guardTitle.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        guardTitle.text = "锁屏显示悬浮窗（亮屏时临时移出，不销毁）"
+        guardTitle.font = UIFont.systemFont(ofSize: 15, weight: .medium)
+        guardTitle.numberOfLines = 2
         guardTitle.textColor = .label
         let guardSwitch = UISwitch()
-        guardSwitch.isOn = ConfigStore.shared.screenWakeSelfGuard
+        guardSwitch.isOn = ConfigStore.shared.isFloatingWakeParkEnabled
         guardSwitch.onTintColor = Theme.primary
         guardRow.addSubview(guardTitle)
         guardRow.addSubview(guardSwitch)
@@ -108,8 +111,8 @@ final class FloatingSettingsViewController: UIViewController {
             guardRow.heightAnchor.constraint(equalToConstant: 44),
         ])
         guardSwitch.addAction(UIAction { _ in
-            ConfigStore.shared.screenWakeSelfGuard = guardSwitch.isOn
-            Logger.info("熄屏自保测试开关：\(guardSwitch.isOn ? "开" : "关")")
+            ConfigStore.shared.isFloatingWakeParkEnabled = guardSwitch.isOn
+            Logger.info("锁屏显示悬浮窗开关：\(guardSwitch.isOn ? "开" : "关")")
         }, for: .valueChanged)
 
         statusLabel.font = UIFont.systemFont(ofSize: 13)

@@ -40,6 +40,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// 把窗口注册到 SpringBoard 系统窗口树（成功后即可跨应用显示）
 + (BOOL)registerWindow:(UIWindow *)window level:(double)level NS_SWIFT_NAME(register(window:level:));
 
+/// v1.0.156：屏幕当前是否「已熄灭 / 变暗」。
+/// 🚨 com.apple.iokit.hid.displayStatus 只告诉我们「屏幕状态变了」，分不出亮屏还是灭屏；
+/// 这一维必须从 SpringBoard 的 com.apple.springboard.hasBlankedScreen 通知状态读。
++ (BOOL)isScreenBlanked NS_SWIFT_NAME(isScreenBlanked());
+
 /// 注销窗口（用户手动关闭悬浮窗时调用）
 + (void)unregisterWindow:(UIWindow *)window NS_SWIFT_NAME(unregister(window:));
 

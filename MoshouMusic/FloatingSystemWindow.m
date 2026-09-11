@@ -8,6 +8,7 @@
 #import "FloatingSystemWindow.h"
 
 #include <dlfcn.h>
+#include <notify.h>
 
 @implementation FloatingSystemWindow
 
@@ -139,6 +140,27 @@ static id gHostingController = nil;
     [inv setTarget:gHostingController];
     [inv setArgument:&ctx atIndex:2];
     [inv invoke];
+}
+
+#pragma mark - v1.0.156 屏幕熄灭状态
+
+/// 读 SpringBoard 的 com.apple.springboard.hasBlankedScreen 通知状态。
+/// notify_register_check / notify_get_state 是公开的 notify(3) API，
+/// 不需要额外 entitlement，App 在后台也能读到。
++ (BOOL)isScreenBlanked
+{
+    static int blankToken = 0;
+    if (blankToken == 0) {
+        if (notify_register_check("com.apple.springboard.hasBlankedScreen", &blankToken) != NOTIFY_STATUS_OK) {
+            blankToken = 0;
+            return NO;
+        }
+    }
+    uint64_t state = 0;
+    if (notify_get_state(blankToken, &state) != NOTIFY_STATUS_OK) {
+        return NO;
+    }
+    return state != 0;
 }
 
 @end

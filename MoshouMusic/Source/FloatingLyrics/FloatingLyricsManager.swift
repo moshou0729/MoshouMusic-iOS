@@ -104,17 +104,103 @@ final class FloatingLyricsManager: NSObject {
     /// 回来；不健康则退回原来的 20s 保守档（最坏情况与 v1.0.148 完全一致）。
     private static let selfGuardReshowDelays: [Double] = [12.0, 20.0]
 
-    /// v1.0.134：熄屏自保（强制）—— 亮屏瞬间彻底拆除系统级窗口避开系统清杀。
-    /// 根因由 v1.0.132 开关实验坐实：开关打开后熄屏点亮不再停播。
-    /// （重建时机由 selfGuardReshowDelays 逐档试探，见 scheduleSelfGuardReshow。）
+    /// v1.0.156：亮屏瞬间「移出可见区」的时长（秒）。窗口不销毁、SB 注册不中断，
+    /// 归位后锁屏 / 桌面立即可见。取 2.5s 覆盖亮屏后 mediaserverd 的音频仲裁窗口。
+    private static let wakeParkSeconds: Double = 2.5
+
+    /// 移出可见区用的位置（只写进 window.frame 这一层显示态，绝不进配置）
+    private static let offScreenOrigin = CGPoint(x: -20000, y: -20000)
+
+    private var isParkedOffScreen = false
+    private var parkedOrigin: CGPoint?
+    private var parkWork: DispatchWorkItem?
+
+    /// v1.0.134 / v1.0.156：熄屏自保 —— 亮屏瞬间的避杀处理。
+    ///
+    /// v1.0.132 开关实验坐实：**亮屏瞬间后台进程带 SB 托管窗 = 被系统清杀 = 停播**，
+    /// 所以必须在「亮屏那一刻」把窗口从可见区弄走。
+    /// v1.0.134~155 的做法是**整条拆掉**（unregister + 销毁），代价是窗口连同 SB 注册
+    /// 一起消失，12~20s 后才重建 —— 而锁屏点亮屏幕的那一刻正是这个回调点，于是
+    /// **锁屏上基本永远看不到悬浮窗**（用户现象：熄屏点亮之后悬浮窗不见了）。
+    ///
+    /// v1.0.156 改成二段式判定：
+    /// - **灭屏回调**（hasBlankedScreen=1）：什么都不做 —— 屏幕黑着，窗口留着本来就不可见，
+    ///   拆了还得重建（顺带消掉「每次屏幕状态变化都触发一次拆/建循环」）；
+    /// - **亮屏回调**（hasBlankedScreen=0）：**不拆窗、不重注册**，只把窗口临时移出可见区
+    ///   2.5s 再原位移回 —— 锁屏上 2.5s 即见。
+    ///
+    /// 归位时若音频管线已不健康，兜底退回旧的「拆窗 + 阶梯重建」。
     func screenWakeSelfGuardTeardown() {
         settingsPreviewActive = false
         hardRefreshWorkItem?.cancel()
         pulseWorkItem?.cancel()
-        selfGuardReshowWork?.cancel()
-        teardownWindow()
-        scheduleSelfGuardReshow(attempt: 0)
-        Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，\(Int(FloatingLyricsManager.selfGuardReshowDelays[0]))s 后开始阶梯重建")
+
+        // 回退开关：关掉「锁屏显示悬浮窗」即回到 v1.0.155 的旧行为
+        guard ConfigStore.shared.isFloatingWakeParkEnabled else {
+            selfGuardReshowWork?.cancel()
+            teardownWindow()
+            scheduleSelfGuardReshow(attempt: 0)
+            Logger.persist("熄屏自保：亮屏时已拆除悬浮窗，\(Int(FloatingLyricsManager.selfGuardReshowDelays[0]))s 后开始阶梯重建")
+            return
+        }
+
+        // displayStatus 分不出亮屏还是灭屏 —— 这里补上这一维
+        if FloatingWindowHosting.isScreenBlanked() {
+            Logger.persist("熄屏自保：灭屏回调，保留悬浮窗（屏幕不可见，本轮不拆不建）")
+            return
+        }
+
+        parkWindowOffScreen()
+    }
+
+    /// v1.0.156：把窗口**临时移出可见区**（不销毁、不重注册）。
+    ///
+    /// 🚨 只改 `window.frame`（显示态）。尺寸取配置值、归位取配置里的 origin ——
+    /// 绝不把这份临时几何写回配置（v1.0.152 铁律：显示态 ≠ 规范态）。
+    private func parkWindowOffScreen() {
+        guard ConfigStore.shared.isFloatingLyricsOn, !suppressedInApp,
+              let window = floatingWindow else { return }
+        parkWork?.cancel()
+        if !isParkedOffScreen {
+            isParkedOffScreen = true
+            parkedOrigin = ConfigStore.shared.floatingOrigin
+            Logger.persist("熄屏自保：亮屏瞬间把悬浮窗移出可见区 \(FloatingLyricsManager.wakeParkSeconds)s（保留窗口与 SB 注册，不拆不重注册）")
+        }
+        applyOffScreenFrame(to: window)
+        let work = DispatchWorkItem { [weak self] in self?.unparkWindow() }
+        parkWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + FloatingLyricsManager.wakeParkSeconds, execute: work)
+    }
+
+    /// 移出可见区用的几何。用**几何变化**而不是 `isHidden` —— 后者已被证实驱动不了
+    /// SB 重合成（窗口纹丝不动留在原地），而大幅位移一定能。
+    private func applyOffScreenFrame(to window: UIWindow) {
+        pulseWorkItem?.cancel()
+        window.pulseContentLock = false
+        window.layer.removeAllAnimations()
+        window.frame = CGRect(origin: FloatingLyricsManager.offScreenOrigin,
+                              size: ConfigStore.shared.floatingSize)
+    }
+
+    /// 归位：按**配置里的 origin**（规范位置）重建几何，并作废频谱基准
+    private func unparkWindow() {
+        isParkedOffScreen = false
+        guard let window = floatingWindow else { parkedOrigin = nil; return }
+        let origin = parkedOrigin ?? ConfigStore.shared.floatingOrigin
+        parkedOrigin = nil
+        window.pulseContentLock = false
+        UIView.performWithoutAnimation {
+            window.frame = CGRect(origin: origin, size: ConfigStore.shared.floatingSize)
+        }
+        window.rootViewController?.view.setNeedsLayout()
+        refreshSpectrumBase()
+        Logger.persist("熄屏自保：悬浮窗已归位（亮屏后 \(FloatingLyricsManager.wakeParkSeconds)s，锁屏/桌面均可见）")
+        // 亮屏确实把管线弄停了 → 退回旧的拆窗重建保护（正常情况下这一步不会走到）
+        if !PlayerManager.shared.isPlaybackHealthy {
+            Logger.persist("熄屏自保：亮屏后音频不健康，退回拆窗重建保护")
+            teardownWindow()
+            scheduleSelfGuardReshow(attempt: 0)
+        }
     }
 
     /// v1.0.155：阶梯式后台重建 —— 逐档试探，音频健康即重建；全档不过就放弃本次。
@@ -228,6 +314,10 @@ final class FloatingLyricsManager: NSObject {
         floatingWindow = nil
         lyricsView = nil
         registerAttempts = 0
+        // v1.0.156：拆窗即作废「移出可见区」状态（否则新窗口会被误判为仍在移出期）
+        parkWork?.cancel()
+        isParkedOffScreen = false
+        parkedOrigin = nil
         purgeOrphanFloatingWindows()
     }
 
@@ -264,6 +354,8 @@ final class FloatingLyricsManager: NSObject {
             registerHostingWithRetry()
             refreshPlaceholder()
             refreshSpectrumState()
+            // v1.0.156：仍处于「亮屏移出可见区」期内 → 复用分支也要保持移出
+            if isParkedOffScreen { applyOffScreenFrame(to: window) }
             return
         }
 
@@ -322,6 +414,8 @@ final class FloatingLyricsManager: NSObject {
         // 首帧按它写回几何就会出现日志里那条「悬浮窗高度异常：140pt 超出规范 97pt」
         //（自愈虽在 50ms 内兜住，但会造成重建后一帧的高度抖动）。
         refreshSpectrumBase()
+        // v1.0.156：亮屏移出期内的重建，新窗口同样要保持在屏幕外
+        if isParkedOffScreen { applyOffScreenFrame(to: window) }
     }
 
     func hide() {
@@ -679,6 +773,7 @@ final class FloatingLyricsManager: NSObject {
 
     @objc private func spectrumTick() {
         guard let window = floatingWindow, !isCollapsed, !isUserInteracting, !suppressedInApp,
+              !isParkedOffScreen,
               PlayerManager.shared.isPlaying else {
             if spectrumBaseFrame != nil { restoreSpectrumGeometry() }
             return
@@ -718,6 +813,9 @@ final class FloatingLyricsManager: NSObject {
     }
 
     private func restoreSpectrumGeometry() {
+        // v1.0.156：移出可见区期间禁止归位 —— 否则守卫分支每帧把窗口拉回屏幕内，
+        // 亮屏后的 2.5s「避杀窗口」就白做了（锁屏上也看不到）
+        guard !isParkedOffScreen else { spectrumBaseFrame = nil; return }
         guard let window = floatingWindow else { spectrumBaseFrame = nil; return }
         window.pulseContentLock = false
         if let base = spectrumBaseFrame {
@@ -955,6 +1053,8 @@ final class FloatingLyricsManager: NSObject {
 
     /// 保证悬浮窗完整留在屏幕内
     private func clampWindowIntoScreen(_ window: UIWindow) {
+        // v1.0.156：移出可见区期间不得钳回屏幕内
+        guard !isParkedOffScreen else { return }
         let screen = UIScreen.main.bounds
         let maxX = Swift.max(6, screen.width - window.frame.width - 6)
         let maxY = Swift.max(6, screen.height - window.frame.height - 6)

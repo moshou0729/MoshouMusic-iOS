@@ -137,14 +137,20 @@ final class FloatingLyricsManager: NSObject {
             show()
             return
         }
-        // v1.0.149：App 内预览期间窗口未注册 SB 托管 → 离开 App 必须补注册，
-        // 否则切到桌面 / 其他应用后悬浮窗不可见（跨应用显示全靠这份注册）。
-        // 只在 App 真正退出活跃态时补 —— 下拉通知中心 / 控制中心只是瞬时失焦，
-        // 避免频繁 unregister/register 抖动（反复重注册会让 SB 移除窗口）。
-        if floatingWindow != nil, !hostingRegistered, ConfigStore.shared.isFloatingLyricsOn,
-           UIApplication.shared.applicationState != .active {
-            Logger.info("离开 App：补注册 SB 托管（此前为 App 内预览模式）")
-            registerHostingWithRetry()
+        // v1.0.149：App 内预览期间窗口未注册 SB 托管 → 离开 App 必须让它变成系统级窗口，
+        // 否则切到桌面 / 其他应用后悬浮窗既不可见、更收不到触摸（跨应用操作全靠这份注册）。
+        // 只在 App 真正退出活跃态时处理 —— 下拉通知中心 / 控制中心只是瞬时失焦。
+        //
+        // 🚨 v1.0.151 修正：**绝不就地为同一条窗口补注册**。本项目铁律是「一条窗口只注册
+        // 一次」—— 对已经 unregister 过的窗口再 register，SB 会摘掉它的触摸路由：桌面上
+        // 悬浮窗照常可见，但完全拖不动（v1.0.149/150 的用户回归正是如此）。
+        // 唯一安全做法：销毁旧窗口、重建一条全新窗口再注册（新 contextId = 首次注册）。
+        guard ConfigStore.shared.isFloatingLyricsOn,
+              UIApplication.shared.applicationState != .active else { return }
+        if floatingWindow != nil, !hostingRegistered {
+            Logger.info("离开 App：预览窗口重建为系统级窗口（不做同窗重注册）")
+            teardownWindow()
+            show()
         }
     }
 
@@ -246,16 +252,11 @@ final class FloatingLyricsManager: NSObject {
     }
 
     func hide() {
-        if let window = floatingWindow, hostingRegistered {
-            FloatingWindowHosting.unregister(window: window)
-            hostingRegistered = false
-            isGlobalWindowReady = false
-            lastContextId = 0
-        }
-        floatingWindow?.isHidden = true
-        registerAttempts = 0
-        // v1.0.150：顺带清一次孤儿（见 purgeOrphanFloatingWindows）
-        purgeOrphanFloatingWindows()
+        // v1.0.151：与 teardownWindow 统一 —— 窗口一旦 unregister 就【绝不再复用】。
+        // 旧写法 unregister 后仍保留窗口对象，下次 show() 走复用分支给【同一条窗口】
+        // 重新注册，会被 SB 摘掉触摸路由 → 桌面悬浮窗可见但拖不动
+        // （与 v1.0.149/150 的桌面拖不动是同一根因）。
+        teardownWindow()
     }
 
     func toggle() {
@@ -284,11 +285,14 @@ final class FloatingLyricsManager: NSObject {
     /// = 同一窗口出现两个影像（重影）。桌面 / 其他应用下 App 不渲染，只剩 ② 一条路径，
     /// 所以「桌面拖动没有重影、App 内拖动有重影」。
     func dropHostingForInApp() {
-        guard let window = floatingWindow, hostingRegistered else { return }
-        FloatingWindowHosting.unregister(window: window)
-        hostingRegistered = false
-        isGlobalWindowReady = false
-        Logger.info("悬浮歌词：已摘除 SB 托管（App 内单通道渲染，消除拖动重影）")
+        guard floatingWindow != nil, hostingRegistered else { return }
+        // 🚨 v1.0.151：摘托管不能再「就地 unregister + 留下窗口」——
+        // 那条窗口之后无论怎么补注册都会被 SB 摘掉触摸路由（桌面可见但拖不动）。
+        // 改为「拆掉已注册的窗口，重建一条从未注册过的新窗口」，
+        // 让铁律「一条窗口只注册一次」在结构上成立。
+        Logger.info("拆除已注册窗口并重建为 App 内单通道窗口（杜绝同窗重注册）")
+        teardownWindow()
+        show()
     }
 
     private func registerHostingWithRetry(attempt: Int = 0) {
@@ -662,8 +666,11 @@ final class FloatingLyricsManager: NSObject {
             // ② 清频谱基准 —— 否则 spectrumTick 守卫失败分支会把窗口拉回拖动前的位置
             //    （表现为「刚开始拖动窗口跳一下 / 拖不动」）。
             refreshSpectrumBase()
-            if UIApplication.shared.applicationState == .active {
-                dropHostingForInApp()
+            // v1.0.151：App 内窗口理论上就是未注册的（预览一律用全新未注册窗口）。
+            // 真出现注册态只留取证 —— 不在这里摘托管：就地摘除再补注册会踩「同窗重注册
+            // 被 SB 摘路由」，而销毁重建会打断刚开始的手势。
+            if UIApplication.shared.applicationState == .active, hostingRegistered {
+                Logger.persist("异常：App 内窗口处于 SB 注册态（可能存在双通道重影）")
             }
             isUserInteracting = true
         }

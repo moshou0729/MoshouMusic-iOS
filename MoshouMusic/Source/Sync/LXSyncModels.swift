@@ -38,7 +38,22 @@ enum JSONValue: Codable {
     var stringValue: String? {
         switch self {
         case .string(let s): return s
-        case .number(let n):  return String(format: "%g", n)
+        // 🚨 v1.0.161 重大修复：这里绝不能再用 `String(format: "%g", n)`。
+        // `%g` 只有 **6 位有效数字**，会把平台长数字 id 毁成科学计数法，且
+        // **精度永久丢失**（不可逆）：
+        //     网易云 3322380723 → "3.32238e+09"
+        //     网易云   29750107 → "2.97501e+07"
+        // 后果：该 id 既过不了音源脚本的 /^\d+$/ 校验（内置 wy.js 直接回「无效的
+        // 网易云歌曲ID」），传给第三方中转接口也必然 404 ⇒ **所有来自 LX 桌面端、
+        // id 以 JSON 数字下发的网易云歌曲全部无法播放**。
+        // QQ 音乐的 mid 本身是字符串（如 "0009c1uB381fZ7"），不走这个分支 ——
+        // 这正是用户看到的「显示网易云的播不了、显示 QQ 音乐的都能播」的真因。
+        case .number(let n):
+            // 整数一律按 Int64 输出（平台 id 都是整数）；仅非整数才回落浮点描述
+            if n == n.rounded(), abs(n) <= 9_007_199_254_740_992 {
+                return String(Int64(n))
+            }
+            return String(n)
         case .bool(let b):    return b ? "true" : "false"
         default:              return nil
         }

@@ -101,25 +101,20 @@ final class FloatingLyricsManager: NSObject {
     /// v1.0.134：熄屏自保的延迟重建任务
     private var selfGuardReshowWork: DispatchWorkItem?
 
-    /// v1.0.155：熄屏自保的阶梯重建档位（秒）。
-    /// 拆窗本身必须保留 —— v1.0.132 开关实验坐实「亮屏瞬间后台进程带 SB 托管窗
-    /// = 被系统清杀 = 停播」。但重建不必盲等 20s：12s 起先探一次，音频持续健康就提前
-    /// 回来；不健康则退回原来的 20s 保守档（最坏情况与 v1.0.148 完全一致）。
-    private static let selfGuardReshowDelays: [Double] = [12.0, 20.0]
+    /// v1.0.161：拆窗后的重建参数 ——「屏变后最早重建秒数」+「确认解锁后再等秒数」。
+    ///
+    /// 🚨 定时重建已被四轮真机日志判死：真正决定生死的不是「拆窗后过了多久」，
+    /// 而是**重建那一刻设备是否仍处于锁定态**。所以参数只描述「解锁之后多久重建」，
+    /// floor 仅用于避开点亮瞬间的系统过渡（3s 档正是死在这一点上）。
+    private static let selfGuardFastResume: (floor: Double, afterUnlock: Double) = (5.0, 1.5)
+    /// 保守档（设置页开关关掉）—— 与历来实测安全的 12/20s 档位体感相当
+    private static let selfGuardSafeResume: (floor: Double, afterUnlock: Double) = (16.0, 6.0)
 
-    /// v1.0.160：**快速档** —— 屏变后 3s 就尝试重建（让锁屏上尽快看到悬浮窗）。
-    /// 档位 = [3, 6, 20]：3s 先探（用户停在锁屏界面的时间通常只有几秒），
-    /// 音频不健康就退 6s，仍不行退 20s 兜底。
-    /// ⚠️ 本档的收益与风险都必须由真机日志来判（见「屏变存活心跳」）：
-    /// 连续 2 次「重建后进程被系统强杀」→ AppDelegate 自动降回保守档。
-    private static let selfGuardFastReshowDelays: [Double] = [3.0, 6.0, 20.0]
-
-    /// v1.0.159：当前生效的重建档位 —— 由设置页「锁屏显示悬浮窗」开关选择。
-    /// 开（默认）= 快速档（6s 起步）；关 = 保守档（12s 起步）。
-    private var activeReshowDelays: [Double] {
+    /// 当前生效档位：开（默认）= 快速档；关 = 保守档。
+    private var activeResumeParams: (floor: Double, afterUnlock: Double) {
         return ConfigStore.shared.isFloatingWakeParkEnabled
-            ? FloatingLyricsManager.selfGuardFastReshowDelays
-            : FloatingLyricsManager.selfGuardReshowDelays
+            ? FloatingLyricsManager.selfGuardFastResume
+            : FloatingLyricsManager.selfGuardSafeResume
     }
 
     /// v1.0.156：亮屏瞬间「移出可见区」的时长（秒）。窗口不销毁、SB 注册不中断，
@@ -159,10 +154,16 @@ final class FloatingLyricsManager: NSObject {
     /// 该状态位在这台机器上**不可信**。
     ///
     /// ⇒ 本版定稿：**不再尝试区分亮/灭**。任何一次 displayStatus 回调都当作
-    /// 「屏幕状态变了」，一律立刻拆窗，再按 activeReshowDelays 档位重建。
+    /// 「屏幕状态变了」，一律立刻拆窗，再等「设备已解锁」后重建（v1.0.161）。
     /// 灭屏一侧拆窗代价为零（屏幕黑着本来就看不见），却把「会话跨越锁屏」彻底堵死。
+    /// 🚨 v1.0.161 定论（第 4 轮日志）：决定生死的不是「拆窗后过了多久」，而是
+    /// **重建那一刻设备是否仍锁定**。15:09 灭屏保留 → 5s 被杀；15:23 park 到屏幕外
+    /// → 亮屏后 2.05s 被杀；16:15 屏变后 3s 重建（设备仍锁定）→ 重建后 ~1.5s 被杀
+    /// （心跳 #2 之后即断，日志里那条 3s 重建正是凶器）。而 12/20s 档之所以一直安全，
+    /// 是因为那时用户早已解锁回到桌面。⇒ 重建一律改为「解锁门控」，见下方
+    /// pollDeviceUnlockedThenReshow；锁屏界面上显示悬浮歌词在本系统上不可实现。
     /// 配套诊断：每次都会起「屏变存活心跳」（持久化）—— 下次用户日志能直接读出
-    /// 进程死于屏变后第几秒，这是评判「拆窗 + 重建」档位是否够快、够安全的唯一判据。
+    /// 进程死于屏变后第几秒、当时是否已解锁，这是评判本策略的唯一判据。
     func screenWakeSelfGuardTeardown() {
         settingsPreviewActive = false
         hardRefreshWorkItem?.cancel()
@@ -171,11 +172,18 @@ final class FloatingLyricsManager: NSObject {
 
         teardownWindow()
         scheduleSelfGuardReshow(attempt: 0)
-        Logger.persist("熄屏自保：屏幕状态变化 —— 已拆窗避杀（不区分亮/灭），\(Int(activeReshowDelays[0]))s 后开始阶梯重建")
+        Logger.persist("熄屏自保：屏幕状态变化 —— 已拆窗避杀（不区分亮/灭），等设备解锁后再重建")
         startScreenChangeLivenessBeat()
     }
 
     // MARK: - v1.0.160 屏变存活心跳（诊断）
+
+    /// v1.0.161：本轮「等解锁 → 重建」的令牌。每次屏变自增，旧轮询自动作废。
+    private var selfGuardReshowToken = 0
+    /// v1.0.161：本轮等待解锁的起点（= 屏变时刻）
+    private var selfGuardUnlockWaitStart = Date()
+    /// v1.0.161：音频未在播时的重建重试次数
+    private var selfGuardRebuildTry = 0
 
     private var selfGuardBeatWork: DispatchWorkItem?
     private var selfGuardBeatSeq = 0
@@ -203,7 +211,7 @@ final class FloatingLyricsManager: NSObject {
             guard let self = self else { return }
             self.selfGuardBeatSeq += 1
             let elapsed = Date().timeIntervalSince(self.selfGuardBeatStart)
-            Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)）")
+            Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)，已解锁=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)）")
             if self.selfGuardBeatSeq >= 8 {
                 // 活过 12s：这次重建没把自己搞死 → 清掉打点，不计入自动降档
                 ConfigStore.shared.floatingGuardRebuildTs = 0
@@ -284,37 +292,81 @@ final class FloatingLyricsManager: NSObject {
         }
     }
 
-    /// v1.0.155：阶梯式后台重建 —— 逐档试探，音频健康即重建；全档不过就放弃本次。
+    /// v1.0.161：拆窗后的重建 —— **只在确认设备已解锁之后才重建**。
     ///
-    /// v1.0.148 的 20s 是「一刀切」：既保护了重建时机，也把窗口回来的时间钉死在 20s。
-    /// 拆开成两档后：正常情况 12s 回来，风险情况（音频不健康）自动退到 20s 兜底。
-    /// 门禁不变 —— 绝不在「已停播」状态下去注册窗口（v1.0.146/147 的教训）。
+    /// 四轮真机日志最终收敛出的唯一判据：**后台进程在「设备锁定」状态下持有 SB 托管窗
+    /// （accessibility window hosting 会话）必被系统清杀**，与窗口坐标、与拆窗后过了
+    /// 多久都无关：
+    ///   ① v1.0.156 灭屏原地保留窗口         → 灭屏后 5s 被杀
+    ///   ② v1.0.158 移出可见区（会话仍在）    → 亮屏回调后 2.05s 被杀
+    ///   ③ v1.0.160 屏变后 3s 重建（仍锁定）  → 重建后 ~1.5s 被杀（心跳 #2 之后即断）
+    ///   ④ 12/20s 档（用户已解锁解锁后重建）  → 从未被杀（用户实测音乐不断）
+    /// ⇒ 唯一安全的窗口 = 「设备已解锁 + 进程在后台/前台」。锁屏界面上显示悬浮歌词
+    /// 在本系统上**不可实现**（任何后台持窗都会被清），本函数不再做无谓尝试。
     private func scheduleSelfGuardReshow(attempt: Int) {
-        let delays = activeReshowDelays
-        guard attempt < delays.count else { return }
-        let previous = attempt == 0 ? 0 : delays[attempt - 1]
-        let interval = delays[attempt] - previous
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            guard !self.suppressedInApp, ConfigStore.shared.isFloatingLyricsOn else { return }
-            guard PlayerManager.shared.isPlaybackHealthy else {
-                if attempt + 1 < delays.count {
-                    Logger.persist("熄屏自保：音频管线未在播，第 \(attempt + 1) 档跳过，推迟到 \(Int(delays[attempt + 1]))s")
-                    self.scheduleSelfGuardReshow(attempt: attempt + 1)
-                } else {
-                    Logger.persist("熄屏自保：音频管线未在播，跳过本次后台重建（规避注册窗口风险）")
-                }
+        let params = activeResumeParams
+        selfGuardReshowToken &+= 1
+        let token = selfGuardReshowToken
+        selfGuardUnlockWaitStart = Date()
+        selfGuardRebuildTry = 0
+        Logger.persist("熄屏自保：拆窗完成，等设备解锁后重建（\(ConfigStore.shared.isFloatingWakeParkEnabled ? "快速档" : "保守档")，解锁后 \(String(format: "%.1f", params.afterUnlock))s）")
+        pollDeviceUnlockedThenReshow(token: token, floor: params.floor, afterUnlock: params.afterUnlock)
+    }
+
+    /// 轮询「设备是否已解锁」，解锁后才安排重建；锁定期间**绝不做任何窗口操作**。
+    ///
+    /// 判据：`UIApplication.isProtectedDataAvailable`（公开 API，带密码的设备在锁屏期为
+    /// false，解锁立即变 true）。App 已回前台时无条件放行（前台注册窗口永远安全）。
+    /// ⚠️ 不用 `hasBlankedScreen` 那类 notify 状态位 —— v1.0.159 已被其 latch 语义坑过。
+    private func pollDeviceUnlockedThenReshow(token: Int, floor: Double, afterUnlock: Double) {
+        guard token == selfGuardReshowToken else { return }
+        guard ConfigStore.shared.isFloatingLyricsOn else { return }
+        let elapsed = Date().timeIntervalSince(selfGuardUnlockWaitStart)
+        let appActive = UIApplication.shared.applicationState == .active
+        let unlocked = appActive || UIApplication.shared.isProtectedDataAvailable
+
+        if unlocked, appActive || elapsed >= floor {
+            let delay = appActive ? 0.4 : afterUnlock
+            Logger.persist("熄屏自保：已确认设备解锁（屏变后 \(String(format: "%.1f", elapsed))s），\(String(format: "%.1f", delay))s 后重建悬浮窗")
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self, token == self.selfGuardReshowToken else { return }
+                self.performSelfGuardRebuild(token: token)
+            }
+            return
+        }
+        // 长时间停在锁屏（例：手机放一夜）→ 退化为 5s 一次的慢轮询。
+        // 不设「硬放弃」：一旦放弃，用户解锁回桌面后窗口就永远缺失了，
+        // 而慢轮询的开销可以忽略；新一轮屏变（token 自增）会立刻结束本轮。
+        let interval: Double = elapsed < 60 ? 0.8 : 5.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval) { [weak self] in
+            self?.pollDeviceUnlockedThenReshow(token: token, floor: floor, afterUnlock: afterUnlock)
+        }
+    }
+
+    /// 真正把窗口重建回来。门禁不变 —— **绝不在「已停播」状态下去注册窗口**
+    /// （v1.0.146/147 的教训）；音频未在播就 8s 后重试，最多 3 次。
+    private func performSelfGuardRebuild(token: Int) {
+        guard token == selfGuardReshowToken else { return }
+        guard ConfigStore.shared.isFloatingLyricsOn else { return }
+        guard PlayerManager.shared.isPlaybackHealthy else {
+            selfGuardRebuildTry += 1
+            guard selfGuardRebuildTry < 4 else {
+                Logger.persist("熄屏自保：音频管线持续未在播，放弃本次后台重建")
                 return
             }
-            self.show()
-            Logger.persist("熄屏自保：阶梯重建完成（亮屏后 \(Int(delays[attempt]))s，音频健康）")
-            // 重建后 6s 存活确认 —— 下次日志能直接区分「重建即死」与「别的原因」
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
-                Logger.persist("熄屏自保：重建后 6s 存活确认（音频健康=\(PlayerManager.shared.isPlaybackHealthy)）")
+            Logger.persist("熄屏自保：音频管线未在播，8s 后重试第 \(selfGuardRebuildTry) 次")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
+                guard let self = self, token == self.selfGuardReshowToken else { return }
+                self.performSelfGuardRebuild(token: token)
             }
+            return
         }
-        selfGuardReshowWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: work)
+        show()
+        Logger.persist("熄屏自保：阶梯重建完成（解锁后重建，音频健康）")
+        // 重建后 6s 存活确认 —— 下次日志能直接区分「重建即死」与「别的原因」
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
+            Logger.persist("熄屏自保：重建后 6s 存活确认（音频健康=\(PlayerManager.shared.isPlaybackHealthy)）")
+        }
     }
 
     /// 离开 App（切其他应用 / 回桌面 / 锁屏）：恢复悬浮窗

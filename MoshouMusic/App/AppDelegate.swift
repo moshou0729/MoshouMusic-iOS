@@ -77,10 +77,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let strikes = ConfigStore.shared.floatingGuardKillStrikes + 1
         ConfigStore.shared.floatingGuardKillStrikes = strikes
         Logger.persist("防护降档计数：重建后未活到 12s 即被强杀（第 \(strikes) 次）")
-        if strikes >= 2, ConfigStore.shared.isFloatingWakeParkEnabled {
+        if strikes >= 1, ConfigStore.shared.isFloatingWakeParkEnabled {
             ConfigStore.shared.isFloatingWakeParkEnabled = false
             ConfigStore.shared.floatingGuardKillStrikes = 0
-            Logger.persist("⚠️ 连续两次重建后被强杀 —— 自动降回保守档（屏变后 12s 重建）；如需重试请在悬浮设置页重新打开「锁屏显示悬浮窗」")
+            Logger.persist("⚠️ 重建后仍被系统强杀 —— 自动降回保守档（解锁后约 6s 重建）；如需重试请在悬浮设置页重新打开「解锁后自动恢复悬浮窗」")
         }
     }
 

@@ -94,7 +94,7 @@ final class FloatingSettingsViewController: UIViewController {
         // 开（默认）= 屏变后 3s 快速重建（锁屏上尽快可见）；关 = 12/20s 保守档（v1.0.155 行为）。
         let guardRow = UIView()
         let guardTitle = UILabel()
-        guardTitle.text = "锁屏显示悬浮窗（屏变后 3s 重建；关掉则等 12s）"
+        guardTitle.text = "解锁后自动恢复悬浮窗（开=解锁后约 2s；关=约 6s）"
         guardTitle.font = UIFont.systemFont(ofSize: 15, weight: .medium)
         guardTitle.numberOfLines = 2
         guardTitle.textColor = .label

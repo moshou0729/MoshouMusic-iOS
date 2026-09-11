@@ -909,6 +909,19 @@ class PlayerManager: NSObject {
         // 才轮到洛雪脚本），同步歌的内置官方源经常失效，每次都白等十几秒。
         // 现在两路同时发出，先拿到有效链接的立即开播，另一路结果作废；
         // 两路都失败才进入自动换源链路。
+        // 🚨 v1.0.161：songmid 已被历史 `%g` 污染（如 "3.32238e+09"）→ 直接取链必然
+        // 失败（脚本的 /^\d+$/ 过不了、中转接口 404），白等十几秒后才落到换源。
+        // 这里直接改走「全源搜索重匹配」，且 **不排除本源** —— 只在网易云上架的
+        // 翻唱 / 烟嗓版，排掉本源就等于判死刑（用户实测的「无法播放」正是如此）。
+        // 命中后回写曲库，下次即为正常直接取链。
+        if song.hasSuspectSongmid {
+            Logger.warn("LX PlayerManager: songmid 疑似损坏「\(song.songmid)」(\(song.source))，改用全源搜索重匹配")
+            handlePlayFailure(song: song, reason: "音源ID异常，正在重新匹配",
+                              generation: generation, completion: completion,
+                              allowSameSource: true)
+            return
+        }
+
         let race = DualRace()
         let quality = ConfigStore.shared.defaultQuality
         let extra = song.meta ?? [:]
@@ -1240,7 +1253,8 @@ class PlayerManager: NSObject {
         song: Song,
         reason: String,
         generation: Int? = nil,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (Bool) -> Void,
+        allowSameSource: Bool = false
     ) {
         // v1.0.88：切歌后旧失败链路不再换源（generation 为 nil 的调用点来自
         // readyToPlay 短音频兜底等「当前歌仍然有效」的场景，不受限）
@@ -1261,10 +1275,12 @@ class PlayerManager: NSObject {
         lastPlayError = "\(sourceName) 失败，正在尝试其他音源…"
         notifyStateChanged()
 
+        // v1.0.161：songmid 损坏时允许「本源重匹配」（用歌名+歌手搜本源、拿到正确 id）。
+        let excluded: Set<String> = allowSameSource ? [] : [currentSource]
         sourceSwitcher.findPlayable(
             name: song.name,
             singer: song.singer,
-            excluding: [currentSource],
+            excluding: excluded,
             quality: ConfigStore.shared.defaultQuality,
             interval: song.interval
         ) { [weak self] hit in
@@ -1302,6 +1318,20 @@ class PlayerManager: NSObject {
 
                 let newName = ConfigStore.shared.displayName(for: hit.source)
                 Logger.info("已自动换源到 \(newName)（保留原名显示）")
+
+                // v1.0.161：曲库里这条 songmid 是坏的 → 用刚匹配到的正确身份**就地回写**，
+                // 下次直接取链（不再走搜索重匹配的慢路径）。
+                // 只在「同源重匹配」时回写：跨源命中会改变歌曲的平台归属，不悄悄改用户的库。
+                if song.hasSuspectSongmid, hit.source == song.source {
+                    let repaired = Song(id: Song.makeId(source: hit.source, songmid: hit.song.songmid),
+                                        name: song.name, singer: song.singer, source: hit.source,
+                                        songmid: hit.song.songmid, albumName: song.albumName,
+                                        albumId: song.albumId, imgUrl: song.imgUrl,
+                                        quality: song.quality, interval: song.interval,
+                                        meta: hit.song.meta)
+                    let n = PlaylistStore.shared.replaceSongIdentity(oldId: song.id, with: repaired)
+                    Logger.persist("曲库修复：songmid「\(song.songmid)」→「\(hit.song.songmid)」（命中 \(n) 处）")
+                }
 
                 self.startPlayback(url: playUrl, song: displaySong)
                 completion(true)

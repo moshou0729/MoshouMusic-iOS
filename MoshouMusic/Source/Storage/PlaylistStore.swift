@@ -97,6 +97,25 @@ class PlaylistStore {
                     meta: meta.isEmpty ? nil : meta)
     }
 
+    /// v1.0.161：把曲库里某条歌曲的**身份**替换成修好的版本（songmid 被历史 `%g`
+    /// 污染时，播放链路用搜索重匹配拿到正确 id 后回写）。返回被替换的处数。
+    ///
+    /// 只换 id/songmid/source/meta，展示用的名字与歌手保持调用方传进来的值 ——
+    /// 用户在歌单里看到的仍然是原来那首（换源不改名）。
+    @discardableResult
+    func replaceSongIdentity(oldId: String, with new: Song) -> Int {
+        guard oldId != new.id else { return 0 }
+        var count = 0
+        for plIdx in playlists.indices {
+            for sIdx in playlists[plIdx].songs.indices where playlists[plIdx].songs[sIdx].id == oldId {
+                playlists[plIdx].songs[sIdx] = new
+                count += 1
+            }
+        }
+        if count > 0 { save() }
+        return count
+    }
+
     func save() {
         let path = ConfigStore.shared.playlistsPath
 

@@ -209,3 +209,22 @@ enum PlayMode: Int, CaseIterable {
         }
     }
 }
+
+// MARK: - v1.0.161 songmid 健康判定（历史 %g 污染的存量数据）
+
+extension Song {
+    /// songmid 是否明显不可用 —— 用于识别历史 `%g` 渲染造成的坏 id。
+    ///
+    /// 判据：
+    /// - 含指数记号（`e+` / `e-`）→ 必是 `%g` 产物，任何平台都取不到链接；
+    /// - 网易云（`wy`）的 id 一律是纯数字，出现字母 / 小数点 / 下划线即为坏值；
+    /// - 其他平台（tx 的 mid 是字母数字混合、kg 是 32 位 hash、mg/kw 数字）一律放行，
+    ///   只靠上面的指数判据兜底 —— 宁可漏判，也不能把正常歌曲误推进慢速重匹配。
+    var hasSuspectSongmid: Bool {
+        if songmid.isEmpty { return true }
+        if songmid.contains("e+") || songmid.contains("E+")
+            || songmid.contains("e-") || songmid.contains("E-") { return true }
+        if source == "wy" { return !songmid.allSatisfy { $0.isNumber } }
+        return false
+    }
+}

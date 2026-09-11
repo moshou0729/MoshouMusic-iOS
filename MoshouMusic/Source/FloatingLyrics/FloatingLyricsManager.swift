@@ -197,9 +197,14 @@ final class FloatingLyricsManager: NSObject {
         pulseWorkItem?.cancel()
         selfGuardReshowWork?.cancel()
 
+        // v1.0.164：先记录「这次屏变到底有没有窗口可拆」。
+        // 17:43:02（灭屏，窗口在）与 17:49:25（点亮，窗口不在）走的是**同一条代码路径**，
+        // 前者安然存活、后者 1.5s 内被杀 —— 把这一点写进日志，下次才能一眼看出
+        //「死亡是否只发生在无窗口可拆的那一次」。这是把死因从窗口侧移交出去的关键证据。
+        let hadWindow = floatingWindow != nil || hostingRegistered
         teardownWindow()
         scheduleSelfGuardReshow(attempt: 0)
-        Logger.persist("熄屏自保：屏幕状态变化 —— 已拆窗避杀（不区分亮/灭），等设备解锁后再重建")
+        Logger.persist("熄屏自保：屏幕状态变化 —— 已拆窗避杀（不区分亮/灭），等设备解锁后再重建（本次有窗口可拆=\(hadWindow ? 1 : 0)）")
         startScreenChangeLivenessBeat()
     }
 
@@ -243,9 +248,12 @@ final class FloatingLyricsManager: NSObject {
         stopScreenChangeLivenessBeat()
         selfGuardBeatSeq = 0
         selfGuardBeatStart = Date()
-        // 打点：本次重建的「存活待确认」。活过 12s 会被清掉；
-        // 若进程在那之前被系统强杀，下次启动读到本打点 → 自动降档计数 +1（见 AppDelegate）
-        ConfigStore.shared.floatingGuardRebuildTs = Date().timeIntervalSince1970
+        // 🚨 v1.0.164：打点**已搬走**（见 markRebuildPendingAck）。旧写法在这里写
+        // floatingGuardRebuildTs，等于「每一次屏变」都记一次「重建后存活待确认」——
+        // 而 17:49:25 那次点亮时窗口根本不存在（灭屏已拆、锁定期间不重建），
+        // 却因此被记成「重建后未活到 12s 即被强杀」。打点语义错了会误触发自动降档
+        //（AppDelegate 中 strikes>=1 就直接把开关关掉、降回保守档），
+        // 用户会莫名其妙发现悬浮窗出现变慢且查不出原因。
         scheduleScreenChangeBeat()
     }
 
@@ -256,25 +264,48 @@ final class FloatingLyricsManager: NSObject {
             self.selfGuardBeatSeq += 1
             let elapsed = Date().timeIntervalSince(self.selfGuardBeatStart)
             Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)，已解锁=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)，锁=\(FloatingWindowHosting.deviceLockState())，本会话曾锁定=\(self.selfGuardSawLocked ? 1 : 0)）")
-            if self.selfGuardBeatSeq >= 8 {
-                // 活过 12s：这次重建没把自己搞死 → 清掉打点，不计入自动降档
-                ConfigStore.shared.floatingGuardRebuildTs = 0
-            }
+            // v1.0.164：此处不再清打点 —— 清理时机已随打点一起搬到 markRebuildPendingAck。
+            // 原来的「心跳 #8 才清」在「窗口压根没重建的屏变」里毫无意义（那种轮次本就
+            // 不该有点），而真正重建过的那一轮不一定走到同一段心跳序列。
             if self.selfGuardBeatSeq >= FloatingLyricsManager.selfGuardBeatCount {
                 // v1.0.163：明确标出观测窗口的右边界 —— 之后若仍无重建日志，
                 // 只可能是「还停在锁屏等解锁」，而不是「进程死了没有说话」。
-                Logger.persist("屏变存活心跳结束（已记满 \(FloatingLyricsManager.selfGuardBeatCount) 条 ≈ 60s）—— 此后若仍无重建日志，说明仍在锁屏等待解锁")
+                Logger.persist("屏变存活心跳结束（已记满 \(FloatingLyricsManager.selfGuardBeatCount) 条，前 3s 每 0.5s 密集采样 ≈ 54s）—— 此后若仍无重建日志，说明仍在锁屏等待解锁")
                 return
             }
             self.scheduleScreenChangeBeat()
         }
         selfGuardBeatWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+        // v1.0.164：前 6 条加密到 0.5s 间隔。17:49:25 那次拆窗后**一条心跳都没出来**，
+        // 只能推断「死在 1.5s 内」—— 究竟是第 0.3 秒还是第 1.4 秒完全不可知，
+        // 而这恰恰决定「还有没有抢救窗口」。前 3 秒密集采样是把死亡时刻压到 0.5s 精度的唯一手段。
+        let interval: Double = self.selfGuardBeatSeq < 6 ? 0.5 : 1.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: work)
     }
 
     private func stopScreenChangeLivenessBeat() {
         selfGuardBeatWork?.cancel()
         selfGuardBeatWork = nil
+    }
+
+    /// v1.0.164：「重建后 12s 存活待确认」打点 —— **只在本轮真的重建了窗口时才写**。
+    ///
+    /// 语义修正的由来：旧写法把打点塞在 `startScreenChangeLivenessBeat()` 里，而那个函数
+    /// 是**每次屏变**都会调的 —— 于是「灭屏拆窗」（窗口根本不会重建）也照样被打上
+    /// 「重建后待确认」。17:49:25 那次点亮正是如此：当时窗口并不存在（灭屏已拆、锁定期间
+    /// 不重建），进程在 1.5s 内被杀后，下次启动就报出「防护降档计数：重建后未活到 12s
+    /// 即被强杀（第 1 次）」—— 而它压根没重建过。
+    /// 危害不是日志难看：AppDelegate 里 `strikes >= 1` 就会把快速档开关关掉。
+    private func markRebuildPendingAck() {
+        let ts = Date().timeIntervalSince1970
+        ConfigStore.shared.floatingGuardRebuildTs = ts
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) {
+            // 只清「还是本次那个点」的情况；期间若又重建过，新点由新 timer 负责
+            if abs(ConfigStore.shared.floatingGuardRebuildTs - ts) < 0.001 {
+                ConfigStore.shared.floatingGuardRebuildTs = 0
+                Logger.persist("防护打点：重建后已存活 12s，清除待确认标记")
+            }
+        }
     }
 
     /// v1.0.156（v1.0.160 起闲置）：把窗口**临时移出可见区**（不销毁、不重注册）。
@@ -462,6 +493,9 @@ final class FloatingLyricsManager: NSObject {
         show()
         // v1.0.162：本轮解锁门控已完成，清掉「曾锁定」标记，下一次屏变重新观测
         selfGuardSawLocked = false
+        // v1.0.164：**唯一**的打点入口 —— 只有真的把窗口建回来了，才谈得上
+        //「重建后 12s 内是否被杀」。屏变本身不再打点。
+        markRebuildPendingAck()
         Logger.persist("熄屏自保：阶梯重建完成（解锁后重建，音频健康）")
         // 重建后 6s 存活确认 —— 下次日志能直接区分「重建即死」与「别的原因」
         DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {

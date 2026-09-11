@@ -456,6 +456,16 @@ class PlayerManager: NSObject {
         // 恢复链（保活/抢占激活/看门狗）保持不动——开关实验证明它们无害。
         // 悬浮窗由 screenWakeSelfGuardTeardown 内部延迟 8s 自动重建。
         if isPlaying, UIApplication.shared.applicationState != .active {
+            // 🚨 v1.0.164：顺序反转 —— **先保音频，再动窗口**。
+            // 17:49:25 那次（App 已后台 6.5 分钟、且当时**根本没有悬浮窗**）点亮后 1.5s 内
+            // 进程就失去执行权（屏变心跳一条没出）→ 死因已不在窗口侧（没有窗口可拆），
+            // 而是 v1.0.148 注释里写明的那条老链：点亮瞬间 mediaserverd 重排音频所有者
+            // → 管线静默停住 → 后台无音频输出 → 数秒内被挂起/清杀。
+            // 一旦被挂起，所有定时器（含看门狗）全部停摆，任何补救都来不及 ——
+            // 所以「占住会话」必须在一切动作之前。
+            _ = ensureAudioSessionActive()
+            if player.timeControlStatus != .playing { player.play() }
+            screenWakeSnapshot(tag: "屏变抢占后")
             FloatingLyricsManager.shared.screenWakeSelfGuardTeardown()
         }
         beginRecoveryKeepAlive()
@@ -472,11 +482,28 @@ class PlayerManager: NSObject {
             if !ensureAudioSessionActive() {
                 Logger.warn("亮屏抢占激活失败，交由中断恢复链接管")
             }
-            scheduleInterruptionWatchdog(firstDelay: 1.2)
+            // v1.0.164：1.2 → 0.5。实测死亡可以在 1.5s 内发生（比首检还早，
+            // 17:49:25 连一条 1.5s 心跳都没出），首检必须比它更快，
+            // 否则看门狗永远等不到执行机会 —— 等于没有看门狗。
+            scheduleInterruptionWatchdog(firstDelay: 0.5)
         } else {
-            // 中断通常在亮屏后几百毫秒才到：看门狗首检提前到 1.2s
-            scheduleInterruptionWatchdog(firstDelay: 1.2)
+            // 中断通常在亮屏后几百毫秒才到：看门狗首检提前到 0.5s
+            scheduleInterruptionWatchdog(firstDelay: 0.5)
         }
+    }
+
+    /// v1.0.164：屏变瞬间的音频现场快照（持久化，跨进程保留）。
+    ///
+    /// 目的：把「音频被系统抢走」从推测变成证据。17:49:25 那次点亮后进程在 1.5s 内消失，
+    /// 日志里连一条心跳都没有 —— 说明死因发生在「后台无音频输出 → 被挂起」这条链上，
+    /// 而我们对当时的会话归属一无所知。`isOtherAudioPlaying` /
+    /// `secondaryAudioShouldBeSilencedHint` 一旦为 true，就证明会话已被别的 App 接管、
+    /// 或系统要求本 App 静音 —— 那正是「无音频输出 → 数秒后被挂起」的前置条件。
+    /// 判读规则：先看「他源在播=1 / 需静音=1」是否与死亡同现；再看「保护数据=1 且 锁=1」
+    /// 这类矛盾组合（锁屏延迟生效的假 true，v1.0.162 栽过一次）。
+    func screenWakeSnapshot(tag: String) {
+        let s = AVAudioSession.sharedInstance()
+        Logger.persist("屏变现场快照（\(tag)）：控制=\(playerTimeControlName) 率=\(String(format: "%.2f", player.rate)) 他源在播=\(s.isOtherAudioPlaying ? 1 : 0) 需静音=\(s.secondaryAudioShouldBeSilencedHint ? 1 : 0) 音量=\(String(format: "%.2f", s.outputVolume)) 前台=\(UIApplication.shared.applicationState == .active ? 1 : 0) 锁=\(FloatingWindowHosting.deviceLockState()) 保护数据=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)")
     }
 
     /// v1.0.148：亮屏音频自检 —— 只在「声明在播但管线已停」时动手；健康时只记一条日志。

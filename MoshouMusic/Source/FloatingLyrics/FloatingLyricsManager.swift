@@ -1,5 +1,4 @@
 import UIKit
-import AVFoundation
 
 /// 系统级悬浮歌词窗口 — TrollStore 专属能力
 ///
@@ -208,10 +207,12 @@ final class FloatingLyricsManager: NSObject {
         // 逻辑上不可能还有窗口。这条字段一旦失真，「死亡是否与窗口相关」就判不出来了。
         let hadWindow = floatingWindow != nil
         let wasRegistered = hostingRegistered
-        // v1.0.166：拆窗前先确认会话还在手里（详见 PlayerManager.reassertAudioSession 注释）
-        if !AVAudioSession.sharedInstance().isActive {
-            Logger.persist("熄屏自保：拆窗前发现音频会话已失活，先行抢占再拆窗")
-            _ = PlayerManager.shared.reassertAudioSession()
+        // v1.0.166：拆窗前先重新声明一次会话所有权（详见 reassertAudioSession 注释）。
+        // ⚠️ 不能写成「先判断再抢回」—— AVAudioSession 没有公开的 isActive 属性，
+        // 判断本身只能靠幂等的 setActive(true)，那不如无条件调一次（开销相同、语义更稳）。
+        let claimed = PlayerManager.shared.reassertAudioSession()
+        if !claimed {
+            Logger.persist("熄屏自保：拆窗前重新声明音频会话所有权失败（mediaserverd 忙或已判给他源）")
         }
         teardownWindow()
         scheduleSelfGuardReshow(attempt: 0)

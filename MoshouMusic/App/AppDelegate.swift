@@ -125,6 +125,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 options: [.allowBluetooth, .allowAirPlay]
             )
             try session.setActive(true)
+            PlayerManager.shared.markAudioSessionActivated(true)
             Logger.info("AudioSession 配置成功")
         } catch {
             Logger.error("AudioSession 配置失败: \(error)")
@@ -139,6 +140,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                                          options: [.allowBluetooth, .allowAirPlay])
                     }
                     try s.setActive(true)
+                    PlayerManager.shared.markAudioSessionActivated(true)
                     Logger.info("AudioSession 二次配置成功")
                 } catch {
                     Logger.error("AudioSession 二次配置仍失败: \(error)（播放时会再次兜底激活）")

@@ -195,7 +195,7 @@ class PlayerManager: NSObject {
                     // v1.0.166：先落 8 字节存活探针（强制落盘），再写可读日志 ——
                     // 即使进程在写日志途中被杀，「上次存活于 Ns 前」依然可读。
                     Logger.beatAlive()
-                    Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying) rate=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName) 会话激活=\(AVAudioSession.sharedInstance().isActive ? 1 : 0) 位置=\(pos)s/\(dur)s")
+                    Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying) rate=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName) 会话已激活=\(self.audioSessionActivated ? 1 : 0) 位置=\(pos)s/\(dur)s")
                 }
                 // v1.0.147：停滞自愈 + 后台保活（防止「无声 → 被挂起 → 被清杀」）
                 self.checkPlaybackStall()
@@ -524,7 +524,7 @@ class PlayerManager: NSObject {
     /// 这类矛盾组合（锁屏延迟生效的假 true，v1.0.162 栽过一次）。
     func screenWakeSnapshot(tag: String) {
         let s = AVAudioSession.sharedInstance()
-        Logger.persist("屏变现场快照（\(tag)）：控制=\(playerTimeControlName) 率=\(String(format: "%.2f", player.rate)) 会话激活=\(s.isActive ? 1 : 0) 他源在播=\(s.isOtherAudioPlaying ? 1 : 0) 需静音=\(s.secondaryAudioShouldBeSilencedHint ? 1 : 0) 音量=\(String(format: "%.2f", s.outputVolume)) 前台=\(UIApplication.shared.applicationState == .active ? 1 : 0) 锁=\(FloatingWindowHosting.deviceLockState()) 保护数据=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)")
+        Logger.persist("屏变现场快照（\(tag)）：控制=\(playerTimeControlName) 率=\(String(format: "%.2f", player.rate)) 会话已激活=\(audioSessionActivated ? 1 : 0) 他源在播=\(s.isOtherAudioPlaying ? 1 : 0) 需静音=\(s.secondaryAudioShouldBeSilencedHint ? 1 : 0) 音量=\(String(format: "%.2f", s.outputVolume)) 前台=\(UIApplication.shared.applicationState == .active ? 1 : 0) 锁=\(FloatingWindowHosting.deviceLockState()) 保护数据=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)")
     }
 
     /// v1.0.148：亮屏音频自检 —— 只在「声明在播但管线已停」时动手；健康时只记一条日志。
@@ -553,7 +553,8 @@ class PlayerManager: NSObject {
     /// 为什么必须加：09-14 那三轮里前两轮屏变都安然存活，第三轮却「一条日志都没留下」。
     /// 在 persist 强制落盘之前（v1.0.166 已修），既可能是「0.5s 内被挂起」，
     /// 也可能是「日志跑了但没落盘」—— 两种可能指向完全相反的修法。
-    /// 更致命的是另一个盲区：我们**从来没有记录过 `AVAudioSession.isActive`**。
+    /// 更致命的是另一个盲区：我们**从来没有记录过「会话是否还在本 App 手里」**——
+    /// 因为 AVAudioSession 压根没有公开的 isActive 属性（CI #221 编译坐实）。
     /// 而「后台无音频输出 → 被挂起 → 被清杀」这条链的起点，正是会话被系统收走；
     /// 之前只能靠 `rate` / `timeControlStatus` 间接推断，而这两者在会话已被收走时
     /// 仍然可以保持 playing，是彻底的假阴性。
@@ -580,19 +581,51 @@ class PlayerManager: NSObject {
     }
 
     private func screenWakeProbeTick() {
-        let s = AVAudioSession.sharedInstance()
-        let active = s.isActive
+        // 每次探针都幂等地重新声明一次所有权 —— 「能否 setActive 成功」就是此刻
+        // 会话是否还在本 App 手里的**实时判据**（AVAudioSession 无公开 isActive）。
+        // 这一步本身就是抢回动作，与健康检查合二为一，不额外增加开销。
+        let claimed = claimAudioSessionQuietly()
         Logger.beatAlive()
-        Logger.persist("屏变音频探针 #\(screenProbeSeq)（会话激活=\(active ? 1 : 0) 率=\(String(format: "%.2f", player.rate)) 控制=\(playerTimeControlName) 后台剩余=\(backgroundRemainingText())）")
-        guard active, player.rate > 0, player.timeControlStatus == .playing else {
+        Logger.persist("屏变音频探针 #\(screenProbeSeq)（会话可用=\(claimed ? 1 : 0) 率=\(String(format: "%.2f", player.rate)) 控制=\(playerTimeControlName) 后台剩余=\(backgroundRemainingText())）")
+        guard claimed, player.rate > 0, player.timeControlStatus == .playing else {
             guard isPlaying || wasPlayingBeforeInterruption else { return }
             _ = ensureAudioSessionActive()
             player.play()
             refreshPlayKeepAlive()
-            Logger.persist("屏变音频探针 #\(screenProbeSeq)：检测到音频失活，已重新抢占会话（会话激活=\(AVAudioSession.sharedInstance().isActive ? 1 : 0)）")
+            Logger.persist("屏变音频探针 #\(screenProbeSeq)：检测到音频失活，已重新抢占会话（会话可用=\(claimAudioSessionQuietly() ? 1 : 0)）")
             return
         }
     }
+
+    /// 静默重新声明会话所有权（幂等）。成功 = 此刻会话归本 App；
+    /// 抛错（典型 2003329396 = mediaserverd 正忙 / 已判给别的 App）= 已被收走。
+    ///
+    /// ⚠️ AVAudioSession **没有公开的 isActive 属性**（CI #221 编译坐实：
+    /// `value of type 'AVAudioSession' has no member 'isActive'`）—— 这也是
+    /// v1.0.165 之前三版日志里从来没有这一项的原因。「能否 setActive 成功」
+    /// 是唯一可用的实时判据，且它同时就是抢回动作。
+    private func claimAudioSessionQuietly() -> Bool {
+        let s = AVAudioSession.sharedInstance()
+        do {
+            if s.category != .playback {
+                try s.setCategory(.playback, mode: .default,
+                                  options: [.allowBluetooth, .allowAirPlay])
+            }
+            try s.setActive(true)
+            audioSessionActivated = true
+            return true
+        } catch {
+            audioSessionActivated = false
+            return false
+        }
+    }
+
+    /// 自维护的会话激活标记。AVAudioSession 无公开 isActive，只能自己记账：
+    /// 每次成功激活置 true、失败（mediaserverd 抢走/忙）置 false。
+    private var audioSessionActivated = false
+
+    /// 供 AppDelegate 在启动配置成功后同步标记
+    func markAudioSessionActivated(_ v: Bool) { audioSessionActivated = v }
 
     /// 后台剩余执行时间：持有播放保活任务时系统返回 DBL_MAX（记为「无限」）；
     /// 一旦它开始变成有限值，说明保活已被系统收回、挂起进入倒计时。
@@ -621,10 +654,12 @@ class PlayerManager: NSObject {
                                         options: [.allowBluetooth, .allowAirPlay])
             }
             try session.setActive(true)
+            audioSessionActivated = true
             return true
         } catch {
             // 不再吞错误：mediaserverd 卡死 / 会话冲突时这里会抛，留下日志方便定位
             Logger.error("音频会话激活失败: \(error.localizedDescription)")
+            audioSessionActivated = false
             return false
         }
     }
@@ -1154,7 +1189,7 @@ class PlayerManager: NSObject {
         if UIApplication.shared.applicationState != .active {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 guard let self = self else { return }
-                Logger.persist("后台起播音频确认（\(song.name)）：会话激活=\(AVAudioSession.sharedInstance().isActive ? 1 : 0) 率=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName)")
+                Logger.persist("后台起播音频确认（\(song.name)）：会话已激活=\(self.audioSessionActivated ? 1 : 0) 率=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName)")
             }
         }
 

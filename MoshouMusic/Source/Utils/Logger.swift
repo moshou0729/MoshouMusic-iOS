@@ -82,12 +82,22 @@ class Logger {
         let fileName = (file as NSString).lastPathComponent
         lock.lock()
         defer { lock.unlock() }
-        var entries = UserDefaults.standard.stringArray(forKey: persistKey) ?? []
+        let d = UserDefaults.standard
+        var entries = d.stringArray(forKey: persistKey) ?? []
         entries.append("⭐ [\(dateFormatter.string(from: Date()))] [\(fileName):\(line)] \(message)（内存 \(mem)MB）")
         if entries.count > persistMaxEntries {
             entries.removeFirst(entries.count - persistMaxEntries)
         }
-        UserDefaults.standard.set(entries, forKey: persistKey)
+        d.set(entries, forKey: persistKey)
+        // 🚨 v1.0.169：**任何一条 persist 都同时是「我此刻还活着」的证据**。
+        // 2026-09-14 17:24:34 那次启动日志报「上次存活于 14.5s 前」，可日志里
+        // 17:24:29.025 明明还有一条「亮屏音频自检」—— 真实死亡在重启前约 5.7s，
+        // 被记成了 14.5s。原因：aliveWallKey 只由 beatAlive()（10s 后台心跳）更新，
+        // persist 不碰它，于是「最后一条落盘的日志」和「最后的心跳」差了近 10s。
+        // 由它推算的死亡时刻一直是偏大的，v1.0.166 想解决的「死亡时刻测不准」
+        // 其实只解决了一半。这里把两者合一：写盘成本为零（末尾已有 synchronize）。
+        d.set(Date().timeIntervalSince1970, forKey: aliveWallKey)
+        d.set(ProcessInfo.processInfo.systemUptime, forKey: aliveUpKey)
         // 🚨 v1.0.166：强制落盘 —— 本轮最关键的取证修正。
         // `UserDefaults.set` 只写入内存缓存，由系统在合适时机（数百 ms~数秒，
         // 或进入后台等事件）异步落盘；而进程被 jetsam 强杀时是 SIGKILL：

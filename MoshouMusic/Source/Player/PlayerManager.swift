@@ -760,6 +760,7 @@ class PlayerManager: NSObject {
         if let queue = queue, !queue.isEmpty {
             playQueue = queue
             queueIndex = queue.firstIndex(where: { $0.id == song.id }) ?? 0
+            saveQueueSnapshot()
         }
 
         postQueueChanged()
@@ -1297,6 +1298,11 @@ class PlayerManager: NSObject {
     // MARK: - v1.0.140 被杀续播快照
 
     private static let lastPlaySnapshotKey = "moshou_lastplay_snapshot_v1"
+    /// v1.0.169：正在播放队列（独立于上面的轻量快照，原因见 saveQueueSnapshot）
+    private static let playQueueSnapshotKey = "moshou_playqueue_v1"
+    /// 队列持久化上限（首）。超大歌单（几千首）整条塞进 UserDefaults 会把每次
+    /// 写盘拖到几十 KB 以上；截断只影响「被杀后还能往回翻多少」，不影响续播。
+    private static let playQueueSnapshotLimit = 1000
     /// 续播 seek 目标（commitStartPlayback 挂上 item 后一次性消费）
     private var pendingResumeSeek: TimeInterval?
 
@@ -1309,9 +1315,35 @@ class PlayerManager: NSObject {
         let snap: [String: Any] = [
             "song": songB64,
             "position": currentTime,
+            // v1.0.169：只存下标（一个 Int），队列本体另存 —— 心跳每 10s 跑一次，
+            // 把整条队列塞进来等于每 10s 重写一次几十 KB 的 blob。
+            "queueIndex": queueIndex,
             "ts": Date().timeIntervalSince1970
         ]
         UserDefaults.standard.set(snap, forKey: Self.lastPlaySnapshotKey)
+    }
+
+    /// v1.0.169：把「正在播放队列」单独落盘。
+    ///
+    /// 为什么必须独立存、且只在内容变化时写：续播快照（savePlaybackSnapshot）是
+    /// 10s 心跳粒度的，而队列常常有几百首（几十~几百 KB）—— 若跟心跳一起写，
+    /// 每 10s 就要 fsync 一次大 blob，等于给自己制造 I/O 压力（后台更容易被杀）。
+    /// 队列内容只在 playAll / addToQueue / clearQueue / remove / move / 换队列开播
+    /// 时变，这些动作低频；心跳快照只带一个 Int 下标就够了。
+    private func saveQueueSnapshot() {
+        let slice = playQueue.count > Self.playQueueSnapshotLimit
+            ? Array(playQueue.prefix(Self.playQueueSnapshotLimit)) : playQueue
+        let list = slice.compactMap { try? JSONEncoder().encode($0).base64EncodedString() }
+        UserDefaults.standard.set(list, forKey: Self.playQueueSnapshotKey)
+        UserDefaults.standard.synchronize()
+    }
+
+    private func loadQueueSnapshot() -> [Song] {
+        guard let list = UserDefaults.standard.array(forKey: Self.playQueueSnapshotKey) as? [String] else { return [] }
+        return list.compactMap { b64 -> Song? in
+            guard let data = Data(base64Encoded: b64) else { return nil }
+            return try? JSONDecoder().decode(Song.self, from: data)
+        }
     }
 
     /// v1.0.140：进程被系统强制终止后用户重新打开 App → 自动接续上一首（快照进度 seek）。
@@ -1327,7 +1359,25 @@ class PlayerManager: NSObject {
         let pos = snap["position"] as? Double ?? 0
         Logger.persist("自动续播：上次被杀于播放 \(song.name) - \(song.singer)，从 \(Int(pos))s 接续")
         if pos > 8 { pendingResumeSeek = pos }
-        play(song: song)
+        // 🚨 v1.0.169：此前只播单曲 —— 队列是进程内变量，被杀后随之蒸发，
+        // 于是「正在播放」列表只剩这一首，播完就断（用户原话：「播放列表就清空了，
+        // 只剩停止前播放的那首歌，应该是继续播放之前的那个清单」）。
+        // 被杀对 sideload App 是常态（后台寿命天花板），正确姿势不是
+        //「再想办法不被杀」，而是**让被杀无感**：队列随快照一起活过来。
+        let savedQueue = loadQueueSnapshot()
+        if !savedQueue.isEmpty {
+            play(song: song, queue: savedQueue)
+            // play(song:queue:) 用 song.id 反查下标；队列里若有同名重复曲目会落到
+            // 第一条，这里用快照里存的下标校正回去（更贴近被杀前的真实位置）。
+            if let qi = snap["queueIndex"] as? Int, qi >= 0, qi < playQueue.count {
+                queueIndex = qi
+            }
+            postQueueChanged()
+            Logger.persist("自动续播：队列已恢复 \(playQueue.count) 首（当前下标 \(queueIndex)），播完自动接下一首")
+        } else {
+            play(song: song)
+            Logger.persist("自动续播：无可恢复队列（快照仅单曲），播完即止")
+        }
     }
 
     private func commitStartPlayback(url: URL, song: Song) {
@@ -1866,6 +1916,7 @@ class PlayerManager: NSObject {
         playQueue = songs
         // 夹紧下标，避免调用方传入越界值导致崩溃
         queueIndex = max(0, min(index, songs.count - 1))
+        saveQueueSnapshot()
         play(song: songs[queueIndex])
         postQueueChanged()
     }
@@ -1877,6 +1928,7 @@ class PlayerManager: NSObject {
             return
         }
         playQueue.append(song)
+        saveQueueSnapshot()
         postQueueChanged()
     }
 
@@ -1885,6 +1937,7 @@ class PlayerManager: NSObject {
     func clearQueue() {
         playQueue.removeAll()
         queueIndex = 0
+        saveQueueSnapshot()
         postQueueChanged()
     }
 
@@ -1899,6 +1952,7 @@ class PlayerManager: NSObject {
                 queueIndex = max(0, playQueue.count - 1)
             }
         }
+        saveQueueSnapshot()
         postQueueChanged()
     }
 
@@ -1915,6 +1969,7 @@ class PlayerManager: NSObject {
         } else if from == queueIndex {
             queueIndex = to
         }
+        saveQueueSnapshot()
         postQueueChanged()
     }
 

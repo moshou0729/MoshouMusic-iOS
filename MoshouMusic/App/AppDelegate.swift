@@ -55,7 +55,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
 
         Logger.info("墨守music 启动成功")
-        Logger.persist("进程启动（墨守music）")
+        // 🚨 v1.0.169：日志里必须能一眼看出**是哪个版本产生的**。
+        // 2026-09-14 17:24 那轮日志里完全找不到 v1.0.168 的任何标记，于是
+        //「闸门没生效」和「用户还没装 168」两种可能根本无法区分 ——
+        // 这直接决定下一版往哪个方向改。版本号写进启动 persist，一劳永逸。
+        let appVer = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        Logger.persist("进程启动（墨守music v\(appVer) build \(appBuild)）")
 
         // 若上次发生过崩溃，弹窗展示原因，方便定位
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {

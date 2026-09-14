@@ -311,20 +311,37 @@ class PlayerManager: NSObject {
         DispatchQueue.main.async {
             switch type {
             case .began:
-                if self.isPlaying {
-                    self.wasPlayingBeforeInterruption = true
-                    Logger.persist("中断 .began 到达，暂停播放等待恢复")
-                    self.pause()
-                } else {
-                    // v1.0.125 诊断：中断到达时并未在播 —— 排查「中断前标记丢失」场景
-                    Logger.persist("中断 .began 到达但当前未在播（wasPlaying=\(self.wasPlayingBeforeInterruption)）")
-                }
-                // 🚨 v1.0.115：中断后进程失去后台音频保活资格会被挂起，先申请后台任务
+                // 🚨 v1.0.165：保活必须**先于** pause 申请（顺序反了会让进程在中断瞬间
+                // 失去后台执行资格）。旧顺序：pause() → 其内部无条件 endPlayKeepAlive()
+                // 立刻释放 playKeepAliveTask → App「已停止出声 + 无后台任务」
+                // → iOS 立即开始挂起倒计时；虽随后 beginRecoveryKeepAlive() 补了新任务，
+                // 但系统可能已在这个窗口内判定该进程不再需要后台执行。
+                // 症状＝「通知亮屏后音乐停住，且看门狗/激活重试全部停摆
+                // （一直停到用户手动点播放）」，命中率接近 100% 而非偶发。
                 self.recoveryKeepAliveRenewed = false
                 self.beginRecoveryKeepAlive()
+                // v1.0.165：判定「本意是否在听歌」从单一 isPlaying 放宽为多信号 OR。
+                // isPlaying 是自定义布尔标记，在切歌取链/缓冲中/上下首间隙为 false，
+                // 但用户本意显然仍在听 —— 只看它会漏判，导致整条恢复链路空转。
+                let avActive = self.player.timeControlStatus == .playing
+                    || self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                    || self.player.rate > 0
+                if self.isPlaying || avActive {
+                    self.wasPlayingBeforeInterruption = true
+                    Logger.persist("中断 .began 到达，暂停播放等待恢复（isPlaying=\(self.isPlaying) 控制=\(self.playerTimeControlName) 率=\(String(format: "%.2f", self.player.rate))）")
+                    // 中断暂停 ≠ 用户主动暂停：保留后台保活
+                    self.pause(byUser: false)
+                } else {
+                    // v1.0.125 诊断：中断到达时并未在播 —— 排查「中断前标记丢失」场景
+                    // v1.0.165：补记 AVPlayer 真实控制态，区分「真没在播」与「isPlaying 漏标」
+                    Logger.persist("中断 .began 到达但当前未在播（wasPlaying=\(self.wasPlayingBeforeInterruption) 控制=\(self.playerTimeControlName) 率=\(String(format: "%.2f", self.player.rate))）")
+                }
+                // v1.0.165：按「(在播 || 待中断恢复)」重新裁定后台保活，
+                // 让 recoveryBgTask 与 playKeepAliveTask 双任务并存，避免任一被提前释放。
+                self.refreshPlayKeepAlive()
                 // 🚨 v1.0.112：「恢复音乐？」弹窗在亮屏瞬间弹出 → 中断 .began；
                 // 但 .ended 在弹窗被丢弃/吞掉时永远不来 → 音乐永远停着。
-                // 看门狗：3s 后开始接管恢复（若仍在 .interrupted 会自动避让，不与来电抢）。
+                // 看门狗：接管恢复（若仍在 .interrupted 会自动避让，不与来电抢）。
                 self.scheduleInterruptionWatchdog()
             case .ended:
                 // v1.0.123 诊断：确认 .ended 是否送达（弹窗型中断常被吞，靠看门狗接管）
@@ -734,12 +751,23 @@ class PlayerManager: NSObject {
     }
 
     /// 暂停
-    func pause() {
+    /// - parameter byUser: 是否「用户主动暂停」。
+    ///   🚨 v1.0.165：中断（.began）导致的暂停**必须传 false**。
+    ///   本方法原本的语义是「用户主动暂停 → 明确不需要后台保活 → 立刻释放」，
+    ///   被 .began 复用后会把刚申请/仍在持的后台任务拆掉 —— App 变成
+    ///   「已停止出声 + 无后台任务」，iOS 立即开始挂起倒计时，随后所有
+    ///   恢复定时器（看门狗/激活重试/心跳）全部停摆，症状就是
+    ///   「通知亮屏后音乐一直停着，要手动点播放」（命中率近 100%）。
+    ///   默认 true：所有既有调用点（用户点击 / 控制中心暂停）行为不变。
+    func pause(byUser: Bool = true) {
         player.pause()
         isPlaying = false
         // v1.0.147：用户主动暂停 = 明确不需要后台保活，立刻释放（并清零续期计数）
-        endPlayKeepAlive()
-        playKeepAliveRenewCount = 0
+        // v1.0.165：中断暂停不释放 —— 保活交给 beginRecoveryKeepAlive / refreshPlayKeepAlive
+        if byUser {
+            endPlayKeepAlive()
+            playKeepAliveRenewCount = 0
+        }
         lastHeartbeatPosition = -1
         updateNowPlayingInfo()
         notifyStateChanged()

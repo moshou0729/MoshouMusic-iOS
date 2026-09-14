@@ -192,7 +192,10 @@ class PlayerManager: NSObject {
                 if UIApplication.shared.applicationState != .active {
                     let pos = self.currentTime.isFinite ? Int(self.currentTime) : 0
                     let dur = self.duration.isFinite ? Int(self.duration) : 0
-                    Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying) rate=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName) 位置=\(pos)s/\(dur)s")
+                    // v1.0.166：先落 8 字节存活探针（强制落盘），再写可读日志 ——
+                    // 即使进程在写日志途中被杀，「上次存活于 Ns 前」依然可读。
+                    Logger.beatAlive()
+                    Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying) rate=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName) 会话激活=\(AVAudioSession.sharedInstance().isActive ? 1 : 0) 位置=\(pos)s/\(dur)s")
                 }
                 // v1.0.147：停滞自愈 + 后台保活（防止「无声 → 被挂起 → 被清杀」）
                 self.checkPlaybackStall()
@@ -483,6 +486,7 @@ class PlayerManager: NSObject {
             _ = ensureAudioSessionActive()
             if player.timeControlStatus != .playing { player.play() }
             screenWakeSnapshot(tag: "屏变抢占后")
+            startScreenWakeAudioProbe()
             FloatingLyricsManager.shared.screenWakeSelfGuardTeardown()
         }
         beginRecoveryKeepAlive()
@@ -520,7 +524,7 @@ class PlayerManager: NSObject {
     /// 这类矛盾组合（锁屏延迟生效的假 true，v1.0.162 栽过一次）。
     func screenWakeSnapshot(tag: String) {
         let s = AVAudioSession.sharedInstance()
-        Logger.persist("屏变现场快照（\(tag)）：控制=\(playerTimeControlName) 率=\(String(format: "%.2f", player.rate)) 他源在播=\(s.isOtherAudioPlaying ? 1 : 0) 需静音=\(s.secondaryAudioShouldBeSilencedHint ? 1 : 0) 音量=\(String(format: "%.2f", s.outputVolume)) 前台=\(UIApplication.shared.applicationState == .active ? 1 : 0) 锁=\(FloatingWindowHosting.deviceLockState()) 保护数据=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)")
+        Logger.persist("屏变现场快照（\(tag)）：控制=\(playerTimeControlName) 率=\(String(format: "%.2f", player.rate)) 会话激活=\(s.isActive ? 1 : 0) 他源在播=\(s.isOtherAudioPlaying ? 1 : 0) 需静音=\(s.secondaryAudioShouldBeSilencedHint ? 1 : 0) 音量=\(String(format: "%.2f", s.outputVolume)) 前台=\(UIApplication.shared.applicationState == .active ? 1 : 0) 锁=\(FloatingWindowHosting.deviceLockState()) 保护数据=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)")
     }
 
     /// v1.0.148：亮屏音频自检 —— 只在「声明在播但管线已停」时动手；健康时只记一条日志。
@@ -537,6 +541,74 @@ class PlayerManager: NSObject {
         updateNowPlayingInfo()
         notifyStateChanged()
         verifyResumeStarted()
+    }
+
+    // MARK: - v1.0.166 屏变音频探针
+
+    private var screenProbeWork: DispatchWorkItem?
+    private var screenProbeSeq = 0
+
+    /// 屏变后 3 秒的高频音频探针（0.15s 首检 + 0.25s × 11）。
+    ///
+    /// 为什么必须加：09-14 那三轮里前两轮屏变都安然存活，第三轮却「一条日志都没留下」。
+    /// 在 persist 强制落盘之前（v1.0.166 已修），既可能是「0.5s 内被挂起」，
+    /// 也可能是「日志跑了但没落盘」—— 两种可能指向完全相反的修法。
+    /// 更致命的是另一个盲区：我们**从来没有记录过 `AVAudioSession.isActive`**。
+    /// 而「后台无音频输出 → 被挂起 → 被清杀」这条链的起点，正是会话被系统收走；
+    /// 之前只能靠 `rate` / `timeControlStatus` 间接推断，而这两者在会话已被收走时
+    /// 仍然可以保持 playing，是彻底的假阴性。
+    /// 探针同时承担两件事：取证（把失活/死亡时刻压到 0.15s 精度）与抢救（发现失活立刻抢回）。
+    func startScreenWakeAudioProbe() {
+        screenProbeWork?.cancel()
+        screenProbeSeq = 0
+        scheduleScreenWakeProbeTick()
+    }
+
+    private func scheduleScreenWakeProbeTick() {
+        guard screenProbeSeq < 12 else { return }
+        // 首检 0.15s：要能区分「挂起发生在 0.15s 内」与「0.5s 之后」——
+        // 后者意味着仍有抢救窗口（看门狗首检就在 0.5s）。
+        let delay: Double = screenProbeSeq == 0 ? 0.15 : 0.25
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.screenProbeSeq += 1
+            self.screenWakeProbeTick()
+            self.scheduleScreenWakeProbeTick()
+        }
+        screenProbeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func screenWakeProbeTick() {
+        let s = AVAudioSession.sharedInstance()
+        let active = s.isActive
+        Logger.beatAlive()
+        Logger.persist("屏变音频探针 #\(screenProbeSeq)（会话激活=\(active ? 1 : 0) 率=\(String(format: "%.2f", player.rate)) 控制=\(playerTimeControlName) 后台剩余=\(backgroundRemainingText())）")
+        guard active, player.rate > 0, player.timeControlStatus == .playing else {
+            guard isPlaying || wasPlayingBeforeInterruption else { return }
+            _ = ensureAudioSessionActive()
+            player.play()
+            refreshPlayKeepAlive()
+            Logger.persist("屏变音频探针 #\(screenProbeSeq)：检测到音频失活，已重新抢占会话（会话激活=\(AVAudioSession.sharedInstance().isActive ? 1 : 0)）")
+            return
+        }
+    }
+
+    /// 后台剩余执行时间：持有播放保活任务时系统返回 DBL_MAX（记为「无限」）；
+    /// 一旦它开始变成有限值，说明保活已被系统收回、挂起进入倒计时。
+    private func backgroundRemainingText() -> String {
+        let r = UIApplication.shared.backgroundTimeRemaining
+        return r >= 1e100 ? "无限" : String(format: "%.0fs", r)
+    }
+
+    /// 供悬浮窗侧在拆窗前调用：若会话已被系统收走，先抢回来再动窗口。
+    ///
+    /// 理由：拆窗会触发 SpringBoard 释放托管会话；若此时音频也处于失活态，
+    /// App 就同时失去「可见 UI」与「音频输出」两项后台资格 —— 挂起几乎必然发生。
+    /// 顺序必须是「先抢回会话，再拆窗」（与 v1.0.164 的「先保音频再动窗口」同源）。
+    @discardableResult
+    func reassertAudioSession() -> Bool {
+        return ensureAudioSessionActive()
     }
 
     /// 确保音频会话处于激活状态（幂等，激活状态下调用无害）
@@ -1073,6 +1145,18 @@ class PlayerManager: NSObject {
         // v1.0.95：本代已开播（提前跨源兜底或直接取链先到者）→ 其余竞速结果作废
         guard !playbackCommitted else { return }
         Logger.info("开始播放: \(song.name) - \(song.singer) [\(currentSource)] mid=\(song.songmid) url=\(url.absoluteString.prefix(110))")
+
+        // v1.0.166：后台起播的音频资格确认（延后 1s）。
+        // 09-14 的死亡序列是「后台取链（4 个并发 HTTP）→ 切歌 → 7s 后屏变 → 进程消失」。
+        // 后台刚起播的头几秒是最脆弱的窗口：网络活动刚刚结束（系统给的后台宽限到期）、
+        // 缓冲区尚未填满。这里确认一次会话是否真的落在本 App 手里，
+        // 把「切歌后音频是否还活着」从推测变成可判读的证据。
+        if UIApplication.shared.applicationState != .active {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self = self else { return }
+                Logger.persist("后台起播音频确认（\(song.name)）：会话激活=\(AVAudioSession.sharedInstance().isActive ? 1 : 0) 率=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName)")
+            }
+        }
 
         // v1.0.84：入口统一拦截 —— 覆盖「内置源 / LX 兼容层 / 自动换源」所有取链路径
         // （v1.0.90 起内置与 LX 并行竞速，两路的链接都经过这里）。命中已知试用/赞助版

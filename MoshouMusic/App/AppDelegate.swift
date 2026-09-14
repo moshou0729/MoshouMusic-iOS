@@ -18,7 +18,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 说明进程曾被系统直接终止（jetsam/挂起回收 —— 这种死法无崩溃记录）
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: "moshou_session_alive") {
-            Logger.persist("⚠️ 检测到上次会话未正常收尾（无崩溃记录）→ 进程曾被系统强制终止")
+            // v1.0.166：补上「上次存活于 Ns 前」。以前只能知道「上次是被强杀的」，
+            // 死亡时刻完全不可知；有了落盘探针（Logger.beatAlive）后可以量化：
+            // 若 N 很小（<1s）说明进程在最后一次采样后立即消失；若 N 达数秒，
+            // 说明中间还活了一阵、只是日志没落盘 —— 两种情况修法完全不同。
+            let aliveAgo = Date().timeIntervalSince1970 - (Logger.lastAliveWallTs ?? Date().timeIntervalSince1970)
+            let upGap = ProcessInfo.processInfo.systemUptime - (Logger.lastAliveUptime ?? ProcessInfo.processInfo.systemUptime)
+            Logger.persist("⚠️ 检测到上次会话未正常收尾（无崩溃记录）→ 进程曾被系统强制终止（上次存活于 \(String(format: "%.1f", aliveAgo))s 前，运行时间差 \(String(format: "%.1f", upGap))s）")
             autoDegradeGuardTierIfNeeded()
             // v1.0.140：被杀续播 —— 用户重新打开 App 时自动接续上一首（快照进度）。
             // 延后 2.5s 等音频会话二次配置与 LX 音源脚本就绪。

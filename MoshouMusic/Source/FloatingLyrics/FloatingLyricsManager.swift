@@ -1,4 +1,5 @@
 import UIKit
+import AVFoundation
 
 /// 系统级悬浮歌词窗口 — TrollStore 专属能力
 ///
@@ -201,10 +202,20 @@ final class FloatingLyricsManager: NSObject {
         // 17:43:02（灭屏，窗口在）与 17:49:25（点亮，窗口不在）走的是**同一条代码路径**，
         // 前者安然存活、后者 1.5s 内被杀 —— 把这一点写进日志，下次才能一眼看出
         //「死亡是否只发生在无窗口可拆的那一次」。这是把死因从窗口侧移交出去的关键证据。
-        let hadWindow = floatingWindow != nil || hostingRegistered
+        // v1.0.166：拆成两个字段。旧判据 `floatingWindow != nil || hostingRegistered`
+        // 只要后者是脏值就恒为真 —— 09-14 11:35:48 那次报「本次有窗口可拆=1」，
+        // 但上一轮（11:30:25）已拆过窗且**从未重建**（日志里没有「阶梯重建完成」），
+        // 逻辑上不可能还有窗口。这条字段一旦失真，「死亡是否与窗口相关」就判不出来了。
+        let hadWindow = floatingWindow != nil
+        let wasRegistered = hostingRegistered
+        // v1.0.166：拆窗前先确认会话还在手里（详见 PlayerManager.reassertAudioSession 注释）
+        if !AVAudioSession.sharedInstance().isActive {
+            Logger.persist("熄屏自保：拆窗前发现音频会话已失活，先行抢占再拆窗")
+            _ = PlayerManager.shared.reassertAudioSession()
+        }
         teardownWindow()
         scheduleSelfGuardReshow(attempt: 0)
-        Logger.persist("熄屏自保：屏幕状态变化 —— 已拆窗避杀（不区分亮/灭），等设备解锁后再重建（本次有窗口可拆=\(hadWindow ? 1 : 0)）")
+        Logger.persist("熄屏自保：屏幕状态变化 —— 已拆窗避杀（不区分亮/灭），等设备解锁后再重建（拆窗前窗口存在=\(hadWindow ? 1 : 0)，SB注册=\(wasRegistered ? 1 : 0)）")
         startScreenChangeLivenessBeat()
     }
 
@@ -263,6 +274,8 @@ final class FloatingLyricsManager: NSObject {
             guard let self = self else { return }
             self.selfGuardBeatSeq += 1
             let elapsed = Date().timeIntervalSince(self.selfGuardBeatStart)
+            // v1.0.166：先落 8 字节存活探针（强制落盘），再写可读日志
+            Logger.beatAlive()
             Logger.persist("屏变存活心跳 #\(self.selfGuardBeatSeq)（屏变后 \(String(format: "%.1f", elapsed))s，音频健康=\(PlayerManager.shared.isPlaybackHealthy)，前台=\(UIApplication.shared.applicationState == .active ? 1 : 0)，已解锁=\(UIApplication.shared.isProtectedDataAvailable ? 1 : 0)，锁=\(FloatingWindowHosting.deviceLockState())，本会话曾锁定=\(self.selfGuardSawLocked ? 1 : 0)）")
             // v1.0.164：此处不再清打点 —— 清理时机已随打点一起搬到 markRebuildPendingAck。
             // 原来的「心跳 #8 才清」在「窗口压根没重建的屏变」里毫无意义（那种轮次本就

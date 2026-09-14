@@ -322,6 +322,21 @@ final class FloatingLyricsManager: NSObject {
         }
     }
 
+    /// v1.0.168：后台心跳兜底 —— 锁定期间若仍持有系统级窗口，就地拆掉并排期等解锁重建。
+    ///
+    /// 为什么需要兜底：拆窗目前只在「屏变」这一条路径上做，而屏变通知并非万无一失
+    ///（达尔文通知漏投、去抖窗口内的第二次屏变、以及本版本之前 hardRefresh 在后台
+    /// 偷偷把窗口建回来 —— 这三种情况都会让「锁定 + SB 窗口」悄悄成立）。
+    /// 10s 一次的心跳是最后一道网：只要撞见这个组合，立刻拆掉，不等下一次屏变。
+    func enforceNoWindowWhileLocked() {
+        guard UIApplication.shared.applicationState != .active else { return }
+        guard FloatingWindowHosting.deviceLockState() == 1 else { return }
+        guard floatingWindow != nil || hostingRegistered else { return }
+        Logger.persist("锁定期间兜底拆窗（后台心跳发现仍持有系统级窗口，锁=1）")
+        teardownWindow()
+        scheduleSelfGuardReshow(attempt: 0)
+    }
+
     /// v1.0.156（v1.0.160 起闲置）：把窗口**临时移出可见区**（不销毁、不重注册）。
     ///
     /// ⚠️ v1.0.160 起熄屏自保改为「一律拆窗」，本函数不再被调用（park 已被实测证伪 →
@@ -603,6 +618,16 @@ final class FloatingLyricsManager: NSObject {
             //（floatingWindow 已置 nil：歌词不回填、handlePan 的 guard 直接 return）。
             window.isHidden = true
         }
+        // v1.0.168：拆窗必须同时停掉频谱驱动。
+        // 旧写法让 CADisplayLink（20fps）在窗口已销毁后继续挂在 main runloop 上，
+        // 每帧仍要唤醒主线程执行 spectrumTick（虽然第一行 guard 就 return）。
+        // 后台锁屏一挂就是十几分钟，纯属白白消耗 —— 而且它保持主线程活跃，
+        // 正好撞在「系统想冻结你」的枪口上。
+        if let link = spectrumLink {
+            link.invalidate()
+            spectrumLink = nil
+            spectrumBaseFrame = nil
+        }
         floatingWindow = nil
         lyricsView = nil
         registerAttempts = 0
@@ -632,6 +657,23 @@ final class FloatingLyricsManager: NSObject {
 
     func show() {
         guard !suppressedInApp else { return }
+        // 🚨 v1.0.168：锁定期间一律不得创建系统级窗口。
+        // 2026-09-14 14:25:23 刚拆过窗，14 分钟后（14:39:36）屏变快照却显示
+        //「拆窗前窗口存在=1，SB注册=1」—— 中间唯一的建窗路径就是切歌触发的
+        // hardRefresh（「检测到换歌，硬刷新窗口」），它在后台锁屏状态下照常
+        // teardown + show + register，把窗口重新挂回 SpringBoard。
+        // 于是「亮屏 + 后台却持有 SB 注册窗口」这个 v1.0.162 就认定过的死法再次成立：
+        // 亮屏时系统重新仲裁可见 UI，发现后台 App 持有系统级窗口 → 直接回收进程
+        //（14:39:36.946 写完自检日志后 **150ms 内**进程即停止执行，探针 #1 都没跑上）。
+        // ⇒ 「锁定 ⇒ 不存在 SB 注册窗口」必须是**不变量**，不能靠屏变那一刻临时拆。
+        if FloatingWindowHosting.deviceLockState() == 1 {
+            Logger.persist("锁定期间拒绝创建系统级窗口（锁=1，等解锁后由自保流程恢复）")
+            // ⚠️ 这里**不能**顺手调 scheduleSelfGuardReshow：performSelfGuardRebuild
+            // 本身就在「已判定解锁 → show()」这条链上，若此处再排期一次，
+            // 就会形成「轮询 → rebuild → show 被拦 → 再排期」的自激循环（每 0.8s 一轮）。
+            // 排期责任留给调用方：hardRefresh 有自己的排期，自保流程有自己的重试。
+            return
+        }
         // 🚨 v1.0.153：App 前台且不在悬浮设置页预览态时，系统级窗口一律不得出现在屏幕上。
         // 此前只靠 suppressedInApp 这一份缓存标记，任何漏设/漏清的路径（如播放页这类
         // 全屏模态、scene 回调时序抖动）都会让悬浮窗浮在某个 App 内页面上。这里改成
@@ -757,6 +799,13 @@ final class FloatingLyricsManager: NSObject {
 
     private func registerHostingWithRetry(attempt: Int = 0) {
         guard let window = floatingWindow, !hostingRegistered else { return }
+        // 🚨 v1.0.168 双保险：这是离 SB 注册最近的一处，任何绕过 show() 的路径
+        //（复用已有窗口、延迟重试等）都在这里被拦住。宁可多判一次，
+        // 也绝不能让「锁定 + SB 注册窗口」这个组合存在哪怕一瞬间。
+        if FloatingWindowHosting.deviceLockState() == 1 {
+            Logger.persist("锁定期间拒绝注册 SB 托管（锁=1，避免亮屏仲裁时被回收）")
+            return
+        }
         // v1.0.149：App 前台预览期间不注册 —— 注册即产生双通道（见 dropHostingForInApp）
         if FloatingLyricsManager.skipHostingInAppPreview,
            settingsPreviewActive,
@@ -918,6 +967,15 @@ final class FloatingLyricsManager: NSObject {
         teardownWindow()
         // v1.0.150：重建后的窗口尺寸取自配置 —— 旧频谱基准必须作废，否则高度会被旧基准写回
         refreshSpectrumBase()
+        // 🚨 v1.0.168：锁定期间**只拆不建**。换歌触发的硬刷新此前会在后台把窗口
+        // 重建并注册回 SB（14:39:36 那次死亡现场「SB注册=1」就是这么来的）。
+        // 这里拆完即止，并排期「等解锁后重建」—— 解锁那一刻窗口自动回来，
+        // 用户无感，而亮屏仲裁时系统看到的已是一个干净的无窗口后台 App。
+        if FloatingWindowHosting.deviceLockState() == 1 {
+            Logger.persist("锁定期间换歌：仅拆窗不重建，等设备解锁后恢复（锁=1）")
+            scheduleSelfGuardReshow(attempt: 0)
+            return
+        }
         Logger.info("悬浮歌词：设置变更，重建系统级窗口")
 
         // 下一个 runloop 全量重建（show() 走完整创建 + 注册重试）

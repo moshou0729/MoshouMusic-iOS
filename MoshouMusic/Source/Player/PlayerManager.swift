@@ -196,6 +196,8 @@ class PlayerManager: NSObject {
                     // 即使进程在写日志途中被杀，「上次存活于 Ns 前」依然可读。
                     Logger.beatAlive()
                     Logger.persist("后台心跳存活 isPlaying=\(self.isPlaying) rate=\(String(format: "%.2f", self.player.rate)) 控制=\(self.playerTimeControlName) 会话已激活=\(self.audioSessionActivated ? 1 : 0) 位置=\(pos)s/\(dur)s")
+                    // v1.0.168：锁定期间不得持有 SB 注册的系统级窗口（亮屏仲裁会被回收）
+                    FloatingLyricsManager.shared.enforceNoWindowWhileLocked()
                 }
                 // v1.0.147：停滞自愈 + 后台保活（防止「无声 → 被挂起 → 被清杀」）
                 self.checkPlaybackStall()

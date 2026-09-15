@@ -93,6 +93,14 @@ class PlayerManager: NSObject {
     /// 同代的其余竞速结果（直接取链 / 提前跨源兜底）一律作废，防止重复开播或顶歌。
     private var playbackCommitted = false
 
+    /// v1.0.172 取链总闸门（秒）：从「开始尝试播放这首歌」算起，到点还没真正出声就跳下一首。
+    /// musicUrl 10s 超时 + 搜索 12s 超时，个别脚本还会挂死不回调 —— 坏源歌曲
+    /// 会一直卡在「正在尝试其他音源…」（实测数十秒甚至永久不动），必须有个硬上限。
+    private static let playableDeadline: TimeInterval = 15
+    private var playableDeadlineWork: DispatchWorkItem?
+    /// 连续自动跳过的次数（真正开播即清零）——整队都是坏歌时跳一圈就停，防无限切歌
+    private var consecutiveSkipCount = 0
+
     /// v1.0.136 串歌防线：URL -> songmid 绑定表（最近 8 条）。
     /// 实测「很多歌都播出同一首《唯一》」：源端对失败/异常请求返回同一个默认音频，
     /// 不同歌曲解析到同一 URL。正常场景不同歌绝无相同 URL，二次绑定 = 错源，拦截换源。
@@ -757,6 +765,8 @@ class PlayerManager: NSObject {
         interruptionWatchdog?.cancel()
         activationRetryWork?.cancel()
         endRecoveryKeepAlive()
+        // v1.0.172：本首歌的取链总闸门（15s 未出声 → 自动跳下一首）
+        schedulePlayableDeadline()
         if let queue = queue, !queue.isEmpty {
             playQueue = queue
             queueIndex = queue.firstIndex(where: { $0.id == song.id }) ?? 0
@@ -1383,6 +1393,9 @@ class PlayerManager: NSObject {
     private func commitStartPlayback(url: URL, song: Song) {
         // v1.0.95：标记本代已开播；清掉兜底阶段挂出的过渡性错误提示
         playbackCommitted = true
+        // v1.0.172：已经出声 → 撤销本首的取链超时闸门，并清零连续跳过计数
+        cancelPlayableDeadline()
+        consecutiveSkipCount = 0
         // v1.0.136：记录 URL -> songmid 绑定（串歌防线的判定依据，保留最近 8 条）
         let urlKey = url.absoluteString
         if let idx = committedUrlOrder.firstIndex(of: urlKey) {
@@ -1485,6 +1498,9 @@ class PlayerManager: NSObject {
         // v1.0.88：切歌后旧失败链路不再换源（generation 为 nil 的调用点来自
         // readyToPlay 短音频兜底等「当前歌仍然有效」的场景，不受限）
         if let generation = generation, generation != playGeneration { return }
+        // v1.0.172：generation 为 nil 的调用点（KVO 兜底等）用当前令牌兜底，
+        // 让「自动跳下一首」同样受切歌作废保护（不会跳到一半又被旧链路拽回）。
+        let gen = generation ?? playGeneration
 
         let reason = friendlyReason(reason)
         let sourceName = ConfigStore.shared.displayName(for: currentSource)
@@ -1528,6 +1544,9 @@ class PlayerManager: NSObject {
                     }
                     self.player.replaceCurrentItem(with: nil)
                     self.notifyStateChanged()
+                    // v1.0.172：所有候选音源都没有这首歌 → 不用死等 15s 闸门，
+                    // 短暂展示错误提示后自动跳下一首（开关/队列长度/连续次数三重保护）
+                    self.scheduleAutoSkip(delay: 1.2, reason: "所有音源都没有这首歌", generation: gen)
                     completion(false)
                     return
                 }
@@ -1563,6 +1582,66 @@ class PlayerManager: NSObject {
                 completion(true)
             }
         }
+    }
+
+    // MARK: - v1.0.172 取链超时闸门（15s 匹配不到可播放音源 → 自动跳下一首）
+
+    /// 给本代取链链路（直接取链 + 2.5s 提前跨源兜底 + 自动换源）挂一个硬上限。
+    /// 每次 play() 重新计时；playGeneration 自增（用户切歌）会自动作废旧闸门。
+    private func schedulePlayableDeadline() {
+        playableDeadlineWork?.cancel()
+        let generation = playGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            guard generation == self.playGeneration, !self.playbackCommitted else { return }
+            guard let song = self.currentSong else { return }
+            Logger.persist("取链超时闸门：超过 \(Int(Self.playableDeadline)) 秒仍未匹配到可播放音源（\(song.name) - \(song.singer)），自动跳下一首")
+            self.skipUnplayable(reason: "取链超时", song: song)
+        }
+        playableDeadlineWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.playableDeadline, execute: work)
+    }
+
+    private func cancelPlayableDeadline() {
+        playableDeadlineWork?.cancel()
+        playableDeadlineWork = nil
+    }
+
+    /// 明确失败（所有候选音源都没找到）时用：短暂展示错误后提前跳，不必死等到 15s。
+    private func scheduleAutoSkip(delay: TimeInterval, reason: String, generation: Int) {
+        cancelPlayableDeadline()
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, !self.playbackCommitted else { return }
+            guard generation == self.playGeneration, let song = self.currentSong else { return }
+            Logger.persist("无可播放音源（\(reason)）：\(song.name) - \(song.singer)，自动跳下一首")
+            self.skipUnplayable(reason: reason, song: song)
+        }
+    }
+
+    /// 自动跳下一首。三重保护：设置开关 / 队列长度 / 连续次数上限。
+    /// ⚠️ 上限是必须的：整队都是坏歌时若无限 next()，会对每个源疯狂刷请求并刷屏日志。
+    private func skipUnplayable(reason: String, song: Song) {
+        cancelPlayableDeadline()
+        guard ConfigStore.shared.autoSkipUnplayable else {
+            Logger.info("自动跳下一首已关闭，保持当前歌曲（原因：\(reason)）")
+            return
+        }
+        guard playQueue.count > 1 else {
+            Logger.info("自动跳下一首跳过执行：队列只有这一首歌（\(song.name)）")
+            return
+        }
+        let limit = min(playQueue.count, 8)
+        guard consecutiveSkipCount < limit else {
+            consecutiveSkipCount = 0
+            Logger.persist("自动跳下一首已达上限：连续 \(limit) 首都找不到可播放音源，停止继续跳")
+            lastPlayError = "连续多首歌都找不到可播放音源，已停止自动跳过"
+            isPlaying = false
+            notifyStateChanged()
+            return
+        }
+        consecutiveSkipCount += 1
+        Logger.persist("自动跳下一首：第 \(consecutiveSkipCount) 次连续跳过（原因：\(reason)，原歌 \(song.name)）")
+        next()
     }
 
     // MARK: - KVO

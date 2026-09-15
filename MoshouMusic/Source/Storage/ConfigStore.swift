@@ -32,6 +32,7 @@ class ConfigStore {
         static let currentSource = "currentSource"
         static let customSources = "customSources"
         static let autoSwitchSource = "autoSwitchSource"
+        static let autoSkipUnplayable = "autoSkipUnplayable"
         static let lxSyncServerURL = "lxSyncServerURL"
         static let lxSyncEnabled = "lxSyncEnabled"
         static let lxSyncMode = "lxSyncMode"
@@ -120,6 +121,16 @@ class ConfigStore {
             return defaults.bool(forKey: Keys.autoSwitchSource)
         }
         set { defaults.set(newValue, forKey: Keys.autoSwitchSource) }
+    }
+
+    /// v1.0.172：超过 15 秒仍匹配不到可播放音源时，自动跳下一首。
+    /// 默认开启 —— 卡在「正在尝试其他音源…」不动的体感比跳过一首歌更糟。
+    var autoSkipUnplayable: Bool {
+        get {
+            if defaults.object(forKey: Keys.autoSkipUnplayable) == nil { return true }
+            return defaults.bool(forKey: Keys.autoSkipUnplayable)
+        }
+        set { defaults.set(newValue, forKey: Keys.autoSkipUnplayable) }
     }
 
     // MARK: - LX 首选音源脚本

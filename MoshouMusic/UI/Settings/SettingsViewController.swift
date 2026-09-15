@@ -75,6 +75,7 @@ class SettingsViewController: UIViewController {
             SettingItem(icon: "music.note.list", iconColor: Theme.secondary, title: "默认音质", subtitle: ConfigStore.shared.defaultQuality, type: .navigate),
             SettingItem(icon: "repeat", iconColor: Theme.warning, title: "播放模式", subtitle: PlayMode(rawValue: ConfigStore.shared.playMode)?.displayName ?? "列表循环", type: .navigate),
             SettingItem(icon: "arrow.triangle.2.circlepath", iconColor: Theme.secondary, title: "自动换源", subtitle: "当前音源播不出时自动换别的源", type: .toggle(ConfigStore.shared.autoSwitchSource)),
+            SettingItem(icon: "forward.fill", iconColor: Theme.warning, title: "找不到音源自动跳下一首", subtitle: "超过 15 秒仍匹配不到可播放音源时自动跳歌", type: .toggle(ConfigStore.shared.autoSkipUnplayable)),
         ]),
         SettingSection(title: "悬浮歌词", items: [
             SettingItem(icon: "rectangle.expand.vertical", iconColor: Theme.primary, title: "悬浮歌词", subtitle: nil, type: .toggle(ConfigStore.shared.isFloatingLyricsOn)),
@@ -237,6 +238,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             }
         case "自动换源":
             ConfigStore.shared.autoSwitchSource = isOn
+        case "找不到音源自动跳下一首":
+            ConfigStore.shared.autoSkipUnplayable = isOn
         case "深色模式":
             ConfigStore.shared.isDarkMode = isOn
             Theme.applyAppearance()

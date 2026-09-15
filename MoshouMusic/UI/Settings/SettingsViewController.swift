@@ -560,14 +560,26 @@ class SourceSettingsViewController: UIViewController, UITableViewDataSource, UIT
 
     // 右上「+」：选择导入方式（文件 / 粘贴）
     @objc private func addSourceTapped() {
-        let alert = UIAlertController(title: "添加音源", message: "从文件导入在 TrollStore 沙盒下可能选不到文件，推荐「手动粘贴代码」", preferredStyle: .actionSheet)
-        alert.addAction(UIAlertAction(title: "手动粘贴代码 (推荐)", style: .default) { [weak self] _ in
+        let alert = UIAlertController(
+            title: "添加音源",
+            message: "脚本较长时用「从文件夹选择」：把 .js 放进「文件」App ▸ 我的 iPhone ▸ 墨守music，下拉刷新即可勾选导入。",
+            preferredStyle: .actionSheet
+        )
+        alert.addAction(UIAlertAction(title: "从文件夹选择 .js（推荐）", style: .default) { [weak self] _ in
+            let vc = LocalScriptPickerViewController()
+            vc.mode = .builtinScript
+            self?.navigationController?.pushViewController(vc, animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "手动粘贴代码", style: .default) { [weak self] _ in
             self?.openAddForm()
         })
-        alert.addAction(UIAlertAction(title: "从文件导入 (.js)", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "系统文件选择器（TrollStore 下常无回调）", style: .default) { [weak self] _ in
             self?.presentImportPicker()
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let pop = alert.popoverPresentationController {
+            pop.barButtonItem = self.navigationItem.rightBarButtonItem
+        }
         present(alert, animated: true)
     }
 

@@ -26,7 +26,7 @@ class LXMusicViewController: UIViewController, UITableViewDataSource, UITableVie
 
         setupImportButton()
         navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "粘贴导入", style: .plain, target: self, action: #selector(openImport)
+            title: "导入", style: .plain, target: self, action: #selector(openImport)
         )
     }
 
@@ -59,9 +59,31 @@ class LXMusicViewController: UIViewController, UITableViewDataSource, UITableVie
         ])
     }
 
+    /// 两种导入路径：本机文件（推荐，脚本动辄几万字符）/ 粘贴代码
     @objc private func openImport() {
-        let vc = AddSourceViewController()
-        vc.lxMode = true
+        let alert = UIAlertController(
+            title: "导入洛雪脚本",
+            message: "脚本较长时建议用「从文件夹选择」：把 .js 放进「文件」App ▸ 我的 iPhone ▸ 墨守music，下拉刷新即可勾选导入。",
+            preferredStyle: .actionSheet
+        )
+        alert.addAction(UIAlertAction(title: "从文件夹选择 .js（推荐）", style: .default) { [weak self] _ in
+            self?.openLocalFilePicker()
+        })
+        alert.addAction(UIAlertAction(title: "粘贴代码", style: .default) { [weak self] _ in
+            let vc = AddSourceViewController()
+            vc.lxMode = true
+            self?.navigationController?.pushViewController(vc, animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let pop = alert.popoverPresentationController {
+            pop.barButtonItem = self.navigationItem.rightBarButtonItem
+        }
+        present(alert, animated: true)
+    }
+
+    private func openLocalFilePicker() {
+        let vc = LocalScriptPickerViewController()
+        vc.mode = .lxScript
         navigationController?.pushViewController(vc, animated: true)
     }
 

@@ -101,6 +101,13 @@ class PlayerManager: NSObject {
     /// 连续自动跳过的次数（真正开播即清零）——整队都是坏歌时跳一圈就停，防无限切歌
     private var consecutiveSkipCount = 0
 
+    /// v1.0.173 起播确认：链接挂上播放器**不等于出声**。
+    /// 现场：换源拿到 tx 链接 → commit → 404 → 之后 wy/mg/LX 全部命中却再也播不起来，
+    /// 卡在 waiting 整整 5 分钟（v1.0.172 的闸门判据是 !playbackCommitted，commit 即撤销）。
+    /// 这里以「时间轴真的在走」为准（currentTime > 0.3），commit 后再给 15s。
+    private var playbackAudible = false
+    private var audibleConfirmWork: DispatchWorkItem?
+
     /// v1.0.136 串歌防线：URL -> songmid 绑定表（最近 8 条）。
     /// 实测「很多歌都播出同一首《唯一》」：源端对失败/异常请求返回同一个默认音频，
     /// 不同歌曲解析到同一 URL。正常场景不同歌绝无相同 URL，二次绑定 = 错源，拦截换源。
@@ -882,6 +889,8 @@ class PlayerManager: NSObject {
     func pause(byUser: Bool = true) {
         player.pause()
         isPlaying = false
+        // v1.0.173：用户/中断主动暂停 → 撤销起播确认，别在人家暂停时跳下一首
+        cancelAudibleConfirm()
         // v1.0.147：用户主动暂停 = 明确不需要后台保活，立刻释放（并清零续期计数）
         // v1.0.165：中断暂停不释放 —— 保活交给 beginRecoveryKeepAlive / refreshPlayKeepAlive
         if byUser {
@@ -1191,7 +1200,10 @@ class PlayerManager: NSObject {
     /// 真正把 item 挂上播放器
     private func startPlayback(url: URL, song: Song) {
         // v1.0.95：本代已开播（提前跨源兜底或直接取链先到者）→ 其余竞速结果作废
-        guard !playbackCommitted else { return }
+        guard !playbackCommitted else {
+            Logger.warn("LX PlayerManager: 取链结果已弃用（本代已提交播放，歌=\(song.name) 源=\(currentSource)）")
+            return
+        }
         Logger.info("开始播放: \(song.name) - \(song.singer) [\(currentSource)] mid=\(song.songmid) url=\(url.absoluteString.prefix(110))")
 
         // v1.0.166：后台起播的音频资格确认（延后 1s）。
@@ -1396,6 +1408,9 @@ class PlayerManager: NSObject {
         // v1.0.172：已经出声 → 撤销本首的取链超时闸门，并清零连续跳过计数
         cancelPlayableDeadline()
         consecutiveSkipCount = 0
+        // v1.0.173：链接挂上去只是「提交」，404 / 防盗链 / 缓冲挂死照样没声音 —— 再给 15s
+        playbackAudible = false
+        scheduleAudibleConfirm()
         // v1.0.136：记录 URL -> songmid 绑定（串歌防线的判定依据，保留最近 8 条）
         let urlKey = url.absoluteString
         if let idx = committedUrlOrder.firstIndex(of: urlKey) {
@@ -1590,6 +1605,7 @@ class PlayerManager: NSObject {
     /// 每次 play() 重新计时；playGeneration 自增（用户切歌）会自动作废旧闸门。
     private func schedulePlayableDeadline() {
         playableDeadlineWork?.cancel()
+        cancelAudibleConfirm()
         let generation = playGeneration
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
@@ -1607,6 +1623,28 @@ class PlayerManager: NSObject {
         playableDeadlineWork = nil
     }
 
+    /// v1.0.173 起播确认：commitStartPlayback 之后 15s 内时间轴没有推进 → 视为起播失败。
+    /// 覆盖「拿到链接但 404 / 防盗链 / 缓冲挂死」这条 v1.0.172 完全没管到的路径
+    /// （它的判据是 !playbackCommitted，链接一挂上就撤销了闸门）。
+    private func scheduleAudibleConfirm() {
+        audibleConfirmWork?.cancel()
+        let generation = playGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            guard generation == self.playGeneration, !self.playbackAudible else { return }
+            guard let song = self.currentSong else { return }
+            Logger.persist("起播确认超时：链接已挂上但 15 秒没有声音（\(song.name) - \(song.singer)，源=\(self.currentSource)，控制=\(self.playerTimeControlName)），自动跳下一首")
+            self.skipUnplayable(reason: "起播超时", song: song)
+        }
+        audibleConfirmWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.playableDeadline, execute: work)
+    }
+
+    private func cancelAudibleConfirm() {
+        audibleConfirmWork?.cancel()
+        audibleConfirmWork = nil
+    }
+
     /// 明确失败（所有候选音源都没找到）时用：短暂展示错误后提前跳，不必死等到 15s。
     private func scheduleAutoSkip(delay: TimeInterval, reason: String, generation: Int) {
         cancelPlayableDeadline()
@@ -1622,6 +1660,7 @@ class PlayerManager: NSObject {
     /// ⚠️ 上限是必须的：整队都是坏歌时若无限 next()，会对每个源疯狂刷请求并刷屏日志。
     private func skipUnplayable(reason: String, song: Song) {
         cancelPlayableDeadline()
+        cancelAudibleConfirm()
         guard ConfigStore.shared.autoSkipUnplayable else {
             Logger.info("自动跳下一首已关闭，保持当前歌曲（原因：\(reason)）")
             return
@@ -1682,6 +1721,10 @@ class PlayerManager: NSObject {
                 case .failed:
                     let reason = item.error?.localizedDescription ?? "链接无法播放"
                     Logger.error("播放项状态失败: \(reason)")
+                    // v1.0.173：本代提交的播放项已彻底失败 → 撤销提交标记。
+                    // 不撤销的话，之后换源/竞速拿到的新链接全被 startPlayback 的
+                    // `guard !playbackCommitted` 拦掉，这首歌就永久卡在 waiting。
+                    self.playbackCommitted = false
                     // 关键：失败时把时间轴清零，否则残留 NaN 会在下一次
                     // updateNowPlayingInfo / 进度条计算时引发崩溃
                     self.duration = 0
@@ -1723,6 +1766,12 @@ class PlayerManager: NSObject {
 
     private func handleTimeUpdate(_ time: CMTime) {
         currentTime = PlayerManager.sane(time.seconds)
+
+        // v1.0.173：时间轴真的推进了才算「出声」，起播确认到此为止
+        if currentTime > 0.3 && !playbackAudible {
+            playbackAudible = true
+            cancelAudibleConfirm()
+        }
 
         // 更新锁屏信息（NaN 会让 MPNowPlayingInfoCenter 抛异常，必须过滤）
         if isPlaying {

@@ -47,6 +47,25 @@ final class SourceSwitcher {
         let url: String
     }
 
+    /// v1.0.174：坏源短时冷却表 —— 取链成功但播放失败（404 / 防盗链 / 死链）的源记一笔，
+    /// 换源排序时排到队尾。**不排除**（排除可能让整首歌没得听），只是不再优先撞它。
+    /// 只在主线程读写（findPlayable 与播放失败回调都在主线程）。
+    private static let cooldownSeconds: TimeInterval = 600
+    private var cooldownUntil: [String: Date] = [:]
+
+    func penalizeSource(_ source: String, reason: String) {
+        guard !source.isEmpty else { return }
+        cooldownUntil[source] = Date().addingTimeInterval(Self.cooldownSeconds)
+        Logger.persist("坏源降权：\(source) 进入 10 分钟冷却，换源时排到队尾（原因：\(reason)）")
+    }
+
+    private func isCooling(_ source: String) -> Bool {
+        guard let until = cooldownUntil[source] else { return false }
+        if until > Date() { return true }
+        cooldownUntil.removeValue(forKey: source)
+        return false
+    }
+
     /// 在候选音源里找到可播放的同名歌曲
     /// - Parameters:
     ///   - name: 歌曲名
@@ -71,10 +90,17 @@ final class SourceSwitcher {
                 && !excluded.contains($0)
         }
 
-        guard !candidates.isEmpty else {
+        // v1.0.174：冷却中的源排到队尾（全部冷却时相对顺序不变，等价于不降权）
+        let cooled = candidates.filter { isCooling($0) }
+        let ordered = candidates.filter { !isCooling($0) } + cooled
+
+        guard !ordered.isEmpty else {
             Logger.warn("自动换源：没有可用的候选音源")
             completion(nil)
             return
+        }
+        if !cooled.isEmpty {
+            Logger.info("自动换源：坏源降权生效，队尾为 \(cooled.joined(separator: "+"))")
         }
 
         // 关键词带上歌手，提高匹配准确度
@@ -98,9 +124,9 @@ final class SourceSwitcher {
         // 说明各源后端本来就快，慢的是串行等待。现在所有平台（内置+LX）同时抢，
         // 首个有效结果胜出；准确性由 bestMatch 的歌名/歌手/版本标记/时长接近度把守，
         // 出声前还有音频时长预检兜底。
-        let total = candidates.count * 2
+        let total = ordered.count * 2
         let race = DualRace(total: total)
-        Logger.info("自动换源：全平台并行竞速 \(candidates.joined(separator: "+"))")
+        Logger.info("自动换源：全平台并行竞速 \(ordered.joined(separator: "+"))")
 
         let onFail: () -> Void = {
             if race.settle(success: false) {
@@ -112,7 +138,7 @@ final class SourceSwitcher {
             if race.settle(success: true) { completion(hit) }
         }
 
-        for source in candidates {
+        for source in ordered {
             attemptBuiltin(source: source, keyword: keyword, fallbackKeyword: fallbackKeyword,
                            name: name, singer: singer,
                            quality: quality, interval: interval) { hit in

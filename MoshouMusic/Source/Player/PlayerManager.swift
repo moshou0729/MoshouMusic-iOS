@@ -1115,6 +1115,9 @@ class PlayerManager: NSObject {
         }
 
         // ① 内置源（ScriptEngine，官方平台脚本）
+        // v1.0.174：非内置源（如 LX 专属的 kw/酷我）发内置请求必然「该音源脚本未加载」——
+        // 每首歌都白发一次，还会让 DualRace 提前记一张失败票。这里直接跳过，只走 LX 通道。
+        if ScriptEngine.shared.hasHandler(for: currentSource) {
         ScriptEngine.shared.getMusicUrl(
             source: currentSource,
             songId: song.songmid,
@@ -1146,6 +1149,12 @@ class PlayerManager: NSObject {
                         failToSwitch("该音源无法获取播放链接")
                     }
                 }
+            }
+        }
+        } else {
+            Logger.info("LX PlayerManager: \(currentSource) 非内置音源，跳过内置取链（改由 LX 兼容层提供）")
+            if race.settle(success: false) {
+                failToSwitch("该音源无法获取播放链接")
             }
         }
 
@@ -1725,6 +1734,9 @@ class PlayerManager: NSObject {
                     // 不撤销的话，之后换源/竞速拿到的新链接全被 startPlayback 的
                     // `guard !playbackCommitted` 拦掉，这首歌就永久卡在 waiting。
                     self.playbackCommitted = false
+                    // v1.0.174：拿到链接却播不出来（404 / 防盗链 / 死链）的源必须付出代价 ——
+                    // 记入短时冷却，换源时排到队尾，否则下一首还会先撞同一个坏源。
+                    SourceSwitcher.shared.penalizeSource(self.currentSource, reason: reason)
                     // 关键：失败时把时间轴清零，否则残留 NaN 会在下一次
                     // updateNowPlayingInfo / 进度条计算时引发崩溃
                     self.duration = 0

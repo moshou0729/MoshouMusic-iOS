@@ -48,7 +48,11 @@ enum FloatingTheme: String, CaseIterable {
     }
 
     /// 车图在悬浮窗中的摆放方式
-    /// v1.0.179：newA/newB/newC/newD 严格对齐 HTML 的 A/B/C/D 四种布局
+    /// v1.0.180：newA/newB/newC/newD 严格对齐用户提供的四张设计稿
+    ///   A 窄条   → 左侧封面 + 右侧歌名歌手，底部进度条 + 车侧影游标
+    ///   B 大卡   → 顶部歌词，中部车大图，底部进度条
+    ///   C 车头窗 → 左侧车头正视，右侧歌名歌手 + 歌词 + 进度条
+    ///   D 极简   → 纯底部进度条 + 车侧影游标 + 右侧车头徽标
     var carPlacement: CarPlacement {
         switch self {
         case .original:                 return .none
@@ -57,21 +61,31 @@ enum FloatingTheme: String, CaseIterable {
         case .gtC, .gtE:                return .right         // GT 侧身类：右侧分栏
         case .gtD:                      return .card          // GT·前脸正视：顶部卡片
         case .gtF, .newA, .newD:        return .cursorBottom  // 行驶进度 / 窄条 / 极简：车=游标
-        case .newB:                     return .rightLarge    // 大卡：侧身大图占右侧
+        case .newB:                     return .bottomLarge   // 大卡：车大图占中下部
         case .newC:                     return .frontLeft     // 车头窗：车头靠左
         }
     }
 
-    /// 歌词布局：覆盖式（前脸/背景/游标类）、左分栏（车在右）、右分栏（车在左）
+    /// 歌词布局：覆盖式（前脸/背景/游标类/大卡）、左分栏（车在右）、右分栏（车在左）
     var lyricsLayout: LyricsLayout {
         switch self {
-        case .gtC, .gtE, .newB:         return .leftColumn    // 车在右，歌词在左
+        case .gtC, .gtE:                return .leftColumn    // 车在右，歌词在左
         case .newC:                     return .rightColumn   // 车头靠左，歌词在右
         default:                        return .overlay
         }
     }
 
-    /// 贯穿光带颜色：GT 签名「星火黄」，所有 GT/新主题统一；纯色主题不使用
+    /// 进度条品牌渐变：设计稿统一的黄→青蓝（所有 GT/新主题）
+    var progressGradient: [UIColor] {
+        [UIColor(hex: 0xE5FF00), UIColor(hex: 0x00E5FF)]
+    }
+
+    /// 进度条底轨颜色：深色半透明，让渐变填充更突出
+    var progressTrackColor: UIColor {
+        UIColor(hex: 0x2A2A2A).withAlphaComponent(0.65)
+    }
+
+    /// 贯穿光带颜色（保留兼容）：GT 签名「星火黄」
     var bladeColor: UIColor {
         self == .original ? .white : UIColor(hex: 0xF2D024)
     }
@@ -179,6 +193,7 @@ enum CarPlacement: Int {
     case rightLarge = 5 // 大卡：侧身大图占右侧，纵向居中接近铺满
     case frontLeft = 6  // 车头窗：车头正视图靠左，右半留给歌词
     case cursorBottom = 7 // 行驶/窄条/极简：车=游标，沿底部光带随进度横向移动
+    case bottomLarge = 8 // 大卡：车大图占中下部，歌词在顶部
 }
 
 /// 歌词布局

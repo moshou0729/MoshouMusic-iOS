@@ -1128,7 +1128,12 @@ final class FloatingLyricsManager: NSObject {
         // v1.0.144：封面通知可能来自后台线程，UIKit 一律回主线程
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.lyricsView?.setArtwork(PlayerManager.shared.currentArtwork)
+            let cover = PlayerManager.shared.currentArtwork
+            self.lyricsView?.setArtwork(cover)
+            // v1.0.180：同步给 A/C 布局的封面/歌名歌手信息
+            if let song = PlayerManager.shared.currentSong {
+                self.lyricsView?.setNowPlayingInfo(cover: cover, title: song.name, artist: song.singer)
+            }
             if self.lyricsView?.isCollapsedState == true {
                 Logger.info("悬浮窗封面已回填")
             }
@@ -1564,8 +1569,13 @@ final class FloatingLyricsManager: NSObject {
         defer { pulseRecomposite() }
         guard let song = PlayerManager.shared.currentSong else {
             lyricsView?.setLines(["", "墨守music", ""], animated: false)
+            lyricsView?.setNowPlayingInfo(cover: PlayerManager.shared.currentArtwork,
+                                          title: "墨守music", artist: "")
             return
         }
+        // v1.0.180：把封面/歌名歌手同步给 A/C/B 信息视图
+        lyricsView?.setNowPlayingInfo(cover: PlayerManager.shared.currentArtwork,
+                                      title: song.name, artist: song.singer)
         let lyrics = PlayerManager.shared.currentLyrics
         if lyrics.isEmpty {
             lyricsView?.setPlaceholder(name: song.name, singer: song.singer)

@@ -51,9 +51,28 @@ enum FloatingTheme: String, CaseIterable {
         case .original:            return .none
         case .gtA, .newC, .newA:   return .backdrop
         case .gtB, .gtE, .newD:    return .bottom
-        case .gtC, .gtF:           return .right
+        case .gtC:                 return .right
+        case .gtF:                 return .cursor
         case .gtD, .newB:          return .card
         }
+    }
+
+    /// 歌词布局：覆盖式（前脸/背景类）或 左侧分栏（侧身/剪影类，车在右）
+    var lyricsLayout: LyricsLayout {
+        switch self {
+        case .gtC, .gtE, .gtF, .newD: return .leftColumn
+        default:                        return .overlay
+        }
+    }
+
+    /// 贯穿光带颜色：GT 签名「星火黄」，所有 GT/新主题统一；纯色主题不使用
+    var bladeColor: UIColor {
+        self == .original ? .white : UIColor(hex: 0xF2D024)
+    }
+
+    /// 车图是否作为「进度游标」沿光带移动（仅 GT·行驶进度）
+    var carFollowsProgress: Bool {
+        self == .gtF
     }
 
     /// 车图透明度（原图多为实拍抠图，压一点避免抢歌词可读性）
@@ -136,6 +155,13 @@ enum CarPlacement: Int {
     case bottom = 2     // 贴底
     case right = 3      // 贴右
     case card = 4       // 顶部卡片区
+    case cursor = 5     // 行驶进度：车=游标，沿底部光带随播放进度横向移动
+}
+
+/// 歌词布局
+enum LyricsLayout: Int {
+    case overlay = 0    // 覆盖式：居中跨整窗，车图作背景装饰（前脸/背景类主题）
+    case leftColumn = 1 // 左侧分栏：歌词缩在左半，车图在右侧（侧身/剪影类主题）
 }
 
 /// 悬浮窗背景样式

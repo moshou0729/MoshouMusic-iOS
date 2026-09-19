@@ -19,9 +19,9 @@ final class FloatingSettingsViewController: UIViewController {
     private let colorInputRow = ColorInputRow()
     private let spectrumSwitch = UISwitch()
 
-    /// v1.0.175：皮肤主题 / 车型选择（横向滚动 chips）
-    private let themeChips = ChipRow(title: "皮肤主题")
-    private let modelChips = ChipRow(title: "车型")
+    /// v1.0.178：皮肤主题 / 车型选择（下拉选择，点击弹出选项列表）
+    private var themeDropdown: DropdownRow!
+    private var modelDropdown: DropdownRow!
 
     private let statusLabel = UILabel()
     private let tipLabel = UILabel()
@@ -169,28 +169,32 @@ final class FloatingSettingsViewController: UIViewController {
             FloatingLyricsManager.shared.refreshSpectrumBase()
         }, for: .valueChanged)
 
-        // v1.0.175：皮肤主题 / 车型选择（实时预览）
-        themeChips.setItems(FloatingTheme.allCases.map { (id: $0.rawValue, title: $0.displayName) })
-        themeChips.setSelected(ConfigStore.shared.floatingTheme)
-        themeChips.onSelect = { [weak self] id in
+        // v1.0.178：皮肤主题 / 车型选择（下拉选择，实时预览）
+        themeDropdown = DropdownRow(title: "皮肤主题")
+        themeDropdown.setHost(self)
+        themeDropdown.setItems(FloatingTheme.allCases.map { (id: $0.rawValue, title: $0.displayName) })
+        themeDropdown.setSelected(ConfigStore.shared.floatingTheme)
+        themeDropdown.onSelect = { [weak self] id in
             guard let t = FloatingTheme(rawValue: id) else { return }
             FloatingLyricsManager.shared.setTheme(t)
-            self?.modelChips.isHidden = (t == .original)
+            self?.modelDropdown.isHidden = (t == .original)
         }
-        modelChips.setItems(FloatingCarModel.all.map { (id: $0.id, title: $0.name) })
-        modelChips.setSelected(ConfigStore.shared.floatingCarModel)
-        modelChips.onSelect = { id in
+        modelDropdown = DropdownRow(title: "车型")
+        modelDropdown.setHost(self)
+        modelDropdown.setItems(FloatingCarModel.all.map { (id: $0.id, title: $0.name) })
+        modelDropdown.setSelected(ConfigStore.shared.floatingCarModel)
+        modelDropdown.onSelect = { id in
             guard let m = FloatingCarModel.model(for: id) else { return }
             FloatingLyricsManager.shared.setCarModel(m)
         }
-        modelChips.isHidden = (ConfigStore.shared.floatingTheme == FloatingTheme.original.rawValue)
+        modelDropdown.isHidden = (ConfigStore.shared.floatingTheme == FloatingTheme.original.rawValue)
 
-        [switchRow, guardRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, spectrumRow, themeChips, modelChips, resetButton, logButton, tipLabel]
+        [switchRow, guardRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, spectrumRow, themeDropdown, modelDropdown, resetButton, logButton, tipLabel]
             .forEach { stack.addArrangedSubview($0) }
         stack.setCustomSpacing(6, after: spectrumRow)
-        stack.setCustomSpacing(8, after: themeChips)
-        themeChips.heightAnchor.constraint(equalToConstant: 64).isActive = true
-        modelChips.heightAnchor.constraint(equalToConstant: 64).isActive = true
+        stack.setCustomSpacing(8, after: themeDropdown)
+        themeDropdown.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        modelDropdown.heightAnchor.constraint(equalToConstant: 48).isActive = true
         stack.setCustomSpacing(6, after: switchRow)
         stack.setCustomSpacing(24, after: statusLabel)
         stack.setCustomSpacing(24, after: colorInputRow)
@@ -603,37 +607,38 @@ private final class ColorInputRow: UIView {
     }
 }
 
-// MARK: - v1.0.175 横向滚动 chip 行（主题 / 车型选择）
+// MARK: - v1.0.178 下拉选择行（主题 / 车型选择）
 
-private final class ChipRow: UIView {
+private final class DropdownRow: UIView {
 
     var onSelect: ((String) -> Void)?
 
     private let nameLabel = UILabel()
-    private let scroll = UIScrollView()
-    private let stack = UIStackView()
-    private var buttons: [(id: String, button: UIButton)] = []
+    private let valueButton = UIButton(type: .system)
+    private var items: [(id: String, title: String)] = []
     private var selectedID: String?
+    private weak var host: UIViewController?
 
-    init(title: String) {
+    init(title: String, host: UIViewController? = nil) {
+        self.host = host
         super.init(frame: .zero)
         nameLabel.text = title
         nameLabel.font = UIFont.systemFont(ofSize: 15, weight: .medium)
         nameLabel.textColor = .label
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        scroll.showsHorizontalScrollIndicator = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .horizontal
-        stack.spacing = 8
-        stack.alignment = .center
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        scroll.addSubview(stack)
-        scroll.contentInset = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        valueButton.setTitle("请选择", for: .normal)
+        valueButton.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .medium)
+        valueButton.setTitleColor(Theme.primary, for: .normal)
+        valueButton.contentHorizontalAlignment = .right
+        valueButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        valueButton.addTarget(self, action: #selector(openSheet), for: .touchUpInside)
+        valueButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = UIStackView(arrangedSubviews: [nameLabel, scroll])
-        container.axis = .vertical
-        container.spacing = 8
+        let container = UIStackView(arrangedSubviews: [nameLabel, valueButton])
+        container.axis = .horizontal
+        container.spacing = 12
+        container.alignment = .center
         container.translatesAutoresizingMaskIntoConstraints = false
         addSubview(container)
         NSLayoutConstraint.activate([
@@ -641,34 +646,14 @@ private final class ChipRow: UIView {
             container.leadingAnchor.constraint(equalTo: leadingAnchor),
             container.trailingAnchor.constraint(equalTo: trailingAnchor),
             container.bottomAnchor.constraint(equalTo: bottomAnchor),
-            scroll.heightAnchor.constraint(equalToConstant: 32),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func setItems(_ items: [(id: String, title: String)]) {
-        buttons.forEach { $0.button.removeFromSuperview() }
-        buttons = items.map { item in
-            let b = UIButton(type: .system)
-            b.setTitle(item.title, for: .normal)
-            b.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
-            b.layer.cornerRadius = 14
-            b.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
-            b.backgroundColor = .secondarySystemBackground
-            b.setTitleColor(.label, for: .normal)
-            b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
-            stack.addArrangedSubview(b)
-            return (id: item.id, button: b)
-        }
+        self.items = items
         refreshSelection()
-    }
-
-    @objc private func tapped(_ sender: UIButton) {
-        guard let entry = buttons.first(where: { $0.button === sender }) else { return }
-        selectedID = entry.id
-        refreshSelection()
-        onSelect?(entry.id)
     }
 
     func setSelected(_ id: String) {
@@ -676,11 +661,36 @@ private final class ChipRow: UIView {
         refreshSelection()
     }
 
+    func setHost(_ vc: UIViewController) {
+        host = vc
+    }
+
+    @objc private func openSheet() {
+        let sheet = UIAlertController(title: nameLabel.text, message: nil, preferredStyle: .actionSheet)
+        for item in items {
+            let action = UIAlertAction(title: item.title, style: .default) { [weak self] _ in
+                self?.selectedID = item.id
+                self?.refreshSelection()
+                self?.onSelect?(item.id)
+            }
+            if item.id == selectedID {
+                action.setValue(true, forKey: "checked")
+            }
+            sheet.addAction(action)
+        }
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let pop = sheet.popoverPresentationController {
+            pop.sourceView = valueButton
+            pop.sourceRect = valueButton.bounds
+        }
+        host?.present(sheet, animated: true)
+    }
+
     private func refreshSelection() {
-        for (id, b) in buttons {
-            let sel = id == selectedID
-            b.backgroundColor = sel ? Theme.primary : .secondarySystemBackground
-            b.setTitleColor(sel ? .white : .label, for: .normal)
+        if let sel = items.first(where: { $0.id == selectedID }) {
+            valueButton.setTitle(sel.title, for: .normal)
+        } else {
+            valueButton.setTitle("请选择", for: .normal)
         }
     }
 }

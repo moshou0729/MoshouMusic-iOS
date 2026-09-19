@@ -1182,6 +1182,9 @@ final class FloatingLyricsManager: NSObject {
         }
         // 频谱条数据（EQ tap 的并行带通分析）
         lyricsView?.spectrumView.levels = AudioEqualizer.shared.currentLevels()
+        // v1.0.178：把播放进度转发给悬浮窗视图（驱动「星火黄光带已播段」与「行驶进度主题车=游标」）
+        lyricsView?.updateProgress(current: PlayerManager.shared.currentTime,
+                                  duration: PlayerManager.shared.duration)
         // 几何驱动：底边 0~24pt 正弦往复（内容锁钉住根视图 → 视觉零变化），
         // 连续 window 级几何变化强制 SB 逐帧重合成 → 频谱跨应用实时可见
         // 🚨 v1.0.152：基准一律取「规范帧」（尺寸=配置值），绝不拿 window.frame 当基准

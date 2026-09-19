@@ -32,8 +32,17 @@ final class FloatingLyricsView: UIView {
 
     /// v1.0.177：GT 渐变背景层（themed 主题专用；纯色主题为 nil，沿用用户纯色）
     private var bgGradientLayer: CAGradientLayer?
-    /// v1.0.177：星火黄贯穿光带（底部光刃）—— GT 主题签名元素，纯色主题不显示
-    private var lightBladeView: UIView?
+    /// v1.0.178：光带两段——深蓝底轨（未播段）+ 星火黄已播填充，组成「进度 = 已播长度」光带
+    private var bladeTrack: UIView?
+    private var bladeFill: UIView?
+    /// v1.0.178：光带填充上的扫光高光（液态金属 / 星火动态）
+    private var bladeShimmer: CAGradientLayer?
+    /// v1.0.178：当前主题 / 车型 / 歌词布局（驱动动态效果与定位，供 progress 回调使用）
+    private var activeTheme: FloatingTheme = .original
+    private var activeModel: FloatingCarModel?
+    private var lyricsLayout: LyricsLayout = .overlay
+    /// v1.0.178：最近一次播放进度（0~1），用于重布局时保持光带已播段
+    private var lastProgress: CGFloat = 0
 
     /// 中间行字号；侧行自动小一号
     var fontSize: CGFloat {
@@ -93,13 +102,21 @@ final class FloatingLyricsView: UIView {
                                   width: barWidth, height: barHeight)
 
         let contentTop = controlBar.isHidden ? 0 : min(bounds.height, controlBar.frame.maxY + 2)
+        // v1.0.178：左侧分栏主题（侧身/剪影类）歌词只占用左半窗，右侧留给车图；
+        // 覆盖式主题歌词跨整窗居中（车图作背景装饰）。
+        let lyricsWidth: CGFloat = (lyricsLayout == .leftColumn)
+            ? max(0, bounds.width * 0.54) : bounds.width
         container.frame = CGRect(x: 0, y: contentTop,
-                                 width: bounds.width,
+                                 width: lyricsWidth,
                                  height: max(0, bounds.height - contentTop))
         let row = container.bounds.height / 3
+        let labelInset: CGFloat = (lyricsLayout == .leftColumn) ? 14 : 10
+        let labelW = max(0, container.bounds.width - labelInset * 2)
+        let align: NSTextAlignment = (lyricsLayout == .leftColumn) ? .left : .center
         for (index, label) in labels.enumerated() {
-            label.frame = CGRect(x: 10, y: CGFloat(index) * row,
-                                 width: max(0, bounds.width - 20), height: row)
+            label.textAlignment = align
+            label.frame = CGRect(x: labelInset, y: CGFloat(index) * row,
+                                 width: labelW, height: row)
         }
         // v1.0.147：频谱条撑满悬浮窗高度 —— 原来贴底固定 16pt，只占窗口底部一小条，
         // 看不出频谱强弱；现在按「当前悬浮窗设置的高度」铺满（上下各留 3pt 圆角余量）
@@ -112,9 +129,7 @@ final class FloatingLyricsView: UIView {
 
         // v1.0.177：GT 渐变背景层 + 贯穿光带随窗口尺寸重定位
         bgGradientLayer?.frame = bounds
-        if let lb = lightBladeView {
-            lb.frame = CGRect(x: 0, y: bounds.height - 3, width: bounds.width, height: 3)
-        }
+        layoutBlade()
     }
 
     /// v1.0.154：控制条高度随悬浮窗尺寸缩放 —— 22~32pt，保证最小窗（72pt）也留得住歌词
@@ -192,6 +207,8 @@ final class FloatingLyricsView: UIView {
     func setCollapsed(_ collapsed: Bool) {
         isCollapsedState = collapsed
         carImageView?.isHidden = collapsed
+        bladeTrack?.isHidden = collapsed
+        bladeFill?.isHidden = collapsed
         container.isHidden = collapsed
         // v1.0.147：折叠成正方形圆点时频谱条不显示（否则会压住封面）
         spectrumView.isHidden = collapsed || !spectrumEnabled
@@ -266,10 +283,18 @@ final class FloatingLyricsView: UIView {
         let key = "\(theme.rawValue)|\(model.id)|\(theme.carOrientation.rawValue)|\(theme.carPlacement.rawValue)"
         if key != appliedThemeKey {
             appliedThemeKey = key
+            activeTheme = theme
+            activeModel = model
+            lyricsLayout = theme.lyricsLayout
+            // 先停掉旧主题的动态效果，避免动画在重建后叠加
+            stopDynamicEffects()
             // v1.0.177：先铺背景（纯色主题清掉渐变；GT 主题铺 GT 渐变）
             applyBackground(theme)
             carImageView?.removeFromSuperview()
             carImageView = nil
+            bladeTrack?.removeFromSuperview(); bladeTrack = nil
+            bladeFill?.removeFromSuperview(); bladeFill = nil
+            bladeShimmer?.removeFromSuperlayer(); bladeShimmer = nil
             layer.borderWidth = 0
             if theme.usesCarDecoration,
                let img = model.image(orientation: theme.carOrientation) {
@@ -287,16 +312,20 @@ final class FloatingLyricsView: UIView {
                     layer.borderWidth = theme.accentBorderWidth
                 }
             }
-            // v1.0.177：贯穿光带（GT 签名元素；纯色不显示）。放在车图之后创建，
-            // 保证光带压在车图之上、始终可见（窗口底部那道 GT 光刃）。
+            // v1.0.178：贯穿光带（GT 签名元素；纯色不显示）—— 深蓝底轨 + 星火黄已播段 + 扫光
             applyLightBlade(theme)
+            // v1.0.178：启动动态效果（扫光 + 车浮动 / 进度游标）
+            startDynamicEffects()
         }
         carImageView?.isHidden = collapsed
+        bladeTrack?.isHidden = collapsed
+        bladeFill?.isHidden = collapsed
         layoutCarImage()
+        layoutBlade()
         refreshHard()
     }
 
-    // MARK: - 背景 / 光带（v1.0.177）
+    // MARK: - 背景 / 光带（v1.0.177+）
 
     /// 纯色主题：移除 GT 渐变层，背景由 manager 设置的用户纯色接管。
     /// GT/新主题：在 self.layer 最底层铺一层自上而下渐变，作为该主题的 GT 底色。
@@ -319,20 +348,106 @@ final class FloatingLyricsView: UIView {
         }
     }
 
-    /// 星火黄贯穿光带（底部光刃）：GT/新主题在窗口底部画一条强调色光带，
-    /// 是 GT 视觉区别于纯色的最直观元素。纯色主题不显示。
+    /// 星火黄贯穿光带（v1.0.178 重构为两段式进度光带）：
+    /// 底部一条深蓝底轨（未播段），其上叠一条星火黄填充（已播段），
+    /// 填充上再跑一道白色扫光高光 —— 既表达「进度 = 已播长度」，又有液态金属/星火的动态观感。
+    /// 纯色主题不显示。
     private func applyLightBlade(_ theme: FloatingTheme) {
-        lightBladeView?.removeFromSuperview()
-        lightBladeView = nil
         guard theme.showsLightBlade else { return }
-        let v = UIView()
-        v.isUserInteractionEnabled = false
-        v.backgroundColor = theme.accent
-        v.layer.cornerRadius = 1.5
-        v.alpha = 0.92
-        // 插到最上层（窗口底部，与歌词/控制条空间不重叠，且压在车图之上，光刃始终可见）
-        insertSubview(v, at: subviews.count)
-        lightBladeView = v
+        let h: CGFloat = 3
+        let y = bounds.height - h
+
+        let track = UIView()
+        track.isUserInteractionEnabled = false
+        track.backgroundColor = UIColor(hex: 0x17375C)
+        track.layer.cornerRadius = h / 2
+        track.alpha = 0.9
+        track.clipsToBounds = true
+        track.frame = CGRect(x: 0, y: y, width: bounds.width, height: h)
+        insertSubview(track, at: subviews.count)
+        bladeTrack = track
+
+        let fill = UIView()
+        fill.isUserInteractionEnabled = false
+        fill.backgroundColor = theme.bladeColor
+        fill.layer.cornerRadius = h / 2
+        fill.alpha = 0.95
+        fill.clipsToBounds = true
+        fill.frame = CGRect(x: 0, y: y, width: max(0, bounds.width * lastProgress), height: h)
+        insertSubview(fill, at: subviews.count)
+        bladeFill = fill
+
+        let shim = CAGradientLayer()
+        shim.colors = [UIColor.clear.cgColor,
+                       UIColor.white.withAlphaComponent(0.55).cgColor,
+                       UIColor.clear.cgColor]
+        shim.startPoint = CGPoint(x: 0, y: 0.5)
+        shim.endPoint = CGPoint(x: 1, y: 0.5)
+        shim.locations = [0, 0.5, 1]
+        fill.layer.addSublayer(shim)
+        shim.frame = fill.bounds
+        bladeShimmer = shim
+    }
+
+    /// 重定位光带两段（随窗口尺寸 / 进度变化）
+    private func layoutBlade() {
+        guard let track = bladeTrack, let fill = bladeFill else { return }
+        let h: CGFloat = 3
+        let y = bounds.height - h
+        track.frame = CGRect(x: 0, y: y, width: bounds.width, height: h)
+        fill.frame = CGRect(x: 0, y: y, width: max(0, bounds.width * lastProgress), height: h)
+        bladeShimmer?.frame = fill.bounds
+    }
+
+    /// v1.0.178：启动主题动态效果
+    private func startDynamicEffects() {
+        guard activeTheme != .original else { return }
+        // 星火黄扫光：沿光带已播段做横向往复扫光
+        if let fill = bladeFill, let shim = bladeShimmer {
+            let w = max(40, bounds.width)
+            shim.frame = fill.bounds
+            let anim = CABasicAnimation(keyPath: "transform.translation.x")
+            anim.fromValue = -w
+            anim.toValue = w
+            anim.duration = 1.8
+            anim.repeatCount = .greatestFiniteMagnitude
+            anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            shim.add(anim, forKey: "bladeShimmer")
+        }
+        // 车图轻微浮动（仅非「进度游标」主题，避免与 x 进度绑定冲突）
+        if let iv = carImageView, activeTheme.carFollowsProgress == false {
+            let bob = CABasicAnimation(keyPath: "transform.translation.y")
+            bob.fromValue = -2.0
+            bob.toValue = 2.0
+            bob.duration = 2.4
+            bob.autoreverses = true
+            bob.repeatCount = .greatestFiniteMagnitude
+            bob.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            iv.layer.add(bob, forKey: "carBob")
+        }
+    }
+
+    /// 停止所有主题动态效果（切主题重建前调用）
+    private func stopDynamicEffects() {
+        bladeShimmer?.removeAnimation(forKey: "bladeShimmer")
+        carImageView?.layer.removeAnimation(forKey: "carBob")
+    }
+
+    /// v1.0.178：播放进度回调（由 manager 在 spectrumTick 中转发）。
+    /// 更新光带已播段宽度；若主题为「行驶进度」（车=进度游标），同步移动车图 x 位置。
+    func updateProgress(current: Double, duration: Double) {
+        let p = (duration > 0 && current.isFinite) ? min(1, max(0, current / duration)) : 0
+        lastProgress = CGFloat(p)
+        guard let fill = bladeFill else { return }
+        let h: CGFloat = 3
+        let y = bounds.height - h
+        fill.frame = CGRect(x: 0, y: y, width: max(0, bounds.width * CGFloat(p)), height: h)
+        bladeShimmer?.frame = fill.bounds
+        if activeTheme.carFollowsProgress, let iv = carImageView {
+            let margin: CGFloat = 20
+            let x = margin + CGFloat(p) * max(0, bounds.width - margin * 2)
+            iv.center = CGPoint(x: x, y: bounds.height - 22)
+        }
     }
 
     /// 按当前摆放方式计算车图 frame
@@ -348,14 +463,20 @@ final class FloatingLyricsView: UIView {
         case .backdrop:
             return rect.insetBy(dx: 4, dy: 4)
         case .bottom:
-            return CGRect(x: 4, y: rect.height * 0.34,
-                          width: rect.width - 8, height: rect.height * 0.66)
+            return CGRect(x: 4, y: rect.height * 0.30,
+                          width: rect.width - 8, height: rect.height * 0.70)
         case .right:
-            return CGRect(x: rect.width * 0.42, y: 4,
-                          width: rect.width * 0.56, height: rect.height - 8)
+            // 侧身剪影：占右半窗、近乎铺满高度，呼应设计稿「车在右、歌词在左」
+            return CGRect(x: rect.width * 0.40, y: 6,
+                          width: rect.width * 0.60 - 6, height: rect.height - 12)
         case .card:
             return CGRect(x: 4, y: 4,
                           width: rect.width - 8, height: rect.height * 0.6)
+        case .cursor:
+            // 行驶进度：车=游标，初始落在底部光带左侧，x 由 updateProgress 驱动
+            let h = min(42, rect.height * 0.42)
+            let w = h * 1.9
+            return CGRect(x: 20 - w / 2, y: rect.height - h - 6, width: w, height: h)
         }
     }
 }

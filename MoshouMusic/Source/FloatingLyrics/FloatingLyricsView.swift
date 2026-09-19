@@ -23,6 +23,13 @@ final class FloatingLyricsView: UIView {
     /// v1.0.147：频谱开关状态（折叠态要联动隐藏）
     private var spectrumEnabled = false
 
+    /// v1.0.175：主题车图装饰层（车型正/侧视图），位于频谱之上、歌词之下
+    private var carImageView: UIImageView?
+    /// v1.0.175：去重键 —— 仅在主题/车型/朝向/摆放变化时重建车图
+    private var appliedThemeKey: String = ""
+    /// v1.0.175：当前车图摆放方式（供 layoutSubviews 重定位）
+    private var carPlacement: CarPlacement = .none
+
     /// 中间行字号；侧行自动小一号
     var fontSize: CGFloat {
         didSet { applyStyle() }
@@ -94,6 +101,9 @@ final class FloatingLyricsView: UIView {
         spectrumView.frame = CGRect(x: 6, y: 3,
                                     width: max(0, bounds.width - 12),
                                     height: max(0, bounds.height - 6))
+
+        // v1.0.175：车图装饰随窗口尺寸 / 折叠态重定位
+        layoutCarImage()
     }
 
     /// v1.0.154：控制条高度随悬浮窗尺寸缩放 —— 22~32pt，保证最小窗（72pt）也留得住歌词
@@ -170,6 +180,7 @@ final class FloatingLyricsView: UIView {
     /// 折叠态：隐藏歌词，显示封面图（无封面时回退音符图标）
     func setCollapsed(_ collapsed: Bool) {
         isCollapsedState = collapsed
+        carImageView?.isHidden = collapsed
         container.isHidden = collapsed
         // v1.0.147：折叠成正方形圆点时频谱条不显示（否则会压住封面）
         spectrumView.isHidden = collapsed || !spectrumEnabled
@@ -233,6 +244,64 @@ final class FloatingLyricsView: UIView {
     func setSpectrumVisible(_ visible: Bool) {
         spectrumEnabled = visible
         spectrumView.isHidden = !visible || isCollapsedState
+    }
+
+    // MARK: - 主题 / 车型装饰（v1.0.175）
+
+    /// 应用悬浮窗主题 + 车型：在歌词层之下、频谱之上放置车图装饰，并按主题加强调色描边。
+    /// 仅在主题 / 车型 / 朝向 / 摆放变化时重建车图视图，避免布局期重复创建。
+    func applyTheme(_ theme: FloatingTheme, model: FloatingCarModel) {
+        let collapsed = isCollapsedState
+        let key = "\(theme.rawValue)|\(model.id)|\(theme.carOrientation.rawValue)|\(theme.carPlacement.rawValue)"
+        if key != appliedThemeKey {
+            appliedThemeKey = key
+            carImageView?.removeFromSuperview()
+            carImageView = nil
+            layer.borderWidth = 0
+            if theme.usesCarDecoration,
+               let img = model.image(orientation: theme.carOrientation) {
+                let iv = UIImageView(image: img)
+                iv.contentMode = .scaleAspectFit
+                iv.clipsToBounds = true
+                iv.alpha = theme.carAlpha
+                iv.isUserInteractionEnabled = false
+                // 插到频谱(索引 0)之上、歌词容器之下 → 车图在文字背后、频谱前方
+                insertSubview(iv, at: 1)
+                carImageView = iv
+                carPlacement = theme.carPlacement
+                if theme.accentBorderWidth > 0 {
+                    layer.borderColor = theme.accent.cgColor
+                    layer.borderWidth = theme.accentBorderWidth
+                }
+            }
+        }
+        carImageView?.isHidden = collapsed
+        layoutCarImage()
+        refreshHard()
+    }
+
+    /// 按当前摆放方式计算车图 frame
+    private func layoutCarImage() {
+        guard let iv = carImageView else { return }
+        iv.frame = Self.carFrame(for: carPlacement, in: bounds)
+    }
+
+    private static func carFrame(for placement: CarPlacement, in rect: CGRect) -> CGRect {
+        switch placement {
+        case .none:
+            return .zero
+        case .backdrop:
+            return rect.insetBy(dx: 4, dy: 4)
+        case .bottom:
+            return CGRect(x: 4, y: rect.height * 0.34,
+                          width: rect.width - 8, height: rect.height * 0.66)
+        case .right:
+            return CGRect(x: rect.width * 0.42, y: 4,
+                          width: rect.width * 0.56, height: rect.height - 8)
+        case .card:
+            return CGRect(x: 4, y: 4,
+                          width: rect.width - 8, height: rect.height * 0.6)
+        }
     }
 }
 

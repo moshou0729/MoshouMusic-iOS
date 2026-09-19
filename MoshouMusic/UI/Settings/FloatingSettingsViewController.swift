@@ -19,6 +19,10 @@ final class FloatingSettingsViewController: UIViewController {
     private let colorInputRow = ColorInputRow()
     private let spectrumSwitch = UISwitch()
 
+    /// v1.0.175：皮肤主题 / 车型选择（横向滚动 chips）
+    private let themeChips = ChipRow(title: "皮肤主题")
+    private let modelChips = ChipRow(title: "车型")
+
     private let statusLabel = UILabel()
     private let tipLabel = UILabel()
     private let resetButton = UIButton(type: .system)
@@ -165,9 +169,28 @@ final class FloatingSettingsViewController: UIViewController {
             FloatingLyricsManager.shared.refreshSpectrumBase()
         }, for: .valueChanged)
 
-        [switchRow, guardRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, spectrumRow, resetButton, logButton, tipLabel]
+        // v1.0.175：皮肤主题 / 车型选择（实时预览）
+        themeChips.setItems(FloatingTheme.allCases.map { (id: $0.rawValue, title: $0.displayName) })
+        themeChips.setSelected(ConfigStore.shared.floatingTheme)
+        themeChips.onSelect = { [weak self] id in
+            guard let t = FloatingTheme(rawValue: id) else { return }
+            FloatingLyricsManager.shared.setTheme(t)
+            self?.modelChips.isHidden = (t == .original)
+        }
+        modelChips.setItems(FloatingCarModel.all.map { (id: $0.id, title: $0.name) })
+        modelChips.setSelected(ConfigStore.shared.floatingCarModel)
+        modelChips.onSelect = { id in
+            guard let m = FloatingCarModel.model(for: id) else { return }
+            FloatingLyricsManager.shared.setCarModel(m)
+        }
+        modelChips.isHidden = (ConfigStore.shared.floatingTheme == FloatingTheme.original.rawValue)
+
+        [switchRow, guardRow, statusLabel, widthRow, heightRow, fontRow, opacityRow, colorRow, colorInputRow, spectrumRow, themeChips, modelChips, resetButton, logButton, tipLabel]
             .forEach { stack.addArrangedSubview($0) }
         stack.setCustomSpacing(6, after: spectrumRow)
+        stack.setCustomSpacing(8, after: themeChips)
+        themeChips.heightAnchor.constraint(equalToConstant: 64).isActive = true
+        modelChips.heightAnchor.constraint(equalToConstant: 64).isActive = true
         stack.setCustomSpacing(6, after: switchRow)
         stack.setCustomSpacing(24, after: statusLabel)
         stack.setCustomSpacing(24, after: colorInputRow)
@@ -577,6 +600,88 @@ private final class ColorInputRow: UIView {
         }
         if s.count == 6, let v = UInt32(s, radix: 16) { return v }
         return nil
+    }
+}
+
+// MARK: - v1.0.175 横向滚动 chip 行（主题 / 车型选择）
+
+private final class ChipRow: UIView {
+
+    var onSelect: ((String) -> Void)?
+
+    private let nameLabel = UILabel()
+    private let scroll = UIScrollView()
+    private let stack = UIStackView()
+    private var buttons: [(id: String, button: UIButton)] = []
+    private var selectedID: String?
+
+    init(title: String) {
+        super.init(frame: .zero)
+        nameLabel.text = title
+        nameLabel.font = UIFont.systemFont(ofSize: 15, weight: .medium)
+        nameLabel.textColor = .label
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        scroll.showsHorizontalIndicator = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.spacing = 8
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+        scroll.contentInset = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+
+        let container = UIStackView(arrangedSubviews: [nameLabel, scroll])
+        container.axis = .vertical
+        container.spacing = 8
+        container.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(container)
+        NSLayoutConstraint.activate([
+            container.topAnchor.constraint(equalTo: topAnchor),
+            container.leadingAnchor.constraint(equalTo: leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: trailingAnchor),
+            container.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: 32),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setItems(_ items: [(id: String, title: String)]) {
+        buttons.forEach { $0.button.removeFromSuperview() }
+        buttons = items.map { item in
+            let b = UIButton(type: .system)
+            b.setTitle(item.title, for: .normal)
+            b.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+            b.layer.cornerRadius = 14
+            b.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+            b.backgroundColor = .secondarySystemBackground
+            b.setTitleColor(.label, for: .normal)
+            b.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
+            stack.addArrangedSubview(b)
+            return (id: item.id, button: b)
+        }
+        refreshSelection()
+    }
+
+    @objc private func tapped(_ sender: UIButton) {
+        guard let entry = buttons.first(where: { $0.button === sender }) else { return }
+        selectedID = entry.id
+        refreshSelection()
+        onSelect?(entry.id)
+    }
+
+    func setSelected(_ id: String) {
+        selectedID = id
+        refreshSelection()
+    }
+
+    private func refreshSelection() {
+        for (id, b) in buttons {
+            let sel = id == selectedID
+            b.backgroundColor = sel ? Theme.primary : .secondarySystemBackground
+            b.setTitleColor(sel ? .white : .label, for: .normal)
+        }
     }
 }
 

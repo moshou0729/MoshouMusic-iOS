@@ -717,6 +717,9 @@ final class FloatingLyricsManager: NSObject {
                                            fontSize: ConfigStore.shared.floatingFontSize)
         // v1.0.123：用配置色（此前写死黑色 → 每次销毁重建后用户选的颜色被重置成黑）
         lyricView.backgroundColor = configuredBgColor()
+        // v1.0.175：应用当前主题 + 车型装饰
+        lyricView.applyTheme(FloatingTheme(rawValue: ConfigStore.shared.floatingTheme) ?? .original,
+                            model: FloatingCarModel.model(for: ConfigStore.shared.floatingCarModel) ?? .default)
         lyricView.isUserInteractionEnabled = true
         lyricView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         // v1.0.141：折叠圆点封面 + 频谱可见性恢复
@@ -859,9 +862,36 @@ final class FloatingLyricsManager: NSObject {
         if !isLocked {
             view.backgroundColor = configuredBgColor()
         }
+        // v1.0.175：主题 / 车型装饰随设置实时刷新
+        view.applyTheme(FloatingTheme(rawValue: ConfigStore.shared.floatingTheme) ?? .original,
+                        model: FloatingCarModel.model(for: ConfigStore.shared.floatingCarModel) ?? .default)
         // v1.0.150：尺寸变了必须重捕获频谱基准 —— 否则 spectrumTick 仍按旧基准逐帧写回
         // 「旧高度 + 0~24pt 脉冲」，表现为「改完高度自己又变回去了 / 自动变高」。
         refreshSpectrumBase()
+    }
+
+    // MARK: - v1.0.175 主题 / 车型切换
+
+    /// 依据 ConfigStore 当前配置把主题 + 车型应用到悬浮歌词视图
+    private func applyFloatingTheme() {
+        guard let view = lyricsView else { return }
+        let theme = FloatingTheme(rawValue: ConfigStore.shared.floatingTheme) ?? .original
+        let model = FloatingCarModel.model(for: ConfigStore.shared.floatingCarModel) ?? .default
+        view.applyTheme(theme, model: model)
+    }
+
+    /// 切换皮肤主题（设置页调用）
+    func setTheme(_ theme: FloatingTheme) {
+        ConfigStore.shared.floatingTheme = theme.rawValue
+        applyFloatingTheme()
+        hardRefresh()
+    }
+
+    /// 切换装饰车型（设置页调用）
+    func setCarModel(_ model: FloatingCarModel) {
+        ConfigStore.shared.floatingCarModel = model.id
+        applyFloatingTheme()
+        hardRefresh()
     }
 
     // MARK: - 外观配置与强制重合成

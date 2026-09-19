@@ -41,6 +41,8 @@ class ConfigStore {
         static let eqEnabled = "eqEnabled"
         static let eqGains = "eqGains"
         static let floatingSpectrumOn = "floatingSpectrumOn"
+        static let floatingTheme = "floatingTheme"
+        static let floatingCarModel = "floatingCarModel"
         static let lxSongmidFixV1Done = "lxSongmidFixV1Done"
     }
 
@@ -386,6 +388,18 @@ class ConfigStore {
     var floatingSpectrumOn: Bool {
         get { defaults.bool(forKey: Keys.floatingSpectrumOn) }
         set { defaults.set(newValue, forKey: Keys.floatingSpectrumOn) }
+    }
+
+    /// v1.0.175：悬浮窗皮肤主题（FloatingTheme 的 rawValue，默认 original）
+    var floatingTheme: String {
+        get { defaults.string(forKey: Keys.floatingTheme) ?? "original" }
+        set { defaults.set(newValue, forKey: Keys.floatingTheme) }
+    }
+
+    /// v1.0.175：悬浮窗装饰车型（FloatingCarModel 的 id，默认 gt）
+    var floatingCarModel: String {
+        get { defaults.string(forKey: Keys.floatingCarModel) ?? "gt" }
+        set { defaults.set(newValue, forKey: Keys.floatingCarModel) }
     }
 
     /// 悬浮歌词背景颜色（RGB hex，如 0x000000 黑 / 0xFFFFFF 白；默认黑）

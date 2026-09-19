@@ -877,6 +877,12 @@ final class FloatingLyricsManager: NSObject {
         guard let view = lyricsView else { return }
         let theme = FloatingTheme(rawValue: ConfigStore.shared.floatingTheme) ?? .original
         let model = FloatingCarModel.model(for: ConfigStore.shared.floatingCarModel) ?? .default
+        // v1.0.177：无论切到纯色还是 GT，先把背景复位为用户纯色；
+        // 若是 GT 主题，applyTheme 会再覆盖为 .clear + 渐变层。若不复位，
+        // 从 GT 切回纯色时 backgroundColor 仍是 GT 留下的 .clear → 窗口透明。
+        if !isLocked {
+            view.backgroundColor = configuredBgColor()
+        }
         view.applyTheme(theme, model: model)
     }
 

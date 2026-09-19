@@ -30,6 +30,11 @@ final class FloatingLyricsView: UIView {
     /// v1.0.175：当前车图摆放方式（供 layoutSubviews 重定位）
     private var carPlacement: CarPlacement = .none
 
+    /// v1.0.177：GT 渐变背景层（themed 主题专用；纯色主题为 nil，沿用用户纯色）
+    private var bgGradientLayer: CAGradientLayer?
+    /// v1.0.177：星火黄贯穿光带（底部光刃）—— GT 主题签名元素，纯色主题不显示
+    private var lightBladeView: UIView?
+
     /// 中间行字号；侧行自动小一号
     var fontSize: CGFloat {
         didSet { applyStyle() }
@@ -104,6 +109,12 @@ final class FloatingLyricsView: UIView {
 
         // v1.0.175：车图装饰随窗口尺寸 / 折叠态重定位
         layoutCarImage()
+
+        // v1.0.177：GT 渐变背景层 + 贯穿光带随窗口尺寸重定位
+        bgGradientLayer?.frame = bounds
+        if let lb = lightBladeView {
+            lb.frame = CGRect(x: 0, y: bounds.height - 3, width: bounds.width, height: 3)
+        }
     }
 
     /// v1.0.154：控制条高度随悬浮窗尺寸缩放 —— 22~32pt，保证最小窗（72pt）也留得住歌词
@@ -255,6 +266,8 @@ final class FloatingLyricsView: UIView {
         let key = "\(theme.rawValue)|\(model.id)|\(theme.carOrientation.rawValue)|\(theme.carPlacement.rawValue)"
         if key != appliedThemeKey {
             appliedThemeKey = key
+            // v1.0.177：先铺背景（纯色主题清掉渐变；GT 主题铺 GT 渐变）
+            applyBackground(theme)
             carImageView?.removeFromSuperview()
             carImageView = nil
             layer.borderWidth = 0
@@ -274,10 +287,52 @@ final class FloatingLyricsView: UIView {
                     layer.borderWidth = theme.accentBorderWidth
                 }
             }
+            // v1.0.177：贯穿光带（GT 签名元素；纯色不显示）。放在车图之后创建，
+            // 保证光带压在车图之上、始终可见（窗口底部那道 GT 光刃）。
+            applyLightBlade(theme)
         }
         carImageView?.isHidden = collapsed
         layoutCarImage()
         refreshHard()
+    }
+
+    // MARK: - 背景 / 光带（v1.0.177）
+
+    /// 纯色主题：移除 GT 渐变层，背景由 manager 设置的用户纯色接管。
+    /// GT/新主题：在 self.layer 最底层铺一层自上而下渐变，作为该主题的 GT 底色。
+    private func applyBackground(_ theme: FloatingTheme) {
+        bgGradientLayer?.removeFromSuperlayer()
+        bgGradientLayer = nil
+        switch theme.background {
+        case .solid:
+            // 不动 backgroundColor（manager 已设为用户纯色），仅确保没有残留渐变
+            break
+        case .gradient(let colors):
+            let g = CAGradientLayer()
+            g.startPoint = CGPoint(x: 0.5, y: 0)
+            g.endPoint = CGPoint(x: 0.5, y: 1)
+            g.colors = colors.map { $0.cgColor }
+            g.frame = bounds
+            self.layer.insertSublayer(g, at: 0)
+            bgGradientLayer = g
+            self.backgroundColor = .clear
+        }
+    }
+
+    /// 星火黄贯穿光带（底部光刃）：GT/新主题在窗口底部画一条强调色光带，
+    /// 是 GT 视觉区别于纯色的最直观元素。纯色主题不显示。
+    private func applyLightBlade(_ theme: FloatingTheme) {
+        lightBladeView?.removeFromSuperview()
+        lightBladeView = nil
+        guard theme.showsLightBlade else { return }
+        let v = UIView()
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = theme.accent
+        v.layer.cornerRadius = 1.5
+        v.alpha = 0.92
+        // 插到最上层（窗口底部，与歌词/控制条空间不重叠，且压在车图之上，光刃始终可见）
+        insertSubview(v, at: subviews.count)
+        lightBladeView = v
     }
 
     /// 按当前摆放方式计算车图 frame

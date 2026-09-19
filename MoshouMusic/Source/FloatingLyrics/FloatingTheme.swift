@@ -2,12 +2,14 @@ import UIKit
 
 /// 悬浮窗主题（可更换皮肤）
 ///
-/// - `original`：原始默认皮肤（无车图，纯色背景，保持旧版行为）
+/// - `original`（纯色）：原始默认皮肤，保持旧版「用户自选纯色背景 + 无车图」行为，
+///   与 GT 主题完全独立，互不干扰。
 /// - `gtA`..`gtF`：领克 GT 六套方案（贯穿光刃 / 顶峰蓝液态金属 / 性能模式 / 前脸正视 / 侧面剪影 / 行驶进度）
 /// - `newA`..`newD`：新四套方案（窄条 / 大卡 / 车头窗 / 极简）
 ///
-/// 全部为数据驱动：每个主题只描述「车图朝向 + 摆放 + 强调色」，渲染逻辑统一在
-/// `FloatingLyricsView.applyTheme(_:model:)` 一处，新增主题无需改动渲染代码。
+/// 关键区分：**纯色主题是「背景 = 用户纯色」；GT/新主题是「背景 = 各自 GT 渐变 + 星火黄贯穿光带」，
+/// 车图只是外观融入的一层装饰**，两者视觉上完全分开，不会「纯色 + 车」糊在一起。
+/// 渲染逻辑集中在 `FloatingLyricsView.applyTheme(_:model:)`，新增主题只改本文件。
 enum FloatingTheme: String, CaseIterable {
     case original
     case gtA, gtB, gtC, gtD, gtE, gtF
@@ -16,7 +18,7 @@ enum FloatingTheme: String, CaseIterable {
     /// 设置页 / 预览展示名
     var displayName: String {
         switch self {
-        case .original: return "默认"
+        case .original: return "纯色"
         case .gtA: return "GT·贯穿光刃"
         case .gtB: return "GT·顶峰蓝"
         case .gtC: return "GT·性能模式"
@@ -84,6 +86,41 @@ enum FloatingTheme: String, CaseIterable {
     var accentBorderWidth: CGFloat {
         self == .original ? 0 : 1.5
     }
+
+    /// 背景样式：
+    /// - `.original` → `.solid`：沿用用户自选纯色，不做任何 GT 处理（与 GT 主题彻底分开）
+    /// - 其余 → `.gradient(...)`：各自 GT 视觉的渐变底，是「GT 主题」与「纯色」最直观的区分
+    var background: ThemeBackground {
+        switch self {
+        case .original:
+            return .solid
+        case .gtA:  // 贯穿光刃：暗顶峰蓝，星火黄光带做主视觉
+            return .gradient([UIColor(hex: 0x0A1E38), UIColor(hex: 0x071A32)])
+        case .gtB:  // 顶峰蓝液态金属：三层递变深蓝
+            return .gradient([UIColor(hex: 0x0E3A6E), UIColor(hex: 0x0A2A50), UIColor(hex: 0x071A32)])
+        case .gtC:  // 性能模式：碳纤维近黑底
+            return .gradient([UIColor(hex: 0x14171A), UIColor(hex: 0x212730)])
+        case .gtD:  // GT 前脸正视：机盖分缝的蓝调渐变
+            return .gradient([UIColor(hex: 0x12365E), UIColor(hex: 0x0A2440), UIColor(hex: 0x071A32)])
+        case .gtE:  // GT 侧面剪影：卡面深蓝渐变
+            return .gradient([UIColor(hex: 0x0E2C4C), UIColor(hex: 0x071A32)])
+        case .gtF:  // GT 行驶进度：横向蓝调渐变，车=游标
+            return .gradient([UIColor(hex: 0x0E2C4C), UIColor(hex: 0x071A32)])
+        case .newA: // 窄条：紫调暗底
+            return .gradient([UIColor(hex: 0x2A1A3E), UIColor(hex: 0x140D1F)])
+        case .newB: // 大卡：靛调暗底
+            return .gradient([UIColor(hex: 0x1B1F3A), UIColor(hex: 0x0E1130)])
+        case .newC: // 车头窗：品红暗底
+            return .gradient([UIColor(hex: 0x3A1626), UIColor(hex: 0x1A0B14)])
+        case .newD: // 极简：蓝灰暗底
+            return .gradient([UIColor(hex: 0x1C2630), UIColor(hex: 0x0E141A)])
+        }
+    }
+
+    /// 是否显示「星火黄贯穿光带」（GT 签名元素）：纯色主题不显示，GT/新主题显示
+    var showsLightBlade: Bool {
+        self != .original
+    }
 }
 
 /// 车图朝向
@@ -99,6 +136,15 @@ enum CarPlacement: Int {
     case bottom = 2     // 贴底
     case right = 3      // 贴右
     case card = 4       // 顶部卡片区
+}
+
+/// 悬浮窗背景样式
+///
+/// - `solid`：纯色背景（仅 `original` 用，直接沿用用户设置的纯色）
+/// - `gradient`：GT 渐变背景（多段色，自上而下渐变），是 GT 主题区别于纯色主题的核心
+enum ThemeBackground {
+    case solid
+    case gradient([UIColor])
 }
 
 /// 可选车型（与 lynk_skin_studio.html 的 14 款一致）

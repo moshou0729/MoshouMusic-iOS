@@ -622,7 +622,7 @@ private final class ChipRow: UIView {
         nameLabel.textColor = .label
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        scroll.showsHorizontalIndicator = false
+        scroll.showsHorizontalScrollIndicator = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal
         stack.spacing = 8

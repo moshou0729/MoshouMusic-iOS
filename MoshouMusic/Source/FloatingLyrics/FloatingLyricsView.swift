@@ -25,6 +25,8 @@ final class FloatingLyricsView: UIView {
 
     /// v1.0.175：主题车图装饰层（车型正/侧视图），位于频谱之上、歌词之下
     private var carImageView: UIImageView?
+    /// v1.0.179：右上角小号车头徽标（窄条 / 极简主题）
+    private var badgeImageView: UIImageView?
     /// v1.0.175：去重键 —— 仅在主题/车型/朝向/摆放变化时重建车图
     private var appliedThemeKey: String = ""
     /// v1.0.175：当前车图摆放方式（供 layoutSubviews 重定位）
@@ -102,17 +104,30 @@ final class FloatingLyricsView: UIView {
                                   width: barWidth, height: barHeight)
 
         let contentTop = controlBar.isHidden ? 0 : min(bounds.height, controlBar.frame.maxY + 2)
-        // v1.0.178：左侧分栏主题（侧身/剪影类）歌词只占用左半窗，右侧留给车图；
-        // 覆盖式主题歌词跨整窗居中（车图作背景装饰）。
-        let lyricsWidth: CGFloat = (lyricsLayout == .leftColumn)
-            ? max(0, bounds.width * 0.54) : bounds.width
-        container.frame = CGRect(x: 0, y: contentTop,
+        // v1.0.179：歌词布局分三型
+        //  - overlay：跨整窗居中（车图作背景 / 游标）
+        //  - leftColumn：歌词占左半，车在右（侧身/剪影/大卡）
+        //  - rightColumn：歌词占右半，车头在左（车头窗）
+        var lyricsX: CGFloat = 0
+        var lyricsWidth: CGFloat = bounds.width
+        var align: NSTextAlignment = .center
+        var labelInset: CGFloat = 10
+        switch lyricsLayout {
+        case .overlay:
+            lyricsX = 0; lyricsWidth = bounds.width; align = .center; labelInset = 10
+        case .leftColumn:
+            lyricsX = 0; lyricsWidth = bounds.width * 0.54; align = .left; labelInset = 14
+        case .rightColumn:
+            lyricsX = bounds.width * 0.46; lyricsWidth = bounds.width * 0.54; align = .left; labelInset = 14
+        }
+        // 游标类主题（行驶进度 / 窄条 / 极简）底部留给「光带 + 车游标」，歌词上缩
+        let bottomInset = min(activeTheme.lyricsBottomInset,
+                              max(0, bounds.height - contentTop - 24))
+        container.frame = CGRect(x: lyricsX, y: contentTop,
                                  width: lyricsWidth,
-                                 height: max(0, bounds.height - contentTop))
+                                 height: max(0, bounds.height - contentTop - bottomInset))
         let row = container.bounds.height / 3
-        let labelInset: CGFloat = (lyricsLayout == .leftColumn) ? 14 : 10
         let labelW = max(0, container.bounds.width - labelInset * 2)
-        let align: NSTextAlignment = (lyricsLayout == .leftColumn) ? .left : .center
         for (index, label) in labels.enumerated() {
             label.textAlignment = align
             label.frame = CGRect(x: labelInset, y: CGFloat(index) * row,
@@ -126,6 +141,9 @@ final class FloatingLyricsView: UIView {
 
         // v1.0.175：车图装饰随窗口尺寸 / 折叠态重定位
         layoutCarImage()
+
+        // v1.0.179：右上角车头徽标随窗口尺寸重定位
+        layoutBadge()
 
         // v1.0.177：GT 渐变背景层 + 贯穿光带随窗口尺寸重定位
         bgGradientLayer?.frame = bounds
@@ -207,6 +225,7 @@ final class FloatingLyricsView: UIView {
     func setCollapsed(_ collapsed: Bool) {
         isCollapsedState = collapsed
         carImageView?.isHidden = collapsed
+        badgeImageView?.isHidden = collapsed
         bladeTrack?.isHidden = collapsed
         bladeFill?.isHidden = collapsed
         container.isHidden = collapsed
@@ -292,12 +311,14 @@ final class FloatingLyricsView: UIView {
             applyBackground(theme)
             carImageView?.removeFromSuperview()
             carImageView = nil
+            badgeImageView?.removeFromSuperview()
+            badgeImageView = nil
             bladeTrack?.removeFromSuperview(); bladeTrack = nil
             bladeFill?.removeFromSuperview(); bladeFill = nil
             bladeShimmer?.removeFromSuperlayer(); bladeShimmer = nil
             layer.borderWidth = 0
             if theme.usesCarDecoration,
-               let img = model.image(orientation: theme.carOrientation) {
+               let img = carImage(for: theme, model: model) {
                 let iv = UIImageView(image: img)
                 iv.contentMode = .scaleAspectFit
                 iv.clipsToBounds = true
@@ -312,6 +333,8 @@ final class FloatingLyricsView: UIView {
                     layer.borderWidth = theme.accentBorderWidth
                 }
             }
+            // v1.0.179：右上角车头徽标（窄条 / 极简）；其它主题无
+            applyBadge(theme, model)
             // v1.0.178：贯穿光带（GT 签名元素；纯色不显示）—— 深蓝底轨 + 星火黄已播段 + 扫光
             applyLightBlade(theme)
             // v1.0.178：启动动态效果（扫光 + 车浮动 / 进度游标）
@@ -323,6 +346,40 @@ final class FloatingLyricsView: UIView {
         layoutCarImage()
         layoutBlade()
         refreshHard()
+    }
+
+    // MARK: - 车图 / 徽标辅助（v1.0.179）
+
+    /// 按主题决定车图朝向：游标/行驶类主题把侧影水平翻转，让车头朝右（前进方向），
+    /// 与设计稿（HTML A/D 的 `scaleX(-1)`）一致；其余主题原样返回。
+    private func carImage(for theme: FloatingTheme, model: FloatingCarModel) -> UIImage? {
+        guard let img = model.image(orientation: theme.carOrientation) else { return nil }
+        if theme.carFacesRight && theme.carOrientation == .side,
+           let cg = img.cgImage {
+            return UIImage(cgImage: cg, scale: img.scale, orientation: .upMirrored)
+        }
+        return img
+    }
+
+    /// 右上角小号车头徽标（窄条 / 极简主题，呼应设计稿角标）
+    private func applyBadge(_ theme: FloatingTheme, _ model: FloatingCarModel) {
+        badgeImageView?.removeFromSuperview()
+        badgeImageView = nil
+        guard theme.badgeFront,
+              let fimg = model.image(orientation: .front) else { return }
+        let b = UIImageView(image: fimg)
+        b.contentMode = .scaleAspectFit
+        b.clipsToBounds = true
+        b.layer.cornerRadius = 6
+        b.isUserInteractionEnabled = false
+        insertSubview(b, at: subviews.count)
+        badgeImageView = b
+    }
+
+    private func layoutBadge() {
+        guard let b = badgeImageView else { return }
+        let s: CGFloat = 30
+        b.frame = CGRect(x: bounds.width - s - 8, y: 6, width: s, height: s)
     }
 
     // MARK: - 背景 / 光带（v1.0.177+）
@@ -472,8 +529,16 @@ final class FloatingLyricsView: UIView {
         case .card:
             return CGRect(x: 4, y: 4,
                           width: rect.width - 8, height: rect.height * 0.6)
-        case .cursor:
-            // 行驶进度：车=游标，初始落在底部光带左侧，x 由 updateProgress 驱动
+        case .rightLarge:
+            // 大卡：侧身大图占右侧，纵向居中、接近铺满高度（设计稿 B）
+            return CGRect(x: rect.width * 0.34, y: 6,
+                          width: rect.width * 0.66 - 6, height: rect.height - 12)
+        case .frontLeft:
+            // 车头窗：车头正视图靠左，留出右半给歌词（设计稿 C）
+            return CGRect(x: -rect.width * 0.04, y: rect.height * 0.10,
+                          width: rect.width * 0.50, height: rect.height * 0.80)
+        case .cursorBottom:
+            // 行驶 / 窄条 / 极简：车=游标，初始落底部光带左端，x 由 updateProgress 驱动（设计稿 A/D）
             let h = min(42, rect.height * 0.42)
             let w = h * 1.9
             return CGRect(x: 20 - w / 2, y: rect.height - h - 6, width: w, height: h)

@@ -36,31 +36,37 @@ enum FloatingTheme: String, CaseIterable {
     var usesCarDecoration: Bool { self != .original }
 
     /// 使用车头正视图还是侧面剪影图
+    /// v1.0.179：四种布局对齐参考稿 lynk_skin_studio.html
+    ///   A 窄条 → 侧身游标 / B 大卡 → 侧身大背景 / C 车头窗 → 车头正视 / D 极简 → 侧身游标
     var carOrientation: CarOrientation {
         switch self {
-        case .original, .gtB, .gtC, .gtE, .gtF, .newD:
+        case .original, .gtB, .gtC, .gtE, .gtF, .newA, .newB, .newD:
             return .side
-        case .gtA, .gtD, .newA, .newB, .newC:
+        case .gtA, .gtD, .newC:
             return .front
         }
     }
 
     /// 车图在悬浮窗中的摆放方式
+    /// v1.0.179：newA/newB/newC/newD 严格对齐 HTML 的 A/B/C/D 四种布局
     var carPlacement: CarPlacement {
         switch self {
-        case .original:            return .none
-        case .gtA, .newC, .newA:   return .backdrop
-        case .gtB, .gtE, .newD:    return .bottom
-        case .gtC:                 return .right
-        case .gtF:                 return .cursor
-        case .gtD, .newB:          return .card
+        case .original:                 return .none
+        case .gtA:                      return .backdrop      // GT·贯穿光刃：车头铺底
+        case .gtB:                      return .bottom        // GT·顶峰蓝：侧身贴底
+        case .gtC, .gtE:                return .right         // GT 侧身类：右侧分栏
+        case .gtD:                      return .card          // GT·前脸正视：顶部卡片
+        case .gtF, .newA, .newD:        return .cursorBottom  // 行驶进度 / 窄条 / 极简：车=游标
+        case .newB:                     return .rightLarge    // 大卡：侧身大图占右侧
+        case .newC:                     return .frontLeft     // 车头窗：车头靠左
         }
     }
 
-    /// 歌词布局：覆盖式（前脸/背景类）或 左侧分栏（侧身/剪影类，车在右）
+    /// 歌词布局：覆盖式（前脸/背景/游标类）、左分栏（车在右）、右分栏（车在左）
     var lyricsLayout: LyricsLayout {
         switch self {
-        case .gtC, .gtE, .gtF, .newD: return .leftColumn
+        case .gtC, .gtE, .newB:         return .leftColumn    // 车在右，歌词在左
+        case .newC:                     return .rightColumn   // 车头靠左，歌词在右
         default:                        return .overlay
         }
     }
@@ -70,9 +76,24 @@ enum FloatingTheme: String, CaseIterable {
         self == .original ? .white : UIColor(hex: 0xF2D024)
     }
 
-    /// 车图是否作为「进度游标」沿光带移动（仅 GT·行驶进度）
+    /// 车图是否作为「进度游标」沿光带移动（行驶进度 / 窄条 / 极简）
     var carFollowsProgress: Bool {
-        self == .gtF
+        self == .gtF || self == .newA || self == .newD
+    }
+
+    /// 车头是否朝右（行驶方向）：游标/行驶类主题把侧影水平翻转，让车头朝右
+    var carFacesRight: Bool {
+        self == .gtF || self == .newA || self == .newD
+    }
+
+    /// 是否显示右上角小号车头徽标（窄条 / 极简，呼应参考稿角标）
+    var badgeFront: Bool {
+        self == .newA || self == .newD
+    }
+
+    /// 歌词区底部留白（给底部「光带 + 车游标」让位）；游标类主题需要
+    var lyricsBottomInset: CGFloat {
+        (self == .gtF || self == .newA || self == .newD) ? 64 : 0
     }
 
     /// 车图透明度（原图多为实拍抠图，压一点避免抢歌词可读性）
@@ -153,15 +174,18 @@ enum CarPlacement: Int {
     case none = 0
     case backdrop = 1   // 整窗铺底（车头/侧身居中铺满）
     case bottom = 2     // 贴底
-    case right = 3      // 贴右
+    case right = 3      // 贴右（侧身类，歌词在左）
     case card = 4       // 顶部卡片区
-    case cursor = 5     // 行驶进度：车=游标，沿底部光带随播放进度横向移动
+    case rightLarge = 5 // 大卡：侧身大图占右侧，纵向居中接近铺满
+    case frontLeft = 6  // 车头窗：车头正视图靠左，右半留给歌词
+    case cursorBottom = 7 // 行驶/窄条/极简：车=游标，沿底部光带随进度横向移动
 }
 
 /// 歌词布局
 enum LyricsLayout: Int {
-    case overlay = 0    // 覆盖式：居中跨整窗，车图作背景装饰（前脸/背景类主题）
-    case leftColumn = 1 // 左侧分栏：歌词缩在左半，车图在右侧（侧身/剪影类主题）
+    case overlay = 0    // 覆盖式：居中跨整窗，车图作背景装饰 / 游标类主题
+    case leftColumn = 1 // 左侧分栏：歌词缩在左半，车图在右侧（侧身/剪影/大卡）
+    case rightColumn = 2 // 右侧分栏：歌词在右半，车头图在左（车头窗）
 }
 
 /// 悬浮窗背景样式

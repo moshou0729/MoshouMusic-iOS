@@ -426,7 +426,7 @@ class ConfigStore {
     var floatingBorderWidth: CGFloat {
         get {
             let v = defaults.object(forKey: Keys.floatingBorderWidth) as? Double
-            return v.map(CGFloat.init) ?? 0
+            return CGFloat(v ?? 0)
         }
         set { defaults.set(Double(newValue), forKey: Keys.floatingBorderWidth) }
     }

@@ -490,6 +490,10 @@ final class FloatingLyricsView: UIView {
             applyBadge(theme, model)
             applyLightBlade(theme)
             startDynamicEffects()
+            // A/D 游标车须叠在进度条之上，否则进度条（底轨 / 渐变 / 扫光）会盖住汽车
+            if carPlacement == .cursorBottom, let iv = carImageView {
+                bringSubviewToFront(iv)
+            }
             // 回填缓存的封面/歌名歌手
             coverImageView?.image = lastCover
             titleLabel?.text = lastTitle

@@ -884,9 +884,10 @@ final class FloatingLyricsManager: NSObject {
             view.backgroundColor = configuredBgColor()
         }
         view.applyTheme(theme, model: model)
-        // v1.0.181：新版四套主题高度为固定值，不让用户手动拉伸
+        // v1.0.184：新版四套主题高宽均固定，不让用户手动拉伸
         if let fixedH = theme.windowHeight, let window = floatingWindow {
-            let size = CGSize(width: window.frame.width, height: fixedH)
+            let width = theme.windowWidth ?? window.frame.width
+            let size = CGSize(width: width, height: fixedH)
             window.frame = CGRect(origin: window.frame.origin, size: size)
             ConfigStore.shared.floatingSize = size
         }
@@ -1335,6 +1336,10 @@ final class FloatingLyricsManager: NSObject {
     /// —— 竖直拉只改高度，横向拉只改宽度，斜着拉等比缩放
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
         guard !isLocked, !isCollapsed, let window = floatingWindow else { return }
+        // v1.0.184：新版四布局高宽固定（用户要求不可调），捏合缩放直接禁用，
+        // 仅保留移动（pan）与折叠（swipe / 双击），避免窗口被拉变形。
+        let fixedTheme = (FloatingTheme(rawValue: ConfigStore.shared.floatingTheme) ?? .original)
+        guard fixedTheme.windowHeight == nil else { return }
         let screenW = UIScreen.main.bounds.width
 
         switch gesture.state {

@@ -70,7 +70,18 @@ enum FloatingTheme: String, CaseIterable {
         }
     }
 
-    /// 新版主题的深色卡片背景（设计稿统一深色卡片）；original 返回 nil（沿用用户纯色），GT 返回 nil（用渐变层）
+    /// 新版主题固定窗口宽度（不让用户手动拉伸）；其余主题返回 nil（沿用用户设置）
+    var windowWidth: CGFloat? {
+        switch self {
+        case .newA: return 360
+        case .newB: return 320
+        case .newC: return 340
+        case .newD: return 320
+        default: return nil
+        }
+    }
+
+    /// 新版主题的深色卡片背景（设计稿统一深色卡片）；original 返回 nil（沿用用户纯色），其余非纯色返回 nil（用渐变层）
     var solidBackgroundColor: UIColor? {
         switch self {
         case .newA, .newB, .newC, .newD: return UIColor(hex: 0x141418)

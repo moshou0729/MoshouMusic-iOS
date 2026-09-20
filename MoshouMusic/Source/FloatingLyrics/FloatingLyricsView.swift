@@ -207,8 +207,8 @@ final class FloatingLyricsView: UIView {
         timeLeftLabel?.isHidden = true
         timeRightLabel?.isHidden = true
 
-        let leftW = bounds.width * 0.46
-        let rightX = leftW + 12
+        let leftW = bounds.width * 0.70
+        let rightX = leftW + 2
         let rightW = max(0, bounds.width - rightX - 12)
         let topY = contentTop + 12
         titleLabel?.frame = CGRect(x: rightX, y: topY, width: rightW, height: 18)
@@ -468,9 +468,13 @@ final class FloatingLyricsView: UIView {
                 insertSubview(iv, at: 1)
                 carImageView = iv
                 carPlacement = theme.carPlacement
-                if theme.accentBorderWidth > 0 {
-                    layer.borderColor = theme.accent.cgColor
-                    layer.borderWidth = theme.accentBorderWidth
+                let bw = ConfigStore.shared.floatingBorderWidth > 0 ? ConfigStore.shared.floatingBorderWidth : theme.accentBorderWidth
+                if bw > 0 {
+                    let bc: UIColor = (ConfigStore.shared.floatingBorderColorHex != 0)
+                        ? UIColor(hex: ConfigStore.shared.floatingBorderColorHex)
+                        : theme.borderColor
+                    layer.borderColor = bc.cgColor
+                    layer.borderWidth = bw
                 }
             }
             if theme == .newA {
@@ -760,8 +764,9 @@ final class FloatingLyricsView: UIView {
     private func layoutCarImage() {
         guard let iv = carImageView else { return }
         if activeTheme.carFollowsProgress, let track = bladeTrack {
-            iv.center = CGPoint(x: (bounds.width - track.frame.width) / 2 + track.frame.origin.x,
-                                y: track.frame.midY)
+            // 先定尺寸（避免沿用原图大尺寸），再按进度定位，保证每次布局后车都跟随播放进度
+            iv.frame = Self.carFrame(for: carPlacement, in: bounds)
+            applyCarCursor()
             return
         }
         iv.frame = Self.carFrame(for: carPlacement, in: bounds)
@@ -786,14 +791,15 @@ final class FloatingLyricsView: UIView {
             return CGRect(x: rect.width * 0.34, y: 6,
                           width: rect.width * 0.66 - 6, height: rect.height - 12)
         case .frontLeft:
-            // 车头窗：车头正视图靠左，占左半近满高度
-            let w = rect.width * 0.50
-            let h = rect.height * 0.92
-            return CGRect(x: -rect.width * 0.02, y: rect.height * 0.04, width: w, height: h)
+            // 车头窗：车头正视图放大 ~50%，贴近右侧歌词
+            let w = rect.width * 0.74
+            let h = rect.height * 1.12
+            return CGRect(x: -rect.width * 0.03, y: (rect.height - h) / 2, width: w, height: h)
         case .cursorBottom:
-            let h = min(44, rect.height * 0.5)
-            let w = h * 2.0
-            return CGRect(x: 20 - w / 2, y: rect.height - h - 16, width: w, height: h)
+            // 窄条/极简：车侧影作游标，缩小到能完整显示全貌
+            let h = min(26, rect.height * 0.42)
+            let w = h * 2.2
+            return CGRect(x: 20 - w / 2, y: rect.height - h - 14, width: w, height: h)
         case .bottomRight:
             // 大卡：车大图占右下，顶部留歌词、底部留粗进度条
             let h = rect.height * 0.52

@@ -43,6 +43,8 @@ class ConfigStore {
         static let floatingSpectrumOn = "floatingSpectrumOn"
         static let floatingTheme = "floatingTheme"
         static let floatingCarModel = "floatingCarModel"
+        static let floatingBorderColorHex = "floatingBorderColorHex"
+        static let floatingBorderWidth = "floatingBorderWidth"
         static let lxSongmidFixV1Done = "lxSongmidFixV1Done"
     }
 
@@ -409,6 +411,24 @@ class ConfigStore {
             return v.map(UInt32.init) ?? 0x000000
         }
         set { defaults.set(Int(newValue), forKey: Keys.floatingBgColorHex) }
+    }
+
+    /// 悬浮窗外框描边颜色（RGB hex；默认 0 = 跟随主题背景色，可在设置里改成任意色）
+    var floatingBorderColorHex: UInt32 {
+        get {
+            let v = defaults.object(forKey: Keys.floatingBorderColorHex) as? Int
+            return v.map(UInt32.init) ?? 0
+        }
+        set { defaults.set(Int(newValue), forKey: Keys.floatingBorderColorHex) }
+    }
+
+    /// 悬浮窗外框描边宽度（pt；默认 0 = 跟随主题默认 1.5；设 >0 即自定义）
+    var floatingBorderWidth: CGFloat {
+        get {
+            let v = defaults.object(forKey: Keys.floatingBorderWidth) as? Double
+            return v.map(CGFloat.init) ?? 0
+        }
+        set { defaults.set(Double(newValue), forKey: Keys.floatingBorderWidth) }
     }
 
     /// 恢复默认位置与尺寸

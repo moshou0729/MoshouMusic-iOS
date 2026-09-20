@@ -73,10 +73,7 @@ enum FloatingTheme: String, CaseIterable {
     /// 新版主题固定窗口宽度（不让用户手动拉伸）；其余主题返回 nil（沿用用户设置）
     var windowWidth: CGFloat? {
         switch self {
-        case .newA: return 360
-        case .newB: return 320
-        case .newC: return 340
-        case .newD: return 320
+        case .newA, .newB, .newC, .newD: return 398
         default: return nil
         }
     }
@@ -155,6 +152,13 @@ enum FloatingTheme: String, CaseIterable {
     /// 悬浮窗描边宽度（original 为 0 = 无描边）
     var accentBorderWidth: CGFloat {
         self == .original ? 0 : 1.5
+    }
+
+    /// 悬浮窗外框描边颜色：默认与背景色一致（带透明度），让边框成为卡片本身的一部分而非抢眼色条；
+    /// 若 ConfigStore.floatingBorderColorHex 非 0 则改用用户自定义色（可在设置里修改）。
+    var borderColor: UIColor {
+        if let solid = solidBackgroundColor { return solid.withAlphaComponent(0.85) }
+        return UIColor(hex: 0x141418).withAlphaComponent(0.85)
     }
 
     /// 背景样式：

@@ -5,7 +5,7 @@ import UIKit
 /// - 换句时整体「往上翻一行」，带位移 + 透明度过渡
 ///
 /// v1.0.181：四种新版主题（newA/newB/newC/newD）为独立卡片布局，按设计稿实现，
-/// 不再在旧三行歌词悬浮窗上叠加元素。original / gtA~gtF 仍走经典布局。
+/// 不再在旧三行歌词悬浮窗上叠加元素。original 仍走经典布局。
 final class FloatingLyricsView: UIView {
 
     /// 侧行（上/下）的透明度
@@ -35,7 +35,7 @@ final class FloatingLyricsView: UIView {
     /// 当前车图摆放方式（供 layoutSubviews 重定位）
     private var carPlacement: CarPlacement = .none
 
-    /// GT 渐变背景层（GT 主题专用；新版主题为纯深色，不用渐变）
+    /// 渐变背景层（非纯色主题专用；新版主题为纯深色，不用渐变）
     private var bgGradientLayer: CAGradientLayer?
     /// 进度条：深色底轨 + 黄→青蓝渐变已播填充 + 白色扫光
     private var bladeTrack: UIView?
@@ -236,7 +236,7 @@ final class FloatingLyricsView: UIView {
         timeRightLabel?.isHidden = true
     }
 
-    /// 经典布局（original / gtA~gtF）：保留原有三种 lyricsLayout 行为
+    /// 经典布局（original）：保留原有三种 lyricsLayout 行为
     private func layoutClassic(contentTop: CGFloat) {
         container.isHidden = false
         coverImageView?.isHidden = true
@@ -359,7 +359,7 @@ final class FloatingLyricsView: UIView {
         artistLabel?.isHidden = collapsed
         timeLeftLabel?.isHidden = collapsed
         timeRightLabel?.isHidden = collapsed
-        spectrumView.isHidden = collapsed || !spectrumEnabled || activeTheme.isNewTheme
+        spectrumView.isHidden = collapsed || !spectrumEnabled
         controlBar.isHidden = collapsed || activeTheme.isNewTheme
         if collapsed {
             if noteIcon == nil {
@@ -426,13 +426,9 @@ final class FloatingLyricsView: UIView {
         refreshHard()
     }
 
-    /// 频谱条可见性（音乐可视化开关）；新版主题强制隐藏
+    /// 频谱条可见性（音乐可视化开关）
     func setSpectrumVisible(_ visible: Bool) {
         spectrumEnabled = visible
-        if activeTheme.isNewTheme {
-            spectrumView.isHidden = true
-            return
-        }
         spectrumView.isHidden = !visible || isCollapsedState
     }
 
@@ -611,7 +607,7 @@ final class FloatingLyricsView: UIView {
 
     // MARK: - 背景
 
-    /// 新版主题：纯深色背景（设计稿深色卡片）；GT 主题：渐变；original：沿用用户纯色
+    /// 新版主题：纯深色背景（设计稿深色卡片）；original：沿用用户纯色
     private func applyBackground(_ theme: FloatingTheme) {
         bgGradientLayer?.removeFromSuperlayer()
         bgGradientLayer = nil

@@ -2,29 +2,18 @@ import UIKit
 
 /// 悬浮窗主题（可更换皮肤）
 ///
-/// - `original`（纯色）：原始默认皮肤，保持旧版「用户自选纯色背景 + 无车图」行为，
-///   与 GT 主题完全独立，互不干扰。
-/// - `gtA`..`gtF`：领克 GT 六套方案（贯穿光刃 / 顶峰蓝液态金属 / 性能模式 / 前脸正视 / 侧面剪影 / 行驶进度）
+/// - `original`（纯色）：原始默认皮肤，保持旧版「用户自选纯色背景 + 无车图」行为。
 /// - `newA`..`newD`：新四套方案（窄条 / 大卡 / 车头窗 / 极简）
 ///
-/// 关键区分：**纯色主题是「背景 = 用户纯色」；GT/新主题是「背景 = 各自 GT 渐变 + 星火黄贯穿光带」，
-/// 车图只是外观融入的一层装饰**，两者视觉上完全分开，不会「纯色 + 车」糊在一起。
 /// 渲染逻辑集中在 `FloatingLyricsView.applyTheme(_:model:)`，新增主题只改本文件。
 enum FloatingTheme: String, CaseIterable {
     case original
-    case gtA, gtB, gtC, gtD, gtE, gtF
     case newA, newB, newC, newD
 
     /// 设置页 / 预览展示名
     var displayName: String {
         switch self {
         case .original: return "纯色"
-        case .gtA: return "GT·贯穿光刃"
-        case .gtB: return "GT·顶峰蓝"
-        case .gtC: return "GT·性能模式"
-        case .gtD: return "GT·前脸正视"
-        case .gtE: return "GT·侧面剪影"
-        case .gtF: return "GT·行驶进度"
         case .newA: return "窄条"
         case .newB: return "大卡"
         case .newC: return "车头窗"
@@ -40,9 +29,9 @@ enum FloatingTheme: String, CaseIterable {
     ///   A 窄条 → 侧身游标 / B 大卡 → 侧身大背景 / C 车头窗 → 车头正视 / D 极简 → 侧身游标
     var carOrientation: CarOrientation {
         switch self {
-        case .original, .gtB, .gtC, .gtE, .gtF, .newA, .newB, .newD:
+        case .original, .newA, .newB, .newD:
             return .side
-        case .gtA, .gtD, .newC:
+        case .newC:
             return .front
         }
     }
@@ -56,13 +45,9 @@ enum FloatingTheme: String, CaseIterable {
     var carPlacement: CarPlacement {
         switch self {
         case .original:                 return .none
-        case .gtA:                      return .backdrop      // GT·贯穿光刃：车头铺底
-        case .gtB:                      return .bottom        // GT·顶峰蓝：侧身贴底
-        case .gtC, .gtE:                return .right         // GT 侧身类：右侧分栏
-        case .gtD:                      return .card          // GT·前脸正视：顶部卡片
-        case .gtF, .newA, .newD:        return .cursorBottom  // 行驶进度 / 窄条 / 极简：车=游标
-        case .newB:                     return .bottomRight   // 大卡：车大图占右下
-        case .newC:                     return .frontLeft     // 车头窗：车头靠左
+        case .newA, .newD:             return .cursorBottom  // 窄条 / 极简：车=游标
+        case .newB:                    return .bottomRight   // 大卡：车大图占右下
+        case .newC:                    return .frontLeft     // 车头窗：车头靠左
         }
     }
 
@@ -96,13 +81,12 @@ enum FloatingTheme: String, CaseIterable {
     /// 歌词布局：覆盖式（前脸/背景/游标类/大卡）、左分栏（车在右）、右分栏（车在左）
     var lyricsLayout: LyricsLayout {
         switch self {
-        case .gtC, .gtE:                return .leftColumn    // 车在右，歌词在左
         case .newC:                     return .rightColumn   // 车头靠左，歌词在右
         default:                        return .overlay
         }
     }
 
-    /// 进度条品牌渐变：设计稿统一的黄→青蓝（所有 GT/新主题）
+    /// 进度条品牌渐变：设计稿统一的黄→青蓝（所有新版主题）
     var progressGradient: [UIColor] {
         [UIColor(hex: 0xE5FF00), UIColor(hex: 0x00E5FF)]
     }
@@ -119,12 +103,12 @@ enum FloatingTheme: String, CaseIterable {
 
     /// 车图是否作为「进度游标」沿光带移动（行驶进度 / 窄条 / 极简）
     var carFollowsProgress: Bool {
-        self == .gtF || self == .newA || self == .newD
+        self == .newA || self == .newD
     }
 
     /// 车头是否朝右（行驶方向）：游标/行驶类主题把侧影水平翻转，让车头朝右
     var carFacesRight: Bool {
-        self == .gtF || self == .newA || self == .newD
+        self == .newA || self == .newD
     }
 
     /// 是否显示右上角小号车头徽标（仅极简主题，呼应参考稿角标）
@@ -134,14 +118,14 @@ enum FloatingTheme: String, CaseIterable {
 
     /// 歌词区底部留白（给底部「光带 + 车游标」让位）；游标类主题需要
     var lyricsBottomInset: CGFloat {
-        (self == .gtF || self == .newA || self == .newD) ? 64 : 0
+        (self == .newA || self == .newD) ? 64 : 0
     }
 
     /// 车图透明度（原图多为实拍抠图，压一点避免抢歌词可读性）
     var carAlpha: CGFloat {
         switch self {
         case .original:        return 0
-        case .gtA, .newC, .newA: return 0.9
+        case .newC, .newA: return 0.9
         default:               return 0.95
         }
     }
@@ -150,12 +134,6 @@ enum FloatingTheme: String, CaseIterable {
     var accent: UIColor {
         switch self {
         case .original: return .white
-        case .gtA: return UIColor(hex: 0x00E5FF)   // 青色光刃
-        case .gtB: return UIColor(hex: 0x2E6FB8)   // 顶峰蓝
-        case .gtC: return UIColor(hex: 0xE53935)   // 性能红
-        case .gtD: return UIColor(hex: 0xFFC107)   // 前脸金
-        case .gtE: return UIColor(hex: 0x26A69A)   // 剪影青绿
-        case .gtF: return UIColor(hex: 0xFB8C00)   // 行驶橙
         case .newA: return UIColor(hex: 0xAB47BC)  // 紫
         case .newB: return UIColor(hex: 0x5C6BC0)  // 靛
         case .newC: return UIColor(hex: 0xEC407A)  // 粉
@@ -169,24 +147,12 @@ enum FloatingTheme: String, CaseIterable {
     }
 
     /// 背景样式：
-    /// - `.original` → `.solid`：沿用用户自选纯色，不做任何 GT 处理（与 GT 主题彻底分开）
-    /// - 其余 → `.gradient(...)`：各自 GT 视觉的渐变底，是「GT 主题」与「纯色」最直观的区分
+    /// - `.original` → `.solid`：沿用用户自选纯色，不与渐变主题混用
+    /// - 其余 → `.gradient(...)`：各自视觉的渐变底（新版主题实际以纯深色呈现，此处仅作兜底）
     var background: ThemeBackground {
         switch self {
         case .original:
             return .solid
-        case .gtA:  // 贯穿光刃：暗顶峰蓝，星火黄光带做主视觉
-            return .gradient([UIColor(hex: 0x0A1E38), UIColor(hex: 0x071A32)])
-        case .gtB:  // 顶峰蓝液态金属：三层递变深蓝
-            return .gradient([UIColor(hex: 0x0E3A6E), UIColor(hex: 0x0A2A50), UIColor(hex: 0x071A32)])
-        case .gtC:  // 性能模式：碳纤维近黑底
-            return .gradient([UIColor(hex: 0x14171A), UIColor(hex: 0x212730)])
-        case .gtD:  // GT 前脸正视：机盖分缝的蓝调渐变
-            return .gradient([UIColor(hex: 0x12365E), UIColor(hex: 0x0A2440), UIColor(hex: 0x071A32)])
-        case .gtE:  // GT 侧面剪影：卡面深蓝渐变
-            return .gradient([UIColor(hex: 0x0E2C4C), UIColor(hex: 0x071A32)])
-        case .gtF:  // GT 行驶进度：横向蓝调渐变，车=游标
-            return .gradient([UIColor(hex: 0x0E2C4C), UIColor(hex: 0x071A32)])
         case .newA: // 窄条：紫调暗底
             return .gradient([UIColor(hex: 0x2A1A3E), UIColor(hex: 0x140D1F)])
         case .newB: // 大卡：靛调暗底
@@ -234,7 +200,7 @@ enum LyricsLayout: Int {
 /// 悬浮窗背景样式
 ///
 /// - `solid`：纯色背景（仅 `original` 用，直接沿用用户设置的纯色）
-/// - `gradient`：GT 渐变背景（多段色，自上而下渐变），是 GT 主题区别于纯色主题的核心
+/// - `gradient`：渐变背景（多段色，自上而下渐变），用于非纯色主题
 enum ThemeBackground {
     case solid
     case gradient([UIColor])

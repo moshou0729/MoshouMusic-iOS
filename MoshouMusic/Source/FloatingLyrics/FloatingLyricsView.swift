@@ -3,6 +3,9 @@ import UIKit
 /// 悬浮歌词视图 —— 三行歌词（上一句 / 当前句 / 下一句）
 /// - 上下两行半透明，中间行完全不透明
 /// - 换句时整体「往上翻一行」，带位移 + 透明度过渡
+///
+/// v1.0.181：四种新版主题（newA/newB/newC/newD）为独立卡片布局，按设计稿实现，
+/// 不再在旧三行歌词悬浮窗上叠加元素。original / gtA~gtF 仍走经典布局。
 final class FloatingLyricsView: UIView {
 
     /// 侧行（上/下）的透明度
@@ -23,42 +26,40 @@ final class FloatingLyricsView: UIView {
     /// v1.0.147：频谱开关状态（折叠态要联动隐藏）
     private var spectrumEnabled = false
 
-    /// v1.0.175：主题车图装饰层（车型正/侧视图），位于频谱之上、歌词之下
+    /// 主题车图装饰层（车型正/侧视图）
     private var carImageView: UIImageView?
-    /// v1.0.179：右上角小号车头徽标（窄条 / 极简主题）
+    /// 右上角小号车头徽标（极简主题）
     private var badgeImageView: UIImageView?
-    /// v1.0.175：去重键 —— 仅在主题/车型/朝向/摆放变化时重建车图
+    /// 去重键 —— 仅在主题/车型/朝向/摆放变化时重建车图
     private var appliedThemeKey: String = ""
-    /// v1.0.175：当前车图摆放方式（供 layoutSubviews 重定位）
+    /// 当前车图摆放方式（供 layoutSubviews 重定位）
     private var carPlacement: CarPlacement = .none
 
-    /// v1.0.177：GT 渐变背景层（themed 主题专用；纯色主题为 nil，沿用用户纯色）
+    /// GT 渐变背景层（GT 主题专用；新版主题为纯深色，不用渐变）
     private var bgGradientLayer: CAGradientLayer?
-    /// v1.0.178：光带两段——深蓝底轨（未播段）+ 星火黄已播填充，组成「进度 = 已播长度」光带
+    /// 进度条：深色底轨 + 黄→青蓝渐变已播填充 + 白色扫光
     private var bladeTrack: UIView?
     private var bladeFill: UIView?
-    /// v1.0.178：光带填充上的扫光高光（液态金属 / 星火动态）
+    private var bladeFillGradient: CAGradientLayer?
     private var bladeShimmer: CAGradientLayer?
-    /// v1.0.178：当前主题 / 车型 / 歌词布局（驱动动态效果与定位，供 progress 回调使用）
+    /// 当前主题 / 车型 / 歌词布局
     private var activeTheme: FloatingTheme = .original
     private var activeModel: FloatingCarModel?
     private var lyricsLayout: LyricsLayout = .overlay
-    /// v1.0.180：最近一次播放进度（0~1），用于重布局时保持进度条已播段
+    /// 最近一次播放进度（0~1），用于重布局时保持进度条已播段
     private var lastProgress: CGFloat = 0
-    /// v1.0.180：A/C 布局的封面 + 歌名歌手信息缓存
+    /// A/C 布局的封面 + 歌名歌手信息缓存
     private var lastCover: UIImage?
     private var lastTitle: String = ""
     private var lastArtist: String = ""
-    /// v1.0.180：A 窄条左侧封面
+    /// A 窄条左侧封面
     private var coverImageView: UIImageView?
-    /// v1.0.180：歌名 / 歌手标签（A/C 与 B 的信息区）
+    /// 歌名 / 歌手标签
     private var titleLabel: UILabel?
     private var artistLabel: UILabel?
-    /// v1.0.180：A 窄条左右时间
+    /// A 窄条左右时间
     private var timeLeftLabel: UILabel?
     private var timeRightLabel: UILabel?
-    /// v1.0.180：进度条渐变填充层
-    private var bladeFillGradient: CAGradientLayer?
 
     /// 中间行字号；侧行自动小一号
     var fontSize: CGFloat {
@@ -79,7 +80,7 @@ final class FloatingLyricsView: UIView {
 
     private func setup() {
         clipsToBounds = true
-        layer.cornerRadius = 14
+        layer.cornerRadius = 16
         layer.masksToBounds = true
 
         container.clipsToBounds = true
@@ -96,14 +97,11 @@ final class FloatingLyricsView: UIView {
             container.addSubview(label)
         }
 
-        // v1.0.141：频谱条垫在歌词层下面
         spectrumView.isHidden = true
-        // v1.0.147：撑满窗口后面积大得多，降透明度避免压过歌词可读性
         spectrumView.alpha = 0.42
         addSubview(spectrumView)
         sendSubviewToBack(spectrumView)
 
-        // v1.0.154：控制条浮在最上层（半透明胶囊；频谱/歌词都在它下面）
         addSubview(controlBar)
 
         applyStyle()
@@ -111,15 +109,14 @@ final class FloatingLyricsView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // v1.0.154：顶部控制条先定尺寸；歌词容器整体下移让出它的高度（不遮歌词行）
-        let barHeight = controlBarHeight()
-        let barWidth = min(max(0, bounds.width - 8), max(0, barHeight * 3.9))
-        controlBar.frame = CGRect(x: (bounds.width - barWidth) / 2, y: 3,
-                                  width: barWidth, height: barHeight)
-
+        let barHeight = controlBar.isHidden ? 0 : controlBarHeight()
+        let barWidth = controlBar.isHidden ? 0 : min(max(0, bounds.width - 8), max(0, barHeight * 3.9))
+        if !controlBar.isHidden {
+            controlBar.frame = CGRect(x: (bounds.width - barWidth) / 2, y: 3,
+                                      width: barWidth, height: barHeight)
+        }
         let contentTop = controlBar.isHidden ? 0 : min(bounds.height, controlBar.frame.maxY + 2)
 
-        // v1.0.180：按主题做整体布局，四种新布局对齐用户设计稿
         switch activeTheme {
         case .newA:
             layoutNarrowBar(contentTop: contentTop)
@@ -133,25 +130,19 @@ final class FloatingLyricsView: UIView {
             layoutClassic(contentTop: contentTop)
         }
 
-        // v1.0.147：频谱条撑满悬浮窗高度（上下各留 3pt 圆角余量）
         spectrumView.frame = CGRect(x: 6, y: 3,
                                     width: max(0, bounds.width - 12),
                                     height: max(0, bounds.height - 6))
 
-        // v1.0.175：车图装饰随窗口尺寸 / 折叠态重定位
         layoutCarImage()
-
-        // v1.0.179：右上角车头徽标随窗口尺寸重定位
         layoutBadge()
-
-        // v1.0.177：GT 渐变背景层 + 贯穿光带随窗口尺寸重定位
         bgGradientLayer?.frame = bounds
         layoutBlade()
     }
 
-    // MARK: - v1.0.180 四种新布局
+    // MARK: - v1.0.181 四种新版布局
 
-    /// A 窄条：左侧封面 + 右侧歌名歌手，底部进度条 + 车侧影游标
+    /// A 窄条：左侧圆形封面 + 右侧歌名歌手，底部进度条（车侧影作游标），左右时间
     private func layoutNarrowBar(contentTop: CGFloat) {
         container.isHidden = true
         coverImageView?.isHidden = false
@@ -160,27 +151,27 @@ final class FloatingLyricsView: UIView {
         timeLeftLabel?.isHidden = false
         timeRightLabel?.isHidden = false
 
-        let inset: CGFloat = 10
+        let inset: CGFloat = 12
         let bottomPad: CGFloat = 18
-        let coverSize: CGFloat = min(48, max(32, bounds.height - contentTop - bottomPad - 8))
+        let coverSize: CGFloat = min(46, max(34, bounds.height - contentTop - bottomPad - 8))
         let coverX: CGFloat = inset
         let coverY = contentTop + (bounds.height - contentTop - coverSize - bottomPad) / 2
         coverImageView?.frame = CGRect(x: coverX, y: coverY, width: coverSize, height: coverSize)
 
         let textX = coverX + coverSize + 10
         let textW = max(0, bounds.width - textX - inset - (badgeImageView != nil ? 38 : 0))
-        let titleH: CGFloat = 20
-        let artistH: CGFloat = 15
+        let titleH: CGFloat = 19
+        let artistH: CGFloat = 14
         let textY = coverY + (coverSize - titleH - artistH - 2) / 2
         titleLabel?.frame = CGRect(x: textX, y: textY, width: textW, height: titleH)
         artistLabel?.frame = CGRect(x: textX, y: textY + titleH + 2, width: textW, height: artistH)
 
         let timeY = bounds.height - 14
-        timeLeftLabel?.frame = CGRect(x: inset, y: timeY, width: 44, height: 12)
-        timeRightLabel?.frame = CGRect(x: bounds.width - inset - 44, y: timeY, width: 44, height: 12)
+        timeLeftLabel?.frame = CGRect(x: inset, y: timeY, width: 46, height: 12)
+        timeRightLabel?.frame = CGRect(x: bounds.width - inset - 46, y: timeY, width: 46, height: 12)
     }
 
-    /// B 大卡：顶部歌词三行，中部车大图，底部歌名歌手 + 进度条
+    /// B 大卡：左上三行歌词 + 车左侧空白歌名歌手 + 右下大车 + 底部粗进度条
     private func layoutBigCard(contentTop: CGFloat) {
         container.isHidden = false
         titleLabel?.isHidden = false
@@ -189,28 +180,25 @@ final class FloatingLyricsView: UIView {
         timeLeftLabel?.isHidden = true
         timeRightLabel?.isHidden = true
 
-        let inset: CGFloat = 14
-        let infoH: CGFloat = 18
-        let bladeReserved: CGFloat = 12
-        let titleAreaH = infoH + 4
-        let availableH = max(0, bounds.height - contentTop - titleAreaH - bladeReserved)
-        let lyricsH = min(availableH * 0.42, 86)
-        container.frame = CGRect(x: 0, y: contentTop + 6,
-                                 width: bounds.width, height: lyricsH)
+        let inset: CGFloat = 16
+        let progressH: CGFloat = 16
+        let progressPad: CGFloat = 20
+        let lyricsTop: CGFloat = contentTop + 14
+        let lyricsH: CGFloat = min(bounds.height - lyricsTop - 92, 96)
+        container.frame = CGRect(x: inset, y: lyricsTop, width: bounds.width - inset * 2, height: max(0, lyricsH))
         let row = container.bounds.height / 3
-        let labelW = max(0, container.bounds.width - inset * 2)
+        let labelW = max(0, container.bounds.width)
         for (index, label) in labels.enumerated() {
-            label.textAlignment = .center
-            label.frame = CGRect(x: inset, y: CGFloat(index) * row,
-                                 width: labelW, height: row)
+            label.textAlignment = .left
+            label.frame = CGRect(x: 0, y: CGFloat(index) * row, width: labelW, height: row)
         }
-        titleLabel?.frame = CGRect(x: inset, y: contentTop + lyricsH + 4,
-                                   width: bounds.width - inset * 2, height: infoH)
-        artistLabel?.frame = CGRect(x: inset, y: contentTop + lyricsH + 4 + infoH,
-                                    width: bounds.width - inset * 2, height: infoH)
+
+        let infoY = lyricsTop + max(0, lyricsH) + 8
+        titleLabel?.frame = CGRect(x: inset, y: infoY, width: bounds.width - inset * 2, height: 20)
+        artistLabel?.frame = CGRect(x: inset, y: infoY + 22, width: bounds.width - inset * 2, height: 16)
     }
 
-    /// C 车头窗：左侧车头正视，右侧歌名歌手 + 歌词 + 进度条
+    /// C 车头窗：左侧车头正视大图，右侧歌名歌手 + 歌词 + 进度条
     private func layoutFrontWindow(contentTop: CGFloat) {
         container.isHidden = false
         titleLabel?.isHidden = false
@@ -219,27 +207,26 @@ final class FloatingLyricsView: UIView {
         timeLeftLabel?.isHidden = true
         timeRightLabel?.isHidden = true
 
-        let leftW = bounds.width * 0.48
-        let rightX = leftW + 10
-        let rightW = max(0, bounds.width - rightX - 10)
-        let topY = contentTop + 8
+        let leftW = bounds.width * 0.46
+        let rightX = leftW + 12
+        let rightW = max(0, bounds.width - rightX - 12)
+        let topY = contentTop + 12
         titleLabel?.frame = CGRect(x: rightX, y: topY, width: rightW, height: 18)
         artistLabel?.frame = CGRect(x: rightX, y: topY + 20, width: rightW, height: 14)
 
-        let bladeReserved: CGFloat = 14
-        let lyricsY = topY + 42
+        let bladeReserved: CGFloat = 16
+        let lyricsY = topY + 44
         let lyricsH = max(0, bounds.height - lyricsY - bladeReserved)
         container.frame = CGRect(x: rightX, y: lyricsY, width: rightW, height: lyricsH)
         let row = container.bounds.height / 3
-        let labelW = max(0, rightW - 4)
+        let labelW = max(0, rightW)
         for (index, label) in labels.enumerated() {
             label.textAlignment = .left
-            label.frame = CGRect(x: 0, y: CGFloat(index) * row,
-                                 width: labelW, height: row)
+            label.frame = CGRect(x: 0, y: CGFloat(index) * row, width: labelW, height: row)
         }
     }
 
-    /// D 极简：纯底部进度条 + 车侧影游标 + 右侧车头徽标
+    /// D 极简：纯底部进度条（车侧影作游标）+ 右侧车头徽标
     private func layoutMinimal(contentTop: CGFloat) {
         container.isHidden = true
         coverImageView?.isHidden = true
@@ -284,19 +271,19 @@ final class FloatingLyricsView: UIView {
         }
     }
 
-    /// v1.0.154：控制条高度随悬浮窗尺寸缩放 —— 22~32pt，保证最小窗（72pt）也留得住歌词
+    /// 控制条高度随悬浮窗尺寸缩放 —— 22~32pt
     private func controlBarHeight() -> CGFloat {
         return min(32, max(22, bounds.height * 0.26))
     }
 
     private func applyStyle() {
         for (index, label) in labels.enumerated() {
-            // v1.0.116：上下两行 = 中间行的 70%（原来是固定小 2pt）
-            // v1.0.180：B 大卡当前句高亮为黄色大字，呼应设计稿
             var size = index == 1 ? fontSize : max(9, fontSize * 0.7)
             if activeTheme == .newB {
-                size = index == 1 ? fontSize * 1.25 : (index == 0 ? fontSize * 0.8 : fontSize * 0.8)
+                size = index == 1 ? fontSize * 1.25 : (index == 0 ? fontSize * 0.85 : fontSize * 0.85)
                 label.textColor = index == 1 ? UIColor(hex: 0xE5FF00) : .white
+            } else if activeTheme.isNewTheme {
+                label.textColor = index == 1 ? .white : UIColor.white.withAlphaComponent(0.6)
             } else {
                 label.textColor = .white
             }
@@ -306,7 +293,7 @@ final class FloatingLyricsView: UIView {
         refreshHard()
     }
 
-    /// 强制全部 label 全量重绘（配合 manager.forceRecomposite 消除注册窗口的渲染残影）
+    /// 强制全部 label 全量重绘
     func refreshHard() {
         setNeedsLayout()
         layoutIfNeeded()
@@ -319,7 +306,6 @@ final class FloatingLyricsView: UIView {
     // MARK: - 歌词更新
 
     /// 设置三行文本（上 / 中 / 下）
-    /// - Parameter animated: 为 true 时整体向上翻动一行（仅在顺序切到下一句时传 true）
     func setLines(_ lines: [String], animated: Bool) {
         guard lines.count == 3 else { return }
 
@@ -337,13 +323,11 @@ final class FloatingLyricsView: UIView {
             return
         }
 
-        // 先把内容换成新三行，再把容器整体下移一行 —— 视觉上仍停在旧位置
         for (index, label) in labels.enumerated() {
             label.text = lines[index]
         }
         let row = bounds.height / 3
         container.transform = CGAffineTransform(translationX: 0, y: row)
-        // 旧「当前行」此刻处于上方一行位置，仍是最亮，随后淡到侧行亮度
         labels[0].alpha = 1.0
         labels[1].alpha = Self.sideAlpha
         labels[2].alpha = 0
@@ -375,10 +359,8 @@ final class FloatingLyricsView: UIView {
         artistLabel?.isHidden = collapsed
         timeLeftLabel?.isHidden = collapsed
         timeRightLabel?.isHidden = collapsed
-        // v1.0.147：折叠成正方形圆点时频谱条不显示（否则会压住封面）
-        spectrumView.isHidden = collapsed || !spectrumEnabled
-        // v1.0.154：折叠圆点（48×48）放不下控制条，一并隐藏；展开时 layoutSubviews 会复位
-        controlBar.isHidden = collapsed
+        spectrumView.isHidden = collapsed || !spectrumEnabled || activeTheme.isNewTheme
+        controlBar.isHidden = collapsed || activeTheme.isNewTheme
         if collapsed {
             if noteIcon == nil {
                 let icon = UIImageView(image: UIImage(systemName: "music.note"))
@@ -411,7 +393,6 @@ final class FloatingLyricsView: UIView {
                 ])
                 artworkIcon = iv
             }
-            // v1.0.144：封面缓存回填（icon 是折叠时才创建，show() 时的 setArtwork 早于创建）
             artworkIcon?.image = lastArtwork
             noteIcon?.isHidden = (lastArtwork != nil)
             artworkIcon?.isHidden = (lastArtwork == nil)
@@ -422,7 +403,7 @@ final class FloatingLyricsView: UIView {
         }
     }
 
-    /// v1.0.141：折叠圆点显示歌曲封面（无封面回退音符）
+    /// 折叠圆点显示歌曲封面（无封面回退音符）
     func setArtwork(_ image: UIImage?) {
         lastArtwork = image
         artworkIcon?.image = image
@@ -434,7 +415,7 @@ final class FloatingLyricsView: UIView {
         }
     }
 
-    /// v1.0.180：设置 A/C/B 布局所需的封面 + 歌名歌手信息
+    /// 设置 A/C/B 布局所需的封面 + 歌名歌手信息
     func setNowPlayingInfo(cover: UIImage?, title: String, artist: String) {
         lastCover = cover
         lastTitle = title
@@ -445,17 +426,19 @@ final class FloatingLyricsView: UIView {
         refreshHard()
     }
 
-    /// v1.0.141：频谱条可见性（音乐可视化开关）
-    /// v1.0.147：记住开关状态，并与折叠态联动（折叠时不显示）
+    /// 频谱条可见性（音乐可视化开关）；新版主题强制隐藏
     func setSpectrumVisible(_ visible: Bool) {
         spectrumEnabled = visible
+        if activeTheme.isNewTheme {
+            spectrumView.isHidden = true
+            return
+        }
         spectrumView.isHidden = !visible || isCollapsedState
     }
 
-    // MARK: - 主题 / 车型装饰（v1.0.175）
+    // MARK: - 主题 / 车型装饰
 
-    /// 应用悬浮窗主题 + 车型：在歌词层之下、频谱之上放置车图装饰，并按主题加强调色描边。
-    /// 仅在主题 / 车型 / 朝向 / 摆放变化时重建车图视图，避免布局期重复创建。
+    /// 应用悬浮窗主题 + 车型，按主题重建车图 / 信息视图 / 进度条
     func applyTheme(_ theme: FloatingTheme, model: FloatingCarModel) {
         let collapsed = isCollapsedState
         let key = "\(theme.rawValue)|\(model.id)|\(theme.carOrientation.rawValue)|\(theme.carPlacement.rawValue)"
@@ -464,14 +447,10 @@ final class FloatingLyricsView: UIView {
             activeTheme = theme
             activeModel = model
             lyricsLayout = theme.lyricsLayout
-            // 先停掉旧主题的动态效果，避免动画在重建后叠加
             stopDynamicEffects()
-            // v1.0.177：先铺背景（纯色主题清掉渐变；GT 主题铺 GT 渐变）
             applyBackground(theme)
-            carImageView?.removeFromSuperview()
-            carImageView = nil
-            badgeImageView?.removeFromSuperview()
-            badgeImageView = nil
+            carImageView?.removeFromSuperview(); carImageView = nil
+            badgeImageView?.removeFromSuperview(); badgeImageView = nil
             bladeTrack?.removeFromSuperview(); bladeTrack = nil
             bladeFill?.removeFromSuperview(); bladeFill = nil
             bladeFillGradient?.removeFromSuperlayer(); bladeFillGradient = nil
@@ -482,6 +461,7 @@ final class FloatingLyricsView: UIView {
             timeLeftLabel?.removeFromSuperview(); timeLeftLabel = nil
             timeRightLabel?.removeFromSuperview(); timeRightLabel = nil
             layer.borderWidth = 0
+
             if theme.usesCarDecoration,
                let img = carImage(for: theme, model: model) {
                 let iv = UIImageView(image: img)
@@ -489,7 +469,6 @@ final class FloatingLyricsView: UIView {
                 iv.clipsToBounds = true
                 iv.alpha = theme.carAlpha
                 iv.isUserInteractionEnabled = false
-                // 插到频谱(索引 0)之上、歌词容器之下 → 车图在文字背后、频谱前方
                 insertSubview(iv, at: 1)
                 carImageView = iv
                 carPlacement = theme.carPlacement
@@ -498,41 +477,63 @@ final class FloatingLyricsView: UIView {
                     layer.borderWidth = theme.accentBorderWidth
                 }
             }
-            // v1.0.180：按主题创建附加信息视图
             if theme == .newA {
                 makeCoverView(); makeTitleLabel(); makeArtistLabel(); makeTimeLabels()
+                styleInfoLabels(theme: theme)
             } else if theme == .newB {
                 makeTitleLabel(); makeArtistLabel()
+                styleInfoLabels(theme: theme)
             } else if theme == .newC {
                 makeTitleLabel(); makeArtistLabel()
+                styleInfoLabels(theme: theme)
             }
-            // v1.0.179：右上角车头徽标（窄条 / 极简）；其它主题无
             applyBadge(theme, model)
-            // v1.0.180：贯穿光带（GT 签名元素；纯色不显示）—— 圆角底轨 + 黄→青蓝渐变已播段 + 扫光
             applyLightBlade(theme)
-            // v1.0.178：启动动态效果（扫光 + 车浮动 / 进度游标）
             startDynamicEffects()
             // 回填缓存的封面/歌名歌手
             coverImageView?.image = lastCover
             titleLabel?.text = lastTitle
             artistLabel?.text = lastArtist
         }
+        controlBar.isHidden = collapsed || theme.isNewTheme
         carImageView?.isHidden = collapsed
         bladeTrack?.isHidden = collapsed
         bladeFill?.isHidden = collapsed
         applyStyle()
         layoutCarImage()
         layoutBlade()
+        applyCarCursor()
         refreshHard()
     }
 
-    // MARK: - v1.0.180 信息视图构造
+    private func styleInfoLabels(theme: FloatingTheme) {
+        switch theme {
+        case .newA, .newC:
+            titleLabel?.textColor = .white
+            titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+            artistLabel?.textColor = UIColor.white.withAlphaComponent(0.7)
+            artistLabel?.font = UIFont.systemFont(ofSize: 12, weight: .regular)
+            titleLabel?.textAlignment = .left
+            artistLabel?.textAlignment = .left
+        case .newB:
+            titleLabel?.textColor = UIColor(hex: 0x00E5FF)
+            titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+            artistLabel?.textColor = UIColor(hex: 0x00E5FF).withAlphaComponent(0.85)
+            artistLabel?.font = UIFont.systemFont(ofSize: 14, weight: .regular)
+            titleLabel?.textAlignment = .left
+            artistLabel?.textAlignment = .left
+        default:
+            break
+        }
+    }
+
+    // MARK: - 信息视图构造
 
     private func makeCoverView() {
         let iv = UIImageView()
         iv.contentMode = .scaleAspectFill
         iv.clipsToBounds = true
-        iv.layer.cornerRadius = 6
+        iv.layer.cornerRadius = 23
         iv.layer.borderWidth = 0.5
         iv.layer.borderColor = UIColor.white.withAlphaComponent(0.25).cgColor
         iv.isUserInteractionEnabled = false
@@ -576,10 +577,8 @@ final class FloatingLyricsView: UIView {
         timeRightLabel = right
     }
 
-    // MARK: - 车图 / 徽标辅助（v1.0.179）
+    // MARK: - 车图 / 徽标辅助
 
-    /// 按主题决定车图朝向：游标/行驶类主题把侧影水平翻转，让车头朝右（前进方向），
-    /// 与设计稿（HTML A/D 的 `scaleX(-1)`）一致；其余主题原样返回。
     private func carImage(for theme: FloatingTheme, model: FloatingCarModel) -> UIImage? {
         guard let img = model.image(orientation: theme.carOrientation) else { return nil }
         if theme.carFacesRight && theme.carOrientation == .side,
@@ -589,7 +588,7 @@ final class FloatingLyricsView: UIView {
         return img
     }
 
-    /// 右上角小号车头徽标（窄条 / 极简主题，呼应设计稿角标）
+    /// 右上角小号车头徽标（极简主题）
     private func applyBadge(_ theme: FloatingTheme, _ model: FloatingCarModel) {
         badgeImageView?.removeFromSuperview()
         badgeImageView = nil
@@ -610,16 +609,18 @@ final class FloatingLyricsView: UIView {
         b.frame = CGRect(x: bounds.width - s - 8, y: 6, width: s, height: s)
     }
 
-    // MARK: - 背景 / 光带（v1.0.177+）
+    // MARK: - 背景
 
-    /// 纯色主题：移除 GT 渐变层，背景由 manager 设置的用户纯色接管。
-    /// GT/新主题：在 self.layer 最底层铺一层自上而下渐变，作为该主题的 GT 底色。
+    /// 新版主题：纯深色背景（设计稿深色卡片）；GT 主题：渐变；original：沿用用户纯色
     private func applyBackground(_ theme: FloatingTheme) {
         bgGradientLayer?.removeFromSuperlayer()
         bgGradientLayer = nil
+        if let solid = theme.solidBackgroundColor {
+            self.backgroundColor = solid
+            return
+        }
         switch theme.background {
         case .solid:
-            // 不动 backgroundColor（manager 已设为用户纯色），仅确保没有残留渐变
             break
         case .gradient(let colors):
             let g = CAGradientLayer()
@@ -633,14 +634,13 @@ final class FloatingLyricsView: UIView {
         }
     }
 
-    /// v1.0.180：圆角进度条 —— 深色底轨 + 黄→青蓝渐变已播填充 + 白色扫光高光。
-    /// 设计稿中四种布局的进度条均为统一的黄→青蓝渐变，车游标沿填充移动。
-    /// 纯色主题不显示。
+    /// 圆角进度条 —— 深色底轨 + 黄→青蓝渐变已播填充 + 白色扫光
     private func applyLightBlade(_ theme: FloatingTheme) {
         guard theme.showsLightBlade else { return }
-        let h: CGFloat = 6
-        let inset: CGFloat = (theme == .newA || theme == .newD) ? 10 : 14
-        let y = bounds.height - h - 6
+        let h: CGFloat = (theme == .newB) ? 16 : 6
+        let inset: CGFloat = (theme == .newA || theme == .newD) ? 12 : 16
+        let bottomPad: CGFloat = (theme == .newA) ? 18 : ((theme == .newB) ? 20 : 16)
+        let y = bounds.height - h - bottomPad
         let w = max(0, bounds.width - inset * 2)
 
         let track = UIView()
@@ -686,9 +686,8 @@ final class FloatingLyricsView: UIView {
     private func layoutBlade() {
         guard let track = bladeTrack, let fill = bladeFill else { return }
         let inset = track.frame.origin.x
-        let h: CGFloat = 6
-        // A 窄条底部需要时间标签区，进度条上移；其余保持默认
-        let bottomPad: CGFloat = (activeTheme == .newA) ? 18 : 6
+        let h: CGFloat = (activeTheme == .newB) ? 16 : 6
+        let bottomPad: CGFloat = (activeTheme == .newA) ? 18 : ((activeTheme == .newB) ? 20 : 16)
         let y = bounds.height - h - bottomPad
         let w = max(0, bounds.width - inset * 2)
         track.frame = CGRect(x: inset, y: y, width: w, height: h)
@@ -697,10 +696,9 @@ final class FloatingLyricsView: UIView {
         bladeShimmer?.frame = fill.bounds
     }
 
-    /// v1.0.178：启动主题动态效果
+    /// 启动主题动态效果
     private func startDynamicEffects() {
         guard activeTheme != .original else { return }
-        // 星火黄扫光：沿光带已播段做横向往复扫光
         if let fill = bladeFill, let shim = bladeShimmer {
             let w = max(40, bounds.width)
             shim.frame = fill.bounds
@@ -712,7 +710,6 @@ final class FloatingLyricsView: UIView {
             anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             shim.add(anim, forKey: "bladeShimmer")
         }
-        // 车图轻微浮动（仅非「进度游标」主题，避免与 x 进度绑定冲突）
         if let iv = carImageView, activeTheme.carFollowsProgress == false {
             let bob = CABasicAnimation(keyPath: "transform.translation.y")
             bob.fromValue = -2.0
@@ -725,32 +722,36 @@ final class FloatingLyricsView: UIView {
         }
     }
 
-    /// 停止所有主题动态效果（切主题重建前调用）
     private func stopDynamicEffects() {
         bladeShimmer?.removeAnimation(forKey: "bladeShimmer")
         carImageView?.layer.removeAnimation(forKey: "carBob")
     }
 
-    /// v1.0.180：播放进度回调（由 manager 在 spectrumTick 中转发）。
-    /// 更新渐变已播段宽度；若主题为「行驶/窄条/极简」（车=进度游标），同步移动车图 x 位置。
+    /// 播放进度回调：更新渐变已播段；游标类主题同步移动车图
     func updateProgress(current: Double, duration: Double) {
         let p = (duration > 0 && current.isFinite) ? min(1, max(0, current / duration)) : 0
         lastProgress = CGFloat(p)
         guard let fill = bladeFill, let track = bladeTrack else { return }
         let inset = track.frame.origin.x
+        let h: CGFloat = (activeTheme == .newB) ? 16 : 6
+        let bottomPad: CGFloat = (activeTheme == .newA) ? 18 : ((activeTheme == .newB) ? 20 : 16)
+        let y = bounds.height - h - bottomPad
         let w = max(0, bounds.width - inset * 2)
-        fill.frame = CGRect(x: inset, y: track.frame.origin.y,
-                            width: max(0, w * CGFloat(p)), height: track.frame.height)
+        fill.frame = CGRect(x: inset, y: y, width: max(0, w * CGFloat(p)), height: h)
         bladeFillGradient?.frame = fill.bounds
         bladeShimmer?.frame = fill.bounds
-        if activeTheme.carFollowsProgress, let iv = carImageView {
-            let margin: CGFloat = 22
-            let x = inset + margin + CGFloat(p) * max(0, w - margin * 2)
-            iv.center = CGPoint(x: x, y: track.frame.midY)
-        }
-        // A 窄条更新时间标签
+        applyCarCursor()
         timeLeftLabel?.text = formatTime(current)
         timeRightLabel?.text = formatTime(duration)
+    }
+
+    private func applyCarCursor() {
+        guard activeTheme.carFollowsProgress, let iv = carImageView, let track = bladeTrack else { return }
+        let inset = track.frame.origin.x
+        let w = max(0, bounds.width - inset * 2)
+        let margin: CGFloat = 22
+        let x = inset + margin + lastProgress * max(0, w - margin * 2)
+        iv.center = CGPoint(x: x, y: track.frame.midY)
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -762,6 +763,11 @@ final class FloatingLyricsView: UIView {
     /// 按当前摆放方式计算车图 frame
     private func layoutCarImage() {
         guard let iv = carImageView else { return }
+        if activeTheme.carFollowsProgress, let track = bladeTrack {
+            iv.center = CGPoint(x: (bounds.width - track.frame.width) / 2 + track.frame.origin.x,
+                                y: track.frame.midY)
+            return
+        }
         iv.frame = Self.carFrame(for: carPlacement, in: bounds)
     }
 
@@ -772,45 +778,42 @@ final class FloatingLyricsView: UIView {
         case .backdrop:
             return rect.insetBy(dx: 4, dy: 4)
         case .bottom:
-            // GT 侧身贴底
             return CGRect(x: 4, y: rect.height * 0.30,
                           width: rect.width - 8, height: rect.height * 0.70)
         case .right:
-            // 侧身剪影：占右半窗、近乎铺满高度，呼应设计稿「车在右、歌词在左」
             return CGRect(x: rect.width * 0.40, y: 6,
                           width: rect.width * 0.60 - 6, height: rect.height - 12)
         case .card:
             return CGRect(x: 4, y: 4,
                           width: rect.width - 8, height: rect.height * 0.6)
         case .rightLarge:
-            // 大卡：侧身大图占右侧，纵向居中、接近铺满高度
             return CGRect(x: rect.width * 0.34, y: 6,
                           width: rect.width * 0.66 - 6, height: rect.height - 12)
         case .frontLeft:
-            // 车头窗：车头正视图靠左，占左半近满高度（设计稿 C）
-            return CGRect(x: -rect.width * 0.02, y: rect.height * 0.06,
-                          width: rect.width * 0.52, height: rect.height * 0.88)
+            // 车头窗：车头正视图靠左，占左半近满高度
+            let w = rect.width * 0.50
+            let h = rect.height * 0.92
+            return CGRect(x: -rect.width * 0.02, y: rect.height * 0.04, width: w, height: h)
         case .cursorBottom:
-            // 行驶 / 窄条 / 极简：车=游标，x 由 updateProgress 驱动（设计稿 A/D）
-            let h = min(44, rect.height * 0.46)
+            let h = min(44, rect.height * 0.5)
             let w = h * 2.0
-            return CGRect(x: 20 - w / 2, y: rect.height - h - 10, width: w, height: h)
-        case .bottomLarge:
-            // 大卡：车大图占中下部，顶部留歌词区，底部留进度条
-            return CGRect(x: 8, y: rect.height * 0.36,
-                          width: rect.width - 16, height: rect.height * 0.52)
+            return CGRect(x: 20 - w / 2, y: rect.height - h - 16, width: w, height: h)
+        case .bottomRight:
+            // 大卡：车大图占右下，顶部留歌词、底部留粗进度条
+            let h = rect.height * 0.52
+            let w = min(rect.width * 0.66, h * 2.1)
+            return CGRect(x: rect.width - w - 8, y: rect.height - h - 34, width: w, height: h)
         }
     }
 }
 
-/// v1.0.141：十段频谱条（随音乐节奏跳动）
+/// 十段频谱条（随音乐节奏跳动）
 final class SpectrumBarsView: UIView {
 
     var levels: [Float] = Array(repeating: 0, count: 10) {
         didSet { setNeedsDisplay() }
     }
     var barColor: UIColor = UIColor.white.withAlphaComponent(0.6)
-    /// v1.0.148：频谱最高高度占比 —— 100% 会顶满窗口太满，默认 75% 留出顶部余量
     var heightScale: CGFloat = 0.75
 
     override init(frame: CGRect) {

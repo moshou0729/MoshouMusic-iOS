@@ -884,6 +884,12 @@ final class FloatingLyricsManager: NSObject {
             view.backgroundColor = configuredBgColor()
         }
         view.applyTheme(theme, model: model)
+        // v1.0.181：新版四套主题高度为固定值，不让用户手动拉伸
+        if let fixedH = theme.windowHeight, let window = floatingWindow {
+            let size = CGSize(width: window.frame.width, height: fixedH)
+            window.frame = CGRect(origin: window.frame.origin, size: size)
+            ConfigStore.shared.floatingSize = size
+        }
     }
 
     /// 切换皮肤主题（设置页调用）
@@ -1365,7 +1371,16 @@ final class FloatingLyricsManager: NSObject {
             window.frame = CGRect(origin: start.origin,
                                   size: CGSize(width: width, height: height))
             let ratio = height / max(1, start.height)
-            lyricsView?.fontSize = clamp(pinchStartFont * ratio, min: 10, max: 34)
+            let fixedTheme = (FloatingTheme(rawValue: ConfigStore.shared.floatingTheme) ?? .original)
+            if fixedTheme.windowHeight != nil {
+                // v1.0.181：新版主题高度固定，捏合只改宽度、字号不变
+                var fixedFrame = window.frame
+                fixedFrame.size.height = fixedTheme.windowHeight!
+                window.frame = fixedFrame
+                lyricsView?.fontSize = pinchStartFont
+            } else {
+                lyricsView?.fontSize = clamp(pinchStartFont * ratio, min: 10, max: 34)
+            }
 
         case .ended, .cancelled:
             clampWindowIntoScreen(window)

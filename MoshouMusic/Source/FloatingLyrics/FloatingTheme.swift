@@ -48,9 +48,9 @@ enum FloatingTheme: String, CaseIterable {
     }
 
     /// 车图在悬浮窗中的摆放方式
-    /// v1.0.180：newA/newB/newC/newD 严格对齐用户提供的四张设计稿
+    /// v1.0.181：newA/newB/newC/newD 严格对齐用户确认的设计稿
     ///   A 窄条   → 左侧封面 + 右侧歌名歌手，底部进度条 + 车侧影游标
-    ///   B 大卡   → 顶部歌词，中部车大图，底部进度条
+    ///   B 大卡   → 左上三行歌词 + 车左侧空白歌名歌手，右下大车，底部粗进度条
     ///   C 车头窗 → 左侧车头正视，右侧歌名歌手 + 歌词 + 进度条
     ///   D 极简   → 纯底部进度条 + 车侧影游标 + 右侧车头徽标
     var carPlacement: CarPlacement {
@@ -61,8 +61,35 @@ enum FloatingTheme: String, CaseIterable {
         case .gtC, .gtE:                return .right         // GT 侧身类：右侧分栏
         case .gtD:                      return .card          // GT·前脸正视：顶部卡片
         case .gtF, .newA, .newD:        return .cursorBottom  // 行驶进度 / 窄条 / 极简：车=游标
-        case .newB:                     return .bottomLarge   // 大卡：车大图占中下部
+        case .newB:                     return .bottomRight   // 大卡：车大图占右下
         case .newC:                     return .frontLeft     // 车头窗：车头靠左
+        }
+    }
+
+    /// 是否为 v1.0.181 四套新版卡片主题
+    var isNewTheme: Bool {
+        switch self {
+        case .newA, .newB, .newC, .newD: return true
+        default: return false
+        }
+    }
+
+    /// 新版主题固定窗口高度（不让用户手动拉伸）；其余主题返回 nil（沿用用户设置）
+    var windowHeight: CGFloat? {
+        switch self {
+        case .newA: return 88
+        case .newB: return 260
+        case .newC: return 150
+        case .newD: return 58
+        default: return nil
+        }
+    }
+
+    /// 新版主题的深色卡片背景（设计稿统一深色卡片）；original 返回 nil（沿用用户纯色），GT 返回 nil（用渐变层）
+    var solidBackgroundColor: UIColor? {
+        switch self {
+        case .newA, .newB, .newC, .newD: return UIColor(hex: 0x141418)
+        default: return nil
         }
     }
 
@@ -100,9 +127,9 @@ enum FloatingTheme: String, CaseIterable {
         self == .gtF || self == .newA || self == .newD
     }
 
-    /// 是否显示右上角小号车头徽标（窄条 / 极简，呼应参考稿角标）
+    /// 是否显示右上角小号车头徽标（仅极简主题，呼应参考稿角标）
     var badgeFront: Bool {
-        self == .newA || self == .newD
+        self == .newD
     }
 
     /// 歌词区底部留白（给底部「光带 + 车游标」让位）；游标类主题需要
@@ -193,7 +220,8 @@ enum CarPlacement: Int {
     case rightLarge = 5 // 大卡：侧身大图占右侧，纵向居中接近铺满
     case frontLeft = 6  // 车头窗：车头正视图靠左，右半留给歌词
     case cursorBottom = 7 // 行驶/窄条/极简：车=游标，沿底部光带随进度横向移动
-    case bottomLarge = 8 // 大卡：车大图占中下部，歌词在顶部
+    case bottomLarge = 8 // 大卡（旧）：车大图占中下部，歌词在顶部
+    case bottomRight = 9  // v1.0.181 大卡：车大图占右下角
 }
 
 /// 歌词布局

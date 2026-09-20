@@ -207,8 +207,8 @@ final class FloatingLyricsView: UIView {
         timeLeftLabel?.isHidden = true
         timeRightLabel?.isHidden = true
 
-        let leftW = bounds.width * 0.70
-        let rightX = leftW + 2
+        let leftW = bounds.width / 3.0   // 车头窗：图:歌词 = 1:2（图占左 1/3，歌词占右 2/3）
+        let rightX = leftW + 4
         let rightW = max(0, bounds.width - rightX - 12)
         let topY = contentTop + 12
         titleLabel?.frame = CGRect(x: rightX, y: topY, width: rightW, height: 18)
@@ -791,10 +791,10 @@ final class FloatingLyricsView: UIView {
             return CGRect(x: rect.width * 0.34, y: 6,
                           width: rect.width * 0.66 - 6, height: rect.height - 12)
         case .frontLeft:
-            // 车头窗：车头正视图放大 ~50%，贴近右侧歌词
-            let w = rect.width * 0.74
-            let h = rect.height * 1.12
-            return CGRect(x: -rect.width * 0.03, y: (rect.height - h) / 2, width: w, height: h)
+            // 车头窗：车头正视图收进左侧 1/3 区域（图:歌词=1:2），与右侧歌词不重叠
+            let w = rect.width * 0.34
+            let h = rect.height * 0.98
+            return CGRect(x: -rect.width * 0.015, y: (rect.height - h) / 2, width: w, height: h)
         case .cursorBottom:
             // 窄条/极简：车侧影作游标，缩小到能完整显示全貌
             let h = min(26, rect.height * 0.42)

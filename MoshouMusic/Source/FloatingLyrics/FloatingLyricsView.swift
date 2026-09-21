@@ -805,8 +805,8 @@ final class FloatingLyricsView: UIView {
             let w = h * 2.2
             return CGRect(x: 20 - w / 2, y: rect.height - h - 14, width: w, height: h)
         case .bottomRight:
-            // 大卡：车图占右下（v1.0.192 在原始尺寸基础上再缩小 30%）
-            let h = rect.height * 0.52 * 0.70
+            // 大卡：车图占右下（v1.0.193 后在当前尺寸基础上放大 50%）
+            let h = rect.height * 0.52 * 1.05
             let w = min(rect.width - 16, h * 2.1)
             return CGRect(x: rect.width - w - 4, y: rect.height - h - 30, width: w, height: h)
         case .bottomLarge:

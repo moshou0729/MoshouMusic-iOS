@@ -461,7 +461,7 @@ final class FloatingLyricsView: UIView {
             if theme.usesCarDecoration,
                let img = carImage(for: theme, model: model) {
                 let iv = UIImageView(image: img)
-                iv.contentMode = .scaleAspectFit
+                iv.contentMode = (theme.carPlacement == .bottomRight) ? .right : .scaleAspectFit
                 iv.clipsToBounds = true
                 iv.alpha = theme.carAlpha
                 iv.isUserInteractionEnabled = false
@@ -808,7 +808,7 @@ final class FloatingLyricsView: UIView {
             // 大卡：车大图占右下，放大 50%（v1.0.189）
             let h = rect.height * 0.52 * 1.5
             let w = min(rect.width - 16, h * 2.1)
-            return CGRect(x: rect.width - w - 8, y: rect.height - h - 30, width: w, height: h)
+            return CGRect(x: rect.width - w - 4, y: rect.height - h - 30, width: w, height: h)
         case .bottomLarge:
             // 旧大卡（兼容保留）：车大图占中下部，歌词在顶部
             let h = rect.height * 0.60

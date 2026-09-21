@@ -461,7 +461,7 @@ final class FloatingLyricsView: UIView {
             if theme.usesCarDecoration,
                let img = carImage(for: theme, model: model) {
                 let iv = UIImageView(image: img)
-                iv.contentMode = (theme.carPlacement == .bottomRight) ? .right : .scaleAspectFit
+                iv.contentMode = .scaleAspectFit
                 iv.clipsToBounds = true
                 iv.alpha = theme.carAlpha
                 iv.isUserInteractionEnabled = false
